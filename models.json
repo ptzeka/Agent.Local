@@ -1,0 +1,45 @@
+{
+  "$schema": "./models.schema.json",
+
+  "//": [
+    "Each entry under `models` is an addressable model that the agent can talk to.",
+    "Each entry under `roles` maps a logical role (planner, coder, summarizer) onto",
+    "one of those models. You can change a model assignment at runtime in the REPL",
+    "with `/model <role>=<model-id>`."
+  ],
+
+  "models": {
+    "qwen-coder": {
+      "provider": "ollama",
+      "model": "qwen2.5-coder:14b",
+      "supportsTools": true,
+      "description": "Strong coding model with native Ollama tool calling. Default executor."
+    },
+    "deepseek-r1": {
+      "provider": "ollama",
+      "model": "deepseek-r1:14b",
+      "supportsTools": false,
+      "reasoning": true,
+      "description": "Reasoning-focused model. Used for planning phases; <think> blocks are stripped before handoff."
+    },
+    "llama-fast": {
+      "provider": "ollama",
+      "model": "llama3.2:3b",
+      "supportsTools": true,
+      "description": "Small, quick model for summarization and lightweight follow-ups."
+    }
+  },
+
+  "roles": {
+    "planner": "deepseek-r1",
+    "coder": "qwen-coder",
+    "summarizer": "llama-fast"
+  },
+
+  "orchestration": {
+    "planFirst": true,
+    "maxExecutorIterations": 12,
+    "planTemperature": 0.2,
+    "executorTemperature": 0.1
+  }
+}

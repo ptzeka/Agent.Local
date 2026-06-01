@@ -1,0 +1,12 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
+  "mcpServers": {
+    "agent-tools": {
+      "command": "node",
+      "args": ["dist/tools/server.js"],
+      "env": {
+        "AGENT_WORKSPACE": "."
+      }
+    }
+  }
+}
