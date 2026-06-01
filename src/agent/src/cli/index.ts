@@ -10,6 +10,7 @@
  * Then it hands control to the REPL. On exit, it tears everything down.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import url from "node:url";
@@ -57,13 +58,22 @@ async function main(): Promise<void> {
 /**
  * Walk up from this file's location until we find a directory containing
  * mcp.json. This lets `npm start` work whether the user runs from the
- * project root or from a subdirectory.
+ * project root or from a subdirectory, and survives the package being
+ * nested deeper under src/agent/{dist,src}/cli.
  */
 function findProjectRoot(): string {
   const here = url.fileURLToPath(new URL(".", import.meta.url));
-  // dist/cli → up two levels lands at the project root in built mode.
-  // src/cli  → up two levels lands at the project root in dev (tsx) mode.
-  return path.resolve(here, "..", "..");
+  let cursor = path.resolve(here);
+  while (true) {
+    if (fs.existsSync(path.join(cursor, "mcp.json"))) return cursor;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) {
+      throw new Error(
+        `Could not locate mcp.json walking up from ${here}. Make sure the agent is launched from inside the workspace.`,
+      );
+    }
+    cursor = parent;
+  }
 }
 
 main().catch((err) => {

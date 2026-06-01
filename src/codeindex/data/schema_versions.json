@@ -1,0 +1,12 @@
+[
+  {
+    "scriptName": "001_init.sql",
+    "appliedAt": "2026-06-01T05:47:58.748Z",
+    "checksum": "5eca0d8428521fd559bbcce31c51d1cc59400ad6f72163e181953574e23597e7"
+  },
+  {
+    "scriptName": "002_add_repository.sql",
+    "appliedAt": "2026-06-01T05:47:58.749Z",
+    "checksum": "318231a315aefaab6692f9126eccdf4eb2b3e5984598a9285d93d7f8a3774b24"
+  }
+]

@@ -1,0 +1,31 @@
+{
+  "name": "@rxo/codemcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Model Context Protocol server exposing the codeindex PostgreSQL store to coding assistants.",
+  "bin": {
+    "codemcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "start:file": "node dist/server.js --backend file",
+    "start:pg": "node dist/server.js --backend pg",
+    "probe": "node dist/server.js probe",
+    "tools": "node dist/server.js tools",
+    "dev": "tsc -p tsconfig.json --watch",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "commander": "^12.1.0",
+    "pg": "^8.13.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3"
+  }
+}

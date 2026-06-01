@@ -1,0 +1,42 @@
+{
+  "name": "@rxo/codeindex",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository vectorizer — chunks, embeds, and publishes the working tree to PostgreSQL/pgvector for consumption by the codemcp server.",
+  "bin": {
+    "codeindex": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
+
+    "start": "node dist/cli.js",
+
+    "plan": "node dist/cli.js plan",
+    "plan:file": "node dist/cli.js --backend file plan",
+    "plan:pg": "node dist/cli.js --backend pg plan",
+
+    "migrate": "node dist/cli.js migrate",
+    "migrate:file": "node dist/cli.js --backend file migrate",
+    "migrate:pg": "node dist/cli.js --backend pg migrate",
+    "migrate:status": "node dist/cli.js migrate --status",
+    "migrate:status:file": "node dist/cli.js --backend file migrate --status",
+    "migrate:status:pg": "node dist/cli.js --backend pg migrate --status",
+
+    "publish": "node dist/cli.js publish",
+    "publish:file": "node dist/cli.js --backend file publish",
+    "publish:pg": "node dist/cli.js --backend pg publish"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "ignore": "^5.3.2",
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.7.3"
+  }
+}

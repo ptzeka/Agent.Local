@@ -1,0 +1,27 @@
+{
+  "name": "@rxo/codemanagermcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Model Context Protocol server that orchestrates workflow verbs (start_feature, push_changes, accept_changes, abandon_changes) for AI-driven development.",
+  "bin": {
+    "codemanagermcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); if(fs.existsSync('src/appsettings.json')) fs.copyFileSync('src/appsettings.json','dist/appsettings.json')\"",
+    "start": "node dist/server.js",
+    "dev": "tsc -p tsconfig.json --watch",
+    "probe": "node dist/server.js probe",
+    "tools": "node dist/server.js tools",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "commander": "^12.1.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}

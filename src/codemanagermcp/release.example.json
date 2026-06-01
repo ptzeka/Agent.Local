@@ -1,0 +1,26 @@
+{
+  "_comment": [
+    "release.json — production overlay.",
+    "Copy to release.json next to appsettings.json and set production-specific values.",
+    "Keys here override the same keys in appsettings.json.",
+    "Only include fields that differ from dev — you do not need to repeat everything.",
+    "",
+    "In Azure Pipelines this file is typically injected at build/execution time",
+    "via a secure file, variable group, or pipeline task — not committed to source control.",
+    "Alternatively, inject AZURE_DEVOPS_TOKEN as a pipeline secret variable and",
+    "omit 'azureDevOps.apiKeyFile' entirely."
+  ],
+
+  "azureDevOps": {
+    "organization": "MyOrganisation",
+    "project":      "MyProject",
+    "repository":   "MyRepository"
+  },
+
+  "pipelines": {
+    "deployPipelineId": 10,
+    "deletePipelineId": 11,
+    "ciPipelineId":     12,
+    "ciTimeoutMinutes": 20
+  }
+}

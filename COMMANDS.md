@@ -3,3 +3,7 @@
 # ollama pull llama3.2:3b
 # npm run build
 # npm start
+
+# Unblock-File .\scripts\publish-codeindex.ps1
+
+# .\scripts\publish-codeindex.ps1 -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox

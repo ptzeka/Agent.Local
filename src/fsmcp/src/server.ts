@@ -134,7 +134,7 @@ async function main(): Promise<void> {
 
   const server = new Server(
     {
-      name: "agent-local-tools",
+      name: "fsmcp",
       version: "0.1.0",
     },
     {
@@ -206,6 +206,6 @@ function formatToolError(err: unknown): string {
 main().catch((err) => {
   // Surfaces startup failures to whoever launched us (the parent agent).
   // We deliberately write to stderr so it doesn't corrupt the MCP stdio channel.
-  process.stderr.write(`[agent-local-tools] fatal: ${(err as Error).stack ?? err}\n`);
+  process.stderr.write(`[fsmcp] fatal: ${(err as Error).stack ?? err}\n`);
   process.exit(1);
 });
