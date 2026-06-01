@@ -144,9 +144,12 @@ export class Orchestrator {
     // The planner sees the same user message but with the planning-specific
     // system prompt. It has no tools and no conversation history beyond this turn.
     // Project context (if any) leads so role-specific direction can override it.
+    // We also hand the planner the real tool catalogue (names + descriptions only)
+    // so it cannot invent tool names the executor will be unable to dispatch.
     const plannerMessages: ChatMessage[] = [
       ...this.buildContextMessages(),
       { role: "system", content: PLANNER_SYSTEM_PROMPT },
+      { role: "system", content: this.buildPlannerToolCatalogue() },
       { role: "user", content: userInput },
     ];
 
@@ -206,7 +209,7 @@ export class Orchestrator {
         signal,
       });
 
-      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(executor, response);
+      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(executor, response, emit);
 
       // Always log the assistant's textual content (post-cleaning).
       emit({
@@ -247,6 +250,23 @@ export class Orchestrator {
       data: { message: "executor hit iteration cap", iterations: maxIterations },
     });
     return { finalMessage: truncationNotice, iterations: maxIterations };
+  }
+
+  /**
+   * One-line-per-tool catalogue for the planner. Names + descriptions only —
+   * the planner does not invoke tools, so handing it full input schemas is
+   * wasted tokens. The goal is just to stop it inventing tool names.
+   */
+  private buildPlannerToolCatalogue(): string {
+    const tools = this.tools.listTools();
+    if (tools.length === 0) {
+      return "Available tools for the executor: (none currently registered).";
+    }
+    const lines = tools.map((tool) => `  - ${tool.name} — ${tool.description}`);
+    return [
+      "Tools the executor can call (use these exact names in the plan; do not invent others):",
+      ...lines,
+    ].join("\n");
   }
 
   /**
@@ -301,12 +321,40 @@ export class Orchestrator {
 
   private normaliseAssistantTurn(
     executor: LLMProvider,
-    response: ChatResponse
+    response: ChatResponse,
+    emit: OrchestratorListener
   ): { assistantMessage: ChatMessage; toolCalls: ToolCall[] } {
     if (executor.supportsNativeTools) {
-      // Native path: the provider already populated message.toolCalls.
-      const toolCalls = response.message.toolCalls ?? [];
-      return { assistantMessage: response.message, toolCalls };
+      const nativeCalls = response.message.toolCalls ?? [];
+      if (nativeCalls.length > 0) {
+        return { assistantMessage: response.message, toolCalls: nativeCalls };
+      }
+
+      // Fallback: native-tool models (e.g. qwen2.5-coder) sometimes emit the
+      // call as a fenced ```json block in prose instead of using the structured
+      // tool_calls field. Try to recover it before treating the turn as final.
+      const { toolCalls: recoveredCalls, cleanedContent } = extractPromptedToolCalls(response.message);
+      if (recoveredCalls.length > 0) {
+        emit({
+          type: "warning",
+          data: {
+            message:
+              "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
+            model: executor.modelId,
+            recoveredCount: recoveredCalls.length,
+          },
+        });
+        return {
+          assistantMessage: {
+            role: "assistant",
+            content: cleanedContent,
+            toolCalls: recoveredCalls,
+          },
+          toolCalls: recoveredCalls,
+        };
+      }
+
+      return { assistantMessage: response.message, toolCalls: nativeCalls };
     }
 
     // Prompted-JSON path: dig tool calls out of the assistant text and strip
