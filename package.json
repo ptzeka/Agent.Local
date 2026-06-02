@@ -9,7 +9,8 @@
     "src/agent",
     "src/codeindex",
     "src/codemcp",
-    "src/codemanagermcp"
+    "src/codemanagermcp",
+    "src/openclaw"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

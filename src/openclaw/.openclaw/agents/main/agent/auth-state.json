@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "lastGood": {
+    "ollama": "ollama:default"
+  },
+  "usageStats": {
+    "ollama:default": {
+      "lastUsed": 1780375002236,
+      "errorCount": 0,
+      "lastFailureAt": 1780374487214
+    }
+  }
+}
