@@ -9,17 +9,25 @@ the upstream `@openclaw/*` scope on npm (owned by `steipete`).
 
 ## Agent architecture
 
-This runner is configured as a **coordinator + sub-agent** system. One small
-primary model plans and dispatches; specialist sub-agents do the actual work
+This runner is configured as a **coordinator + executor + sub-agents** system.
+One small primary model plans and dispatches; a co-resident executor sub-agent
+gates every action (APPROVE / REJECT); specialist sub-agents do the actual work
 via openclaw's `sessions_spawn`. Each role is intentionally narrow so models
 can't drift outside their lane.
 
 ```
                   ┌──────────────────┐
                   │   COORDINATOR    │ qwen2.5:7b  (~5 GB resident)
-                  │  plan + dispatch │ tool-capable, no file writes
+                  │  plan + decide   │ owns "what's next"
                   └────────┬─────────┘
-                           │ sessions_spawn
+                           │ proposes action
+                           ▼
+                  ┌──────────────────┐
+                  │   EXECUTOR       │ qwen2.5:7b  (same model, separate role)
+                  │ APPROVE / REJECT │ owns "should we do this?"
+                  └────────┬─────────┘
+                           │ if APPROVE
+                           ▼
        ┌──────────────┬────┴────┬────────────────────┐
        ▼              ▼         ▼                    ▼
   ┌─────────┐  ┌────────────┐ ┌──────────────┐
@@ -34,27 +42,48 @@ can't drift outside their lane.
 
 ### Roles
 
-| Role | Model | VRAM | Tools | Output |
-|---|---|---|---|---|
-| **Coordinator** | `qwen2.5:7b` | ~5 GB | `sessions_spawn`, no file writes | plan + delegate |
-| **Coder** | `qwen2.5-coder:14b` | ~9 GB | full fsmcp + codemcp | code changes + diff |
-| **Validator** | `deepseek-r1:14b` | ~9 GB | none (no tool calls) | verdict + reasoning |
-| **Toolchain** | `llama3.2:3b` | ~2 GB | read-only introspection | structured lists |
+| Role | Model | VRAM | Tools | Decides | Output |
+|---|---|---|---|---|---|
+| **Coordinator** | `qwen2.5:7b` | ~5 GB | `sessions_spawn`, file reads | what to do next | plan + delegations |
+| **Executor** | `qwen2.5:7b` | (same) | none beyond reading the ask | yes/no on the *current* ask | one-line verdict |
+| **Coder** | `qwen2.5-coder:14b` | ~9 GB | full fsmcp + codemcp | how to implement the chunk | code changes + diff |
+| **Validator** | `deepseek-r1:14b` | ~9 GB | none (no tool calls) | did the work succeed? | PASS / FAIL / INCOMPLETE |
+| **Toolchain** | `llama3.2:3b` | ~2 GB | read-only introspection | n/a | structured lists |
+
+### Coordinator vs Executor vs Validator
+
+These three are not the same job:
+
+- **Coordinator** does **all** planning — what to do next, how to recover from
+  rejections, when to stop and ask the user.
+- **Executor** is a pure yes/no oracle on the **current** proposed action.
+  It does not plan, does not propose alternatives, does not retry on its own.
+- **Validator** judges work **after** it's done (PASS / FAIL on completion).
+  Executor judges **before** (APPROVE / REJECT to even attempt it).
+
+The coordinator/executor split exists for two reasons. **Safety:** every
+non-trivial action gets a second-opinion check from a separate session before
+it runs. **Reliability:** splitting "plan" from "approve-and-execute" lets the
+7B coordinator stay in text/planning mode (its strength) while a separate
+executor session handles the structured tool-call discipline.
 
 ### VRAM math (16 GB total)
 
-Coordinator (~5 GB) + Toolchain (~2 GB) ≈ **7 GB resident**. That leaves **~9 GB**
-for one 14 B specialist sub-agent at a time. Coder and validator never run
-concurrently — the coordinator schedules them sequentially (write, then review).
+Coordinator + Executor share the same model (qwen2.5:7b, ~5 GB resident — one
+weights file, two sessions). Toolchain (~2 GB) co-resides. That's **~7 GB
+resident**, leaving **~9 GB** for one 14 B specialist sub-agent at a time.
+Coder and validator never run concurrently — the coordinator schedules them
+sequentially (write, then review).
 
 ### Why each model
 
-- **`qwen2.5:7b` for coordinator** — small enough to stay warm, strong
-  Ollama tool-calling, good planning. Ollama's bare `qwen2.5:7b` tag *is*
-  the instruct variant; there is no separate `qwen2.5:7b-instruct` short tag.
-  Notably *not* the `-coder` variant: the coder fine-tune emits markdown JSON
-  instead of structured tool calls, which is fine when writing code, bad when
-  orchestrating it.
+- **`qwen2.5:7b` for coordinator and executor** — small enough to stay warm,
+  strong Ollama tool-calling, good planning. Ollama's bare `qwen2.5:7b` tag
+  *is* the instruct variant; there is no separate `qwen2.5:7b-instruct` short
+  tag. Notably *not* the `-coder` variant: the coder fine-tune emits markdown
+  JSON instead of structured tool calls, which is fine when writing code, bad
+  when orchestrating it. The executor reuses the same weights as the
+  coordinator — one model file, two separate sessions, no extra VRAM.
 - **`qwen2.5-coder:14b` for coder** — what it was built for. Excels at editing
   existing code, refactoring, and following conventions in a repo.
 - **`deepseek-r1:14b` for validator** — reasoning model. Its `<think>` step is
@@ -69,14 +98,18 @@ concurrently — the coordinator schedules them sequentially (write, then review
 ### Loop
 
 1. Coordinator presents a plan → user approves.
-2. Coordinator spawns **Coder** with a scoped chunk. Coder edits files via MCP.
-3. Coordinator gathers evidence (diff + touched files + their callers).
-4. Coordinator spawns **Validator** with that evidence + the original task.
-5. Validator emits a verdict (PASS / FAIL / INCOMPLETE + reasoning).
-6. **On disagreement or failure: coordinator STOPS and surfaces both outputs
-   to the user.** No auto-retry. No silent re-spawn.
-7. Any "what's available?" question is delegated to **Toolchain** instead of
-   the coordinator burning context on introspection.
+2. For each chunk:
+   1. Coordinator consults **Executor**: "spawn Coder to do X" → `APPROVE` / `REJECT`.
+   2. If approved → Coordinator spawns **Coder**. Coder edits files via MCP.
+   3. Coordinator gathers evidence (diff + touched files + their callers).
+   4. Coordinator consults **Executor**: "spawn Validator with this evidence" → verdict.
+   5. If approved → Coordinator spawns **Validator** with the evidence + original task.
+   6. Validator emits a verdict (`PASS` / `FAIL` / `INCOMPLETE` + reasoning).
+3. **On disagreement, executor REJECT, or validator FAIL/INCOMPLETE: coordinator
+   STOPS and surfaces all sub-agent outputs to the user.** No auto-retry. No
+   silent re-spawn.
+4. Any "what's available?" question is delegated to **Toolchain** instead of
+   the coordinator burning context on introspection (after an Executor consult).
 
 The coordinator's full operating instructions live in
 [`../context/agentcontext.md`](../context/agentcontext.md) and are synced into

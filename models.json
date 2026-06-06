@@ -2,10 +2,12 @@
   "$schema": "./models.schema.json",
 
   "//": [
-    "Each entry under `models` is an addressable model that the agent can talk to.",
-    "Each entry under `roles` maps a logical role (planner, coder, summarizer) onto",
-    "one of those models. You can change a model assignment at runtime in the REPL",
-    "with `/model <role>=<model-id>`."
+    "Each entry under `models` is an addressable model the agent can talk to.",
+    "Each entry under `roles` maps a logical role onto one of those models.",
+    "Roles: `orchestrator` (coordinates, read-only tools + dispatch_executor) and",
+    "`executor` (the only role allowed to mutate state). Legacy names",
+    "`coder` and `planner` are still accepted and alias to `orchestrator`.",
+    "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`."
   ],
 
   "models": {
@@ -13,14 +15,14 @@
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
-      "description": "Strong coding model with native Ollama tool calling. Default executor."
+      "description": "Strong coding model with native Ollama tool calling. Default orchestrator and executor."
     },
     "deepseek-r1": {
       "provider": "ollama",
       "model": "deepseek-r1:14b",
       "supportsTools": false,
       "reasoning": true,
-      "description": "Reasoning-focused model. Used for planning phases; <think> blocks are stripped before handoff."
+      "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff."
     },
     "llama-fast": {
       "provider": "ollama",
@@ -31,15 +33,16 @@
   },
 
   "roles": {
-    "planner": "deepseek-r1",
-    "coder": "qwen-coder",
+    "orchestrator": "qwen-coder",
+    "executor": "qwen-coder",
     "summarizer": "llama-fast"
   },
 
   "orchestration": {
-    "planFirst": true,
-    "maxExecutorIterations": 12,
-    "planTemperature": 0.2,
+    "maxOrchestratorIterations": 16,
+    "maxExecutorDispatchesPerTurn": 8,
+    "maxExecutorIterationsPerAsk": 6,
+    "orchestratorTemperature": 0.2,
     "executorTemperature": 0.1
   }
 }

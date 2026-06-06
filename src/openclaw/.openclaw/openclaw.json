@@ -29,7 +29,12 @@
     "dmScope": "per-channel-peer"
   },
   "tools": {
-    "profile": "coding"
+    "profile": "coding",
+    "alsoAllow": [
+      "sessions_spawn",
+      "sessions_yield",
+      "subagents"
+    ]
   },
   "plugins": {
     "entries": {

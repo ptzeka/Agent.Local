@@ -91,6 +91,24 @@ export class McpToolClient {
   }
 
   /**
+   * Read-only context tools the ORCHESTRATOR is allowed to call directly.
+   * The split is by tool-name suffix so it works regardless of which MCP
+   * server provides the tool. Mutating tools are off-limits — the only
+   * way the orchestrator can mutate is through `dispatch_executor`.
+   */
+  public listToolsForOrchestrator(): ToolDescriptor[] {
+    return this.listTools().filter((tool) => isOrchestratorTool(tool.name));
+  }
+
+  /**
+   * Full tool surface the EXECUTOR is allowed to call: mutators plus the
+   * read tools it needs for the validation step.
+   */
+  public listToolsForExecutor(): ToolDescriptor[] {
+    return this.listTools().filter((tool) => isExecutorTool(tool.name));
+  }
+
+  /**
    * Dispatch a tool call. `name` is the namespaced form returned by `listTools`.
    * The result is shaped for re-injection as a `role: "tool"` message.
    */
@@ -187,6 +205,47 @@ export class McpToolClient {
 
     return { serverName, client, tools };
   }
+}
+
+/**
+ * Tool-name classifier shared by both role-scoped listings.
+ *
+ * The split is intentionally suffix-based so it survives renaming of the
+ * MCP server prefix (`fsmcp__`, `codemcp__`, etc.). If we add a new
+ * mutator (e.g. `powershell__exec`), add its tail name here.
+ */
+const READ_ONLY_TAILS = new Set([
+  "read_file",
+  "list_dir",
+  "glob",
+  "grep",
+  "find_symbol",
+  "get_file_context",
+  "list_commits",
+  "search_code",
+]);
+
+const MUTATING_TAILS = new Set([
+  "write_file",
+  "edit_file",
+  "exec",
+  "shell",
+  "powershell",
+  "run_command",
+]);
+
+function tail(toolName: string): string {
+  const idx = toolName.indexOf("__");
+  return idx === -1 ? toolName : toolName.slice(idx + 2);
+}
+
+function isOrchestratorTool(toolName: string): boolean {
+  return READ_ONLY_TAILS.has(tail(toolName));
+}
+
+function isExecutorTool(toolName: string): boolean {
+  const t = tail(toolName);
+  return READ_ONLY_TAILS.has(t) || MUTATING_TAILS.has(t);
 }
 
 function extractTextContent(content: unknown): string {

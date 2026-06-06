@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(npm search *)",
-      "Bash(npx openclaw *)"
+      "Bash(npx openclaw *)",
+      "Bash(node src/openclaw/scripts/sync-context.mjs)",
+      "Bash(npx tsc *)",
+      "Bash(echo \"exit=$?\")"
     ]
   }
 }

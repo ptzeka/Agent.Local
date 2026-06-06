@@ -28,9 +28,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   const { workspaceRoot, registry, tools, projectContext = null } = options;
   const orchestrator = new Orchestrator(registry, tools, projectContext);
 
-  let usePlannerForNextTurn = registry.orchestration.planFirst;
-
-  renderBanner(workspaceRoot, usePlannerForNextTurn, projectContext?.sourcePath ?? null);
+  renderBanner(workspaceRoot, projectContext?.sourcePath ?? null);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -38,9 +36,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   });
 
   while (true) {
-    const promptLabel = usePlannerForNextTurn
-      ? chalk.bold.cyan("you (plan→exec)> ")
-      : chalk.bold.magenta("you (exec)> ");
+    const promptLabel = chalk.bold.cyan("you> ");
 
     let input: string;
     try {
@@ -58,20 +54,13 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         orchestrator,
         registry,
         tools,
-        getThinkSetting: () => usePlannerForNextTurn,
-        setThinkSetting: (next) => {
-          usePlannerForNextTurn = next;
-        },
       });
       if (exitRequested) break;
       continue;
     }
 
     try {
-      await orchestrator.run(input, {
-        usePlanner: usePlannerForNextTurn,
-        onEvent: renderEvent,
-      });
+      await orchestrator.run(input, { onEvent: renderEvent });
     } catch (err) {
       process.stdout.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
     }
@@ -88,8 +77,6 @@ interface SlashContext {
   orchestrator: Orchestrator;
   registry: ModelRegistry;
   tools: McpToolClient;
-  getThinkSetting: () => boolean;
-  setThinkSetting: (next: boolean) => void;
 }
 
 /**
@@ -114,7 +101,13 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "think":
-      handleThinkCommand(args, ctx);
+      // The planner phase no longer exists. Accept the command so old muscle
+      // memory doesn't error out, but report the new architecture.
+      process.stdout.write(
+        chalk.gray(
+          "(/think is gone — the orchestrator coordinates every turn and dispatches the executor as needed)\n"
+        )
+      );
       return false;
 
     case "models":
@@ -136,20 +129,6 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     default:
       process.stdout.write(chalk.yellow(`unknown command: /${head} (try /help)\n`));
       return false;
-  }
-}
-
-function handleThinkCommand(args: string, ctx: SlashContext): void {
-  const value = args.trim().toLowerCase();
-  if (value === "on") {
-    ctx.setThinkSetting(true);
-    process.stdout.write(chalk.gray("(planner phase: on)\n"));
-  } else if (value === "off") {
-    ctx.setThinkSetting(false);
-    process.stdout.write(chalk.gray("(planner phase: off)\n"));
-  } else {
-    const current = ctx.getThinkSetting() ? "on" : "off";
-    process.stdout.write(chalk.gray(`planner phase is currently ${current}. usage: /think on|off\n`));
   }
 }
 

@@ -1,3 +1,4 @@
+import { Executor, type ExecutorAsk, type ExecutorEvent, type ExecutorFeedback } from "./executor.js";
 import type { McpToolClient, ToolExecutionResult } from "./mcp-client.js";
 import type { ModelRegistry } from "./model-registry.js";
 import type {
@@ -7,44 +8,40 @@ import type {
   ToolCall,
   ToolDescriptor,
 } from "./providers/provider.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT } from "./system-prompt.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
 } from "./tool-adapter.js";
-import {
-  EXECUTOR_SYSTEM_PROMPT,
-  PLANNER_SYSTEM_PROMPT,
-  SOLO_SYSTEM_PROMPT,
-} from "./system-prompt.js";
 import type { ProjectContext } from "./context-loader.js";
 
 /**
- * Multi-agent orchestrator.
+ * Orchestrator.
  *
- * The orchestrator is the synchronisation point between the planner and
- * the executor. For each user turn it:
+ * Coordinates execution; never executes. The orchestrator LLM is given
+ * the read-only context tools (read_file, list_dir, glob, grep, codemcp.*)
+ * plus a single synthetic tool — `dispatch_executor` — which is the only
+ * way for it to cause a mutation.
  *
- *   1. (Optionally) runs the PLANNER, a model with no tools whose job is
- *      to produce an ordered plan.
- *   2. Injects that plan as an extra system message visible to the EXECUTOR.
- *   3. Runs the EXECUTOR loop until it stops emitting tool calls or hits
- *      the iteration cap. Each tool call dispatches to the MCP client and
- *      its result is appended as a `role: "tool"` message.
- *   4. Returns the final assistant message to the caller (the REPL).
- *
- * The orchestrator never touches tool internals — it goes through McpToolClient.
- * The orchestrator never imports a concrete provider — it goes through ModelRegistry.
+ * When the LLM calls `dispatch_executor`, the orchestrator catches the
+ * call before it touches MCP, hands the ask to the Executor sub-agent,
+ * and feeds the structured feedback (ACK + RESULT + deterministic
+ * verdict) back to the LLM as a `role: "tool"` message. The LLM then
+ * recalculates: next dispatch, or final answer.
  */
+
+const DISPATCH_TOOL_NAME = "dispatch_executor";
 
 export interface OrchestratorEvent {
   type:
-    | "planner-start"
-    | "planner-message"
-    | "executor-start"
-    | "executor-iteration"
-    | "executor-message"
+    | "orchestrator-start"
+    | "orchestrator-iteration"
+    | "orchestrator-message"
     | "tool-call"
     | "tool-result"
+    | "dispatch-start"
+    | "dispatch-feedback"
+    | "executor-event"
     | "final-message"
     | "warning";
   data: Record<string, unknown>;
@@ -53,20 +50,14 @@ export interface OrchestratorEvent {
 export type OrchestratorListener = (event: OrchestratorEvent) => void;
 
 export interface RunOptions {
-  /** When false, skip the planner phase even if config has planFirst: true. */
-  usePlanner?: boolean;
-
-  /** Cancel an in-flight run. */
   signal?: AbortSignal;
-
-  /** Subscribe to streaming progress events (planner output, tool calls, etc.). */
   onEvent?: OrchestratorListener;
 }
 
 export interface RunResult {
   finalMessage: ChatMessage;
-  plan?: string;
   iterations: number;
+  dispatches: number;
 }
 
 export class Orchestrator {
@@ -78,142 +69,70 @@ export class Orchestrator {
     private readonly projectContext: ProjectContext | null = null
   ) {}
 
-  /**
-   * Reset the conversation history. Called from `/reset` in the REPL.
-   */
   public reset(): void {
     this.conversation.length = 0;
   }
 
-  /**
-   * Currently-known conversation, useful for the REPL `/history` command.
-   */
   public history(): readonly ChatMessage[] {
     return this.conversation;
   }
 
   /**
-   * Run one user turn end-to-end. Returns when the executor produces a
-   * final, tool-free response (or the iteration cap is reached).
+   * Run one user turn end-to-end. The orchestrator loop:
+   *   - asks its LLM for the next move
+   *   - dispatches any read-only tool calls directly via MCP
+   *   - catches `dispatch_executor` calls and routes them to Executor.run
+   *   - feeds structured feedback back to the LLM
+   *   - returns when the LLM produces a final tool-free message or caps out
    */
   public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
-    const usePlanner = options.usePlanner ?? this.registry.orchestration.planFirst;
 
-    // Record the user's message in the shared history immediately.
     this.conversation.push({ role: "user", content: userInput });
 
-    let plan: string | undefined;
+    const orchestratorProvider = this.registry.getProviderForRole("orchestrator");
+    const executorProvider = this.registry.getProviderForRole("executor");
 
-    if (usePlanner) {
-      plan = await this.runPlanner(userInput, emit, options.signal);
-    }
+    const orchestratorTools = this.tools.listToolsForOrchestrator();
+    const executorTools = this.tools.listToolsForExecutor();
 
-    const result = await this.runExecutor(plan, emit, options.signal);
+    const dispatchDescriptor = buildDispatchToolDescriptor(executorTools);
+    const visibleTools: ToolDescriptor[] = [...orchestratorTools, dispatchDescriptor];
 
-    emit({
-      type: "final-message",
-      data: { content: result.finalMessage.content, iterations: result.iterations },
-    });
-
-    return { ...result, plan };
-  }
-
-  // --------------------------------------------------------------------------
-  // Planner phase
-  // --------------------------------------------------------------------------
-
-  private async runPlanner(
-    userInput: string,
-    emit: OrchestratorListener,
-    signal: AbortSignal | undefined
-  ): Promise<string | undefined> {
-    let planner: LLMProvider;
-    try {
-      planner = this.registry.getProviderForRole("planner");
-    } catch {
-      // No planner configured. Skip silently and let the executor handle it solo.
-      return undefined;
-    }
+    const executor = new Executor(executorProvider, this.tools, executorTools);
 
     emit({
-      type: "planner-start",
-      data: { model: planner.modelId, provider: planner.providerName },
-    });
-
-    // The planner sees the same user message but with the planning-specific
-    // system prompt. It has no tools and no conversation history beyond this turn.
-    // Project context (if any) leads so role-specific direction can override it.
-    // We also hand the planner the real tool catalogue (names + descriptions only)
-    // so it cannot invent tool names the executor will be unable to dispatch.
-    const plannerMessages: ChatMessage[] = [
-      ...this.buildContextMessages(),
-      { role: "system", content: PLANNER_SYSTEM_PROMPT },
-      { role: "system", content: this.buildPlannerToolCatalogue() },
-      { role: "user", content: userInput },
-    ];
-
-    const response = await planner.chat(plannerMessages, {
-      tools: [],
-      temperature: this.registry.orchestration.planTemperature,
-      signal,
-    });
-
-    const plan = response.message.content.trim();
-    if (plan.length === 0) {
-      emit({ type: "warning", data: { message: "Planner returned empty content." } });
-      return undefined;
-    }
-
-    emit({ type: "planner-message", data: { content: plan, usage: response.usage } });
-    return plan;
-  }
-
-  // --------------------------------------------------------------------------
-  // Executor phase
-  // --------------------------------------------------------------------------
-
-  private async runExecutor(
-    plan: string | undefined,
-    emit: OrchestratorListener,
-    signal: AbortSignal | undefined
-  ): Promise<{ finalMessage: ChatMessage; iterations: number }> {
-    const executor = this.registry.getProviderForRole("coder");
-    const tools = this.tools.listTools();
-
-    emit({
-      type: "executor-start",
+      type: "orchestrator-start",
       data: {
-        model: executor.modelId,
-        provider: executor.providerName,
-        supportsNativeTools: executor.supportsNativeTools,
-        toolCount: tools.length,
+        orchestratorModel: orchestratorProvider.modelId,
+        executorModel: executorProvider.modelId,
+        readToolCount: orchestratorTools.length,
+        executorToolCount: executorTools.length,
       },
     });
 
-    const systemMessages = this.buildExecutorSystemMessages(executor, tools, plan);
-
-    // Working message list: persistent system messages + the conversation so far.
-    // We splice the system messages onto the FRONT for every executor call so
-    // the conversation history we keep in `this.conversation` stays user/assistant only.
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, visibleTools);
     const workingMessages: ChatMessage[] = [...systemMessages, ...this.conversation];
 
-    const maxIterations = this.registry.orchestration.maxExecutorIterations;
+    const maxIterations = this.registry.orchestration.maxOrchestratorIterations;
+    const maxDispatches = this.registry.orchestration.maxExecutorDispatchesPerTurn;
+    const maxExecutorIterations = this.registry.orchestration.maxExecutorIterationsPerAsk;
+
+    let dispatches = 0;
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-      emit({ type: "executor-iteration", data: { iteration, max: maxIterations } });
+      emit({ type: "orchestrator-iteration", data: { iteration, max: maxIterations } });
 
-      const response = await executor.chat(workingMessages, {
-        tools: executor.supportsNativeTools ? tools : [],
-        temperature: this.registry.orchestration.executorTemperature,
-        signal,
+      const response = await orchestratorProvider.chat(workingMessages, {
+        tools: orchestratorProvider.supportsNativeTools ? visibleTools : [],
+        temperature: this.registry.orchestration.orchestratorTemperature,
+        signal: options.signal,
       });
 
-      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(executor, response, emit);
+      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(orchestratorProvider, response, emit);
 
-      // Always log the assistant's textual content (post-cleaning).
       emit({
-        type: "executor-message",
+        type: "orchestrator-message",
         data: {
           iteration,
           content: assistantMessage.content,
@@ -222,117 +141,164 @@ export class Orchestrator {
         },
       });
 
-      // Persist assistant turn to conversation history and the local working list.
       this.conversation.push(assistantMessage);
       workingMessages.push(assistantMessage);
 
       if (toolCalls.length === 0) {
-        // No tool calls = final answer.
-        return { finalMessage: assistantMessage, iterations: iteration };
+        return { finalMessage: assistantMessage, iterations: iteration, dispatches };
       }
 
-      // Dispatch every requested tool call and feed the results back in.
-      const toolMessages = await this.dispatchToolCalls(toolCalls, emit);
+      const toolMessages: ChatMessage[] = [];
+
+      for (const call of toolCalls) {
+        if (call.name === DISPATCH_TOOL_NAME) {
+          if (dispatches >= maxDispatches) {
+            toolMessages.push({
+              role: "tool",
+              content: `[dispatch-blocked] dispatch cap of ${maxDispatches} per turn reached`,
+              toolCallId: call.id,
+              toolName: DISPATCH_TOOL_NAME,
+            });
+            emit({
+              type: "warning",
+              data: { message: "dispatch cap reached", maxDispatches },
+            });
+            continue;
+          }
+          dispatches += 1;
+
+          const ask = parseDispatchAsk(call.arguments, executorTools);
+          if (!ask.ok) {
+            toolMessages.push({
+              role: "tool",
+              content: `[dispatch-error] ${ask.reason}`,
+              toolCallId: call.id,
+              toolName: DISPATCH_TOOL_NAME,
+            });
+            emit({ type: "warning", data: { message: ask.reason } });
+            continue;
+          }
+
+          emit({
+            type: "dispatch-start",
+            data: { tool: ask.value.tool, intent: ask.value.intent, args: ask.value.args },
+          });
+
+          const feedback = await executor.run(ask.value, {
+            signal: options.signal,
+            maxIterations: maxExecutorIterations,
+            temperature: this.registry.orchestration.executorTemperature,
+            onEvent: (event: ExecutorEvent) =>
+              emit({ type: "executor-event", data: { ...event.data, kind: event.type } }),
+          });
+
+          emit({
+            type: "dispatch-feedback",
+            data: {
+              ok: feedback.ok,
+              ack: feedback.ack,
+              evidence: feedback.evidence,
+              deterministicVerdict: feedback.deterministicVerdict,
+              iterations: feedback.iterations,
+            },
+          });
+
+          toolMessages.push({
+            role: "tool",
+            content: formatFeedbackForOrchestrator(feedback),
+            toolCallId: call.id,
+            toolName: DISPATCH_TOOL_NAME,
+          });
+          continue;
+        }
+
+        // Read-only MCP tool. Dispatch directly.
+        emit({
+          type: "tool-call",
+          data: { id: call.id, name: call.name, arguments: call.arguments },
+        });
+
+        const execution: ToolExecutionResult = await this.tools.callTool(call.name, call.arguments);
+
+        emit({
+          type: "tool-result",
+          data: {
+            id: call.id,
+            name: call.name,
+            isError: execution.isError,
+            contentPreview: execution.content.slice(0, 400),
+          },
+        });
+
+        toolMessages.push({
+          role: "tool",
+          content: execution.isError ? `[tool-error] ${execution.content}` : execution.content,
+          toolCallId: call.id,
+          toolName: call.name,
+        });
+      }
+
       this.conversation.push(...toolMessages);
       workingMessages.push(...toolMessages);
     }
 
-    // Hit the iteration cap. Surface a clean message rather than looping forever.
     const truncationNotice: ChatMessage = {
       role: "assistant",
       content:
-        `(Reached the executor iteration cap of ${maxIterations} without a final answer. ` +
-        "Try a more specific request, or raise AGENT_MAX_ITERATIONS in your .env.)",
+        `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
+        "Try a narrower request or raise maxOrchestratorIterations in models.json.",
     };
     this.conversation.push(truncationNotice);
     emit({
       type: "warning",
-      data: { message: "executor hit iteration cap", iterations: maxIterations },
+      data: { message: "orchestrator hit iteration cap", iterations: maxIterations },
     });
-    return { finalMessage: truncationNotice, iterations: maxIterations };
+    return { finalMessage: truncationNotice, iterations: maxIterations, dispatches };
   }
 
-  /**
-   * One-line-per-tool catalogue for the planner. Names + descriptions only —
-   * the planner does not invoke tools, so handing it full input schemas is
-   * wasted tokens. The goal is just to stop it inventing tool names.
-   */
-  private buildPlannerToolCatalogue(): string {
-    const tools = this.tools.listTools();
-    if (tools.length === 0) {
-      return "Available tools for the executor: (none currently registered).";
-    }
-    const lines = tools.map((tool) => `  - ${tool.name} — ${tool.description}`);
-    return [
-      "Tools the executor can call (use these exact names in the plan; do not invent others):",
-      ...lines,
-    ].join("\n");
-  }
+  // --------------------------------------------------------------------------
 
-  /**
-   * Wrap the loaded project-direction file (if any) as a leading system message.
-   * Returned as an array so callers can splat it without conditionals.
-   */
-  private buildContextMessages(): ChatMessage[] {
-    if (!this.projectContext) return [];
-    return [
-      {
+  private buildSystemMessages(
+    orchestrator: LLMProvider,
+    visibleTools: ToolDescriptor[]
+  ): ChatMessage[] {
+    const messages: ChatMessage[] = [];
+
+    if (this.projectContext) {
+      messages.push({
         role: "system",
         content:
           `Project context (from ${this.projectContext.sourcePath}). ` +
           `Treat this as standing direction from the user; follow it unless ` +
           `a specific request overrides it.\n\n` +
           this.projectContext.content,
-      },
-    ];
-  }
+      });
+    }
 
-  private buildExecutorSystemMessages(
-    executor: LLMProvider,
-    tools: ToolDescriptor[],
-    plan: string | undefined
-  ): ChatMessage[] {
-    // Project context leads so the role-specific prompt and plan can refine it.
-    const messages: ChatMessage[] = [...this.buildContextMessages()];
-
-    // Base prompt: executor flavour if we have a plan, solo flavour if not.
-    const basePrompt = plan ? EXECUTOR_SYSTEM_PROMPT : SOLO_SYSTEM_PROMPT;
-
-    // For models without native tool calling, append the prompted-JSON instructions
-    // (and tool catalogue) directly to the system prompt so the model knows how to ask.
-    const promptedInstructions = executor.supportsNativeTools
+    const basePrompt = ORCHESTRATOR_SYSTEM_PROMPT;
+    const promptedInstructions = orchestrator.supportsNativeTools
       ? ""
-      : buildPromptedToolInstructions(tools);
+      : buildPromptedToolInstructions(visibleTools);
 
     messages.push({
       role: "system",
       content: basePrompt + promptedInstructions,
     });
 
-    if (plan) {
-      messages.push({
-        role: "system",
-        content: `Plan from planner:\n\n${plan}`,
-      });
-    }
-
     return messages;
   }
 
   private normaliseAssistantTurn(
-    executor: LLMProvider,
+    orchestrator: LLMProvider,
     response: ChatResponse,
     emit: OrchestratorListener
   ): { assistantMessage: ChatMessage; toolCalls: ToolCall[] } {
-    if (executor.supportsNativeTools) {
+    if (orchestrator.supportsNativeTools) {
       const nativeCalls = response.message.toolCalls ?? [];
       if (nativeCalls.length > 0) {
         return { assistantMessage: response.message, toolCalls: nativeCalls };
       }
 
-      // Fallback: native-tool models (e.g. qwen2.5-coder) sometimes emit the
-      // call as a fenced ```json block in prose instead of using the structured
-      // tool_calls field. Try to recover it before treating the turn as final.
       const { toolCalls: recoveredCalls, cleanedContent } = extractPromptedToolCalls(response.message);
       if (recoveredCalls.length > 0) {
         emit({
@@ -340,7 +306,7 @@ export class Orchestrator {
           data: {
             message:
               "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
-            model: executor.modelId,
+            model: orchestrator.modelId,
             recoveredCount: recoveredCalls.length,
           },
         });
@@ -353,59 +319,113 @@ export class Orchestrator {
           toolCalls: recoveredCalls,
         };
       }
-
       return { assistantMessage: response.message, toolCalls: nativeCalls };
     }
 
-    // Prompted-JSON path: dig tool calls out of the assistant text and strip
-    // the JSON block from the visible content.
     const { toolCalls, cleanedContent } = extractPromptedToolCalls(response.message);
-    const assistantMessage: ChatMessage = {
-      role: "assistant",
-      content: cleanedContent,
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+    return {
+      assistantMessage: {
+        role: "assistant",
+        content: cleanedContent,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      },
+      toolCalls,
     };
-    return { assistantMessage, toolCalls };
   }
+}
 
-  private async dispatchToolCalls(
-    toolCalls: ToolCall[],
-    emit: OrchestratorListener
-  ): Promise<ChatMessage[]> {
-    const results: ChatMessage[] = [];
+// ---------------------------------------------------------------------------
+// dispatch_executor — synthetic tool the orchestrator's LLM sees but that is
+// intercepted by the orchestrator itself before ever reaching MCP.
+// ---------------------------------------------------------------------------
 
-    for (const call of toolCalls) {
-      emit({
-        type: "tool-call",
-        data: { id: call.id, name: call.name, arguments: call.arguments },
-      });
+function buildDispatchToolDescriptor(executorTools: ToolDescriptor[]): ToolDescriptor {
+  const executorToolNames = executorTools.map((t) => t.name).sort();
+  const description = [
+    "Spawn the EXECUTOR sub-agent to perform exactly one mutation.",
+    "This is the ONLY way the orchestrator can change state — write_file,",
+    "edit_file, and shell tools are NOT directly callable.",
+    "",
+    `Allowed values for "tool" (executor-side tool names):`,
+    ...executorToolNames.map((n) => `  - ${n}`),
+    "",
+    "The executor will ACK the ask, run the tool, independently re-read or",
+    "check the result, and return a structured feedback message that includes",
+    "both its own RESULT line and a deterministic verdict computed in code.",
+  ].join("\n");
 
-      const execution: ToolExecutionResult = await this.tools.callTool(call.name, call.arguments);
-
-      emit({
-        type: "tool-result",
-        data: {
-          id: call.id,
-          name: call.name,
-          isError: execution.isError,
-          contentPreview: execution.content.slice(0, 400),
+  return {
+    name: DISPATCH_TOOL_NAME,
+    description,
+    inputSchema: {
+      type: "object",
+      required: ["tool", "args", "intent"],
+      properties: {
+        tool: {
+          type: "string",
+          description: "Executor-side tool name (must be one of the names listed above).",
+          enum: executorToolNames,
         },
-      });
+        args: {
+          type: "object",
+          description: "Argument object passed verbatim to the executor's tool call.",
+        },
+        intent: {
+          type: "string",
+          description: "One-line plain-English description of what this dispatch accomplishes.",
+        },
+      },
+    },
+  };
+}
 
-      // Wrap the result text with an error tag if applicable so the model
-      // is unambiguous about whether the tool succeeded.
-      const wrappedContent = execution.isError
-        ? `[tool-error] ${execution.content}`
-        : execution.content;
+function parseDispatchAsk(
+  rawArgs: Record<string, unknown>,
+  executorTools: ToolDescriptor[]
+): { ok: true; value: ExecutorAsk } | { ok: false; reason: string } {
+  const tool = rawArgs.tool;
+  const args = rawArgs.args;
+  const intent = rawArgs.intent;
 
-      results.push({
-        role: "tool",
-        content: wrappedContent,
-        toolCallId: call.id,
-        toolName: call.name,
-      });
-    }
-
-    return results;
+  if (typeof tool !== "string" || tool.length === 0) {
+    return { ok: false, reason: "dispatch_executor.tool must be a non-empty string" };
   }
+  if (typeof intent !== "string" || intent.length === 0) {
+    return { ok: false, reason: "dispatch_executor.intent must be a non-empty string" };
+  }
+  if (args === null || typeof args !== "object" || Array.isArray(args)) {
+    return { ok: false, reason: "dispatch_executor.args must be an object" };
+  }
+
+  const allowed = new Set(executorTools.map((t) => t.name));
+  if (!allowed.has(tool)) {
+    return {
+      ok: false,
+      reason: `dispatch_executor.tool "${tool}" is not in the executor's allowed tool set`,
+    };
+  }
+
+  return {
+    ok: true,
+    value: {
+      tool,
+      args: args as Record<string, unknown>,
+      intent,
+    },
+  };
+}
+
+function formatFeedbackForOrchestrator(feedback: ExecutorFeedback): string {
+  const lines: string[] = [];
+  lines.push(`EXECUTOR: ACK ${feedback.ack ?? "(missing — protocol violation)"}`);
+  if (feedback.llmReport) {
+    lines.push(feedback.llmReport.trim());
+  } else {
+    lines.push("EXECUTOR: RESULT (no RESULT line emitted by executor)");
+  }
+  lines.push(
+    `EXECUTOR: DETERMINISTIC ${feedback.deterministicVerdict.toUpperCase()} — ${feedback.evidence}`
+  );
+  lines.push(`EXECUTOR: FINAL ${feedback.ok ? "OK" : "FAIL"}`);
+  return lines.join("\n");
 }
