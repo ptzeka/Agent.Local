@@ -148,34 +148,10 @@ export class Executor {
         }
       }
 
-      // If the assistant emitted RESULT, we treat this as the final report.
-      const parsedReport = parseResultLine(assistantMessage.content);
-      if (parsedReport) {
-        llmReport = assistantMessage.content;
-        emit({
-          type: "executor-report",
-          data: { verdict: parsedReport.verdict, message: parsedReport.message },
-        });
-        break;
-      }
-
-      // Otherwise dispatch any tool calls and append the results.
-      if (toolCalls.length === 0) {
-        // No tool calls, no RESULT — protocol drift. Inject a steering message
-        // and let the model try again on the next iteration.
-        workingMessages.push({
-          role: "user",
-          content:
-            "EXECUTOR protocol reminder: emit either a tool call or a final " +
-            "`EXECUTOR: RESULT OK ...` / `EXECUTOR: RESULT FAIL ...` line.",
-        });
-        emit({
-          type: "executor-warning",
-          data: { reason: "no tool call and no RESULT line", iteration: i },
-        });
-        continue;
-      }
-
+      // Dispatch any tool calls in this message FIRST, so `mainToolResult`
+      // is populated before we consider a RESULT line. This handles models
+      // that emit the tool call and the RESULT in a single turn, and lets
+      // us catch a RESULT that claims success without ever running the tool.
       for (const call of toolCalls) {
         const isMainAsk = call.name === ask.tool && argsRoughlyMatch(call.arguments, ask.args);
 
@@ -206,6 +182,54 @@ export class Executor {
           toolCallId: call.id,
           toolName: call.name,
         });
+      }
+
+      // Now consider a RESULT line. We only honour it once the main tool has
+      // actually run — a `RESULT OK` with no execution behind it is a
+      // hallucinated success, and we bounce it back rather than accept it.
+      const parsedReport = parseResultLine(assistantMessage.content);
+      if (parsedReport) {
+        const claimedOkWithoutRun = parsedReport.verdict === "OK" && mainToolResult === null;
+        if (claimedOkWithoutRun) {
+          workingMessages.push({
+            role: "user",
+            content:
+              `EXECUTOR protocol violation: you reported RESULT OK but never called ` +
+              `\`${ask.tool}\`. Call \`${ask.tool}\` with the given args now, then ` +
+              `independently validate the result, then emit your RESULT line. A ` +
+              `RESULT OK is only valid after the tool has actually run.`,
+          });
+          emit({
+            type: "executor-warning",
+            data: { reason: `RESULT OK before "${ask.tool}" ran — forcing a real call`, iteration: i },
+          });
+          continue;
+        }
+
+        // Legitimate report: either OK backed by a real run, or an early FAIL
+        // (e.g. the model judged the args malformed and declined to execute).
+        llmReport = assistantMessage.content;
+        emit({
+          type: "executor-report",
+          data: { verdict: parsedReport.verdict, message: parsedReport.message },
+        });
+        break;
+      }
+
+      // No RESULT this turn. If there were also no tool calls, that's protocol
+      // drift — steer the model back on track and let it retry.
+      if (toolCalls.length === 0) {
+        workingMessages.push({
+          role: "user",
+          content:
+            "EXECUTOR protocol reminder: emit either a tool call or a final " +
+            "`EXECUTOR: RESULT OK ...` / `EXECUTOR: RESULT FAIL ...` line.",
+        });
+        emit({
+          type: "executor-warning",
+          data: { reason: "no tool call and no RESULT line", iteration: i },
+        });
+        continue;
       }
     }
 
@@ -324,7 +348,7 @@ export class Executor {
       if (readBack === null) {
         return { verdict: "mismatch", evidence: `post-write read of "${path}" failed` };
       }
-      if (readBack !== expected) {
+      if (normaliseEol(readBack) !== normaliseEol(expected)) {
         return {
           verdict: "mismatch",
           evidence: `post-write read of "${path}" does not match requested content`,
@@ -343,7 +367,7 @@ export class Executor {
       if (readBack === null) {
         return { verdict: "mismatch", evidence: `post-edit read of "${path}" failed` };
       }
-      if (expectedSubstring && !readBack.includes(expectedSubstring)) {
+      if (expectedSubstring && !normaliseEol(readBack).includes(normaliseEol(expectedSubstring))) {
         return {
           verdict: "mismatch",
           evidence: `post-edit read of "${path}" does not contain expected replacement`,
@@ -378,7 +402,7 @@ export class Executor {
 
     const result = await this.tools.callTool(readToolName, { path });
     if (result.isError) return null;
-    return result.content;
+    return extractFileContent(result.content);
   }
 }
 
@@ -404,6 +428,41 @@ function parseResultLine(content: string): { verdict: "OK" | "FAIL"; message: st
     }
   }
   return null;
+}
+
+/**
+ * Pull the real file content out of a `read_file` tool result.
+ *
+ * fsmcp returns a JSON envelope ({ path, total_lines, returned_range,
+ * content }) rather than raw bytes, so verification has to read the
+ * `.content` field. Falls back to the raw text when the output isn't the
+ * expected JSON shape, so the verifier still works against other MCP
+ * servers that return plain content.
+ */
+function extractFileContent(toolOutput: string): string {
+  try {
+    const parsed = JSON.parse(toolOutput) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "content" in parsed &&
+      typeof (parsed as { content: unknown }).content === "string"
+    ) {
+      return (parsed as { content: string }).content;
+    }
+  } catch {
+    // Not JSON — assume the server already returned raw content.
+  }
+  return toolOutput;
+}
+
+/**
+ * Normalise CRLF to LF before comparison. fsmcp's read_file reconstructs
+ * content with `split(/\r?\n/).join("\n")`, so a file written with CRLF
+ * reads back as LF; comparing raw would yield a spurious mismatch.
+ */
+function normaliseEol(text: string): string {
+  return text.replace(/\r\n/g, "\n");
 }
 
 function classifyTool(name: string): "write_file" | "edit_file" | "exec" | "other" {

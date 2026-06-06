@@ -28,14 +28,27 @@ async function main(): Promise<void> {
   dotenv.config();
 
   const projectRoot = findProjectRoot();
-  const workspaceRoot = path.resolve(process.env.AGENT_WORKSPACE ?? projectRoot);
+
+  // The fs tool sandbox. Every fsmcp operation — read_file, write_file,
+  // edit_file, list_dir, glob, grep — is confined to this directory by the
+  // workspace guard, so all generated output lands here and nowhere else.
+  // Defaults to src/agent/workspace under the project root; override with
+  // AGENT_WORKSPACE. (codemcp resolves its repo from process.cwd() and is
+  // unaffected, so repo-wide code search still spans the whole project.)
+  const sandboxRoot = path.resolve(
+    process.env.AGENT_WORKSPACE ?? path.join(projectRoot, "src", "agent", "workspace")
+  );
+  // Ensure the sandbox exists before fsmcp tries to access it on startup.
+  fs.mkdirSync(sandboxRoot, { recursive: true });
 
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const modelsConfigPath = path.join(projectRoot, "models.json");
 
-  const tools = await McpToolClient.connect(mcpConfigPath, workspaceRoot);
+  const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot);
   const registry = await ModelRegistry.load(modelsConfigPath);
-  const projectContext = await loadProjectContext(workspaceRoot);
+  // Project context lives at the project root (src/context/agentcontext.md),
+  // not inside the fs sandbox — load it from there.
+  const projectContext = await loadProjectContext(projectRoot);
 
   // Wire shutdown so child MCP servers don't outlive us.
   const shutdown = async (): Promise<void> => {
@@ -49,7 +62,7 @@ async function main(): Promise<void> {
   });
 
   try {
-    await runRepl({ workspaceRoot, registry, tools, projectContext });
+    await runRepl({ workspaceRoot: projectRoot, sandboxRoot, registry, tools, projectContext });
   } finally {
     await shutdown();
   }

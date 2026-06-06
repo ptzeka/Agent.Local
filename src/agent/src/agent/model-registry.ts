@@ -33,6 +33,20 @@ export interface OrchestrationConfig {
   maxExecutorIterationsPerAsk: number;
   orchestratorTemperature: number;
   executorTemperature: number;
+  /** Sampling temperature for the evaluator (completion-gate) judge. */
+  evaluatorTemperature: number;
+  /**
+   * Summarize the conversation prefix once it grows beyond this many
+   * messages. Lower = more aggressive compaction, more summarizer LLM
+   * calls. Set very high to effectively disable.
+   */
+  summarizeAtMessages: number;
+  /**
+   * After summarizing, keep this many recent messages verbatim. The
+   * orchestrator may keep slightly more to avoid splitting a tool-call /
+   * tool-result pairing.
+   */
+  summarizerKeepLastN: number;
 }
 
 interface ModelsFile {
@@ -57,6 +71,9 @@ const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
   maxExecutorIterationsPerAsk: 6,
   orchestratorTemperature: 0.2,
   executorTemperature: 0.1,
+  evaluatorTemperature: 0.1,
+  summarizeAtMessages: 30,
+  summarizerKeepLastN: 8,
 };
 
 /**
@@ -180,6 +197,34 @@ export class ModelRegistry {
       throw new Error(`Internal error: role "${role}" maps to missing model "${modelId}".`);
     }
     return provider;
+  }
+
+  /**
+   * Provider for the summarizer role. Falls back to the orchestrator's
+   * provider when no `summarizer` role is declared in models.json, so
+   * legacy configs keep working without a code change.
+   */
+  public getSummarizerProvider(): LLMProvider {
+    const summarizerModelId = this.roleAssignments.get("summarizer");
+    if (summarizerModelId) {
+      const provider = this.providers.get(summarizerModelId);
+      if (provider) return provider;
+    }
+    return this.getProviderForRole("orchestrator");
+  }
+
+  /**
+   * Provider for the evaluator (completion-gate) role. Falls back to the
+   * orchestrator's provider when no `evaluator` role is declared, so
+   * existing configs keep working without a code change.
+   */
+  public getEvaluatorProvider(): LLMProvider {
+    const evaluatorModelId = this.roleAssignments.get("evaluator");
+    if (evaluatorModelId) {
+      const provider = this.providers.get(evaluatorModelId);
+      if (provider) return provider;
+    }
+    return this.getProviderForRole("orchestrator");
   }
 
   public listRoles(): Array<{ role: RoleName; modelId: string; provider: LLMProvider }> {

@@ -57,6 +57,26 @@ Loop:
      different approach, or surface the failure to the user. Do not
      loop on the same failing dispatch — change something.
 
+Completion gate:
+  When you produce a final answer with no tool calls, an automated
+  EVALUATOR checks it against the user's ORIGINAL request and the work
+  you actually did, and returns one of three verdicts:
+    - SATISFIED → the turn ends; your answer stands.
+    - on track  → you'll get "EVALUATOR: on track — <next step>". You are
+                  making real progress. Keep going: take the next concrete
+                  action (gather context, dispatch the executor).
+    - off track → you'll get "EVALUATOR: off track — <problem>". You are
+                  stuck or working on the wrong thing. Stop repeating the
+                  failing action and change your approach.
+  Only a SATISFIED verdict ends the turn, so do not stop early — keep
+  working until the request is actually fulfilled.
+
+Workspace sandbox:
+  - All file tools (read_file, list_dir, glob, grep, write_file, edit_file)
+    are confined to a workspace sandbox directory. Use workspace-relative
+    paths (e.g. "notes/output.md", not an absolute repo path). Any path that
+    resolves outside the sandbox is refused. Generated output lands here.
+
 Hard rules:
   - One dispatch at a time. Wait for feedback before dispatching again.
   - Never invent a tool name. Use only tools the runtime advertises.

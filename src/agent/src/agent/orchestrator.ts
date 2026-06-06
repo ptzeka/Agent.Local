@@ -13,7 +13,9 @@ import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
 } from "./tool-adapter.js";
-import type { ProjectContext } from "./context-loader.js";
+import { reloadProjectContext, type ProjectContext } from "./context-loader.js";
+import { Summarizer } from "./summarizer.js";
+import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 
 /**
  * Orchestrator.
@@ -43,6 +45,9 @@ export interface OrchestratorEvent {
     | "dispatch-feedback"
     | "executor-event"
     | "final-message"
+    | "summarization"
+    | "evaluation-start"
+    | "evaluation-verdict"
     | "warning";
   data: Record<string, unknown>;
 }
@@ -60,17 +65,50 @@ export interface RunResult {
   dispatches: number;
 }
 
+export interface ResetResult {
+  /** The context now in effect after the reload (null if no file present). */
+  context: ProjectContext | null;
+  /** True if the reloaded context differs from what was loaded before. */
+  contextChanged: boolean;
+}
+
 export class Orchestrator {
   private readonly conversation: ChatMessage[] = [];
+
+  // Mutable: a reset re-reads the context file from disk so mid-session
+  // edits to agentcontext.md take effect.
+  private projectContext: ProjectContext | null;
 
   constructor(
     private readonly registry: ModelRegistry,
     private readonly tools: McpToolClient,
-    private readonly projectContext: ProjectContext | null = null
-  ) {}
+    projectContext: ProjectContext | null = null,
+    private readonly workspaceRoot: string | null = null
+  ) {
+    this.projectContext = projectContext;
+  }
 
-  public reset(): void {
+  /**
+   * Reset to session start: drop the entire conversation and re-read the
+   * project context file from disk. The context read lives in the
+   * Repository layer (context-loader) — we only swap the result in here.
+   */
+  public async reset(): Promise<ResetResult> {
     this.conversation.length = 0;
+
+    if (this.workspaceRoot === null) {
+      // No workspace to reload from; just report the unchanged context.
+      return { context: this.projectContext, contextChanged: false };
+    }
+
+    const previousContent = this.projectContext?.content ?? null;
+    const reloaded = await reloadProjectContext(this.workspaceRoot);
+    this.projectContext = reloaded;
+
+    return {
+      context: reloaded,
+      contextChanged: (reloaded?.content ?? null) !== previousContent,
+    };
   }
 
   public history(): readonly ChatMessage[] {
@@ -87,6 +125,8 @@ export class Orchestrator {
    */
   public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
+
+    await this.maybeSummarize(emit, options.signal);
 
     this.conversation.push({ role: "user", content: userInput });
 
@@ -145,7 +185,35 @@ export class Orchestrator {
       workingMessages.push(assistantMessage);
 
       if (toolCalls.length === 0) {
-        return { finalMessage: assistantMessage, iterations: iteration, dispatches };
+        // Candidate completion. Gate it through the evaluator: the turn only
+        // ends on a SATISFIED verdict. CONTINUE and UNSATISFIED both keep the
+        // loop running, with different steering.
+        const verdict = await this.evaluateCompletion(
+          userInput,
+          assistantMessage.content,
+          workingMessages,
+          emit,
+          options.signal
+        );
+
+        if (verdict.state === "satisfied") {
+          return { finalMessage: assistantMessage, iterations: iteration, dispatches };
+        }
+
+        const nudge: ChatMessage = {
+          role: "user",
+          content:
+            verdict.state === "continue"
+              ? `EVALUATOR: on track — ${verdict.reason}\n` +
+                "Keep going: take the next concrete action toward fulfilling the request. " +
+                "Do not stop until it is complete."
+              : `EVALUATOR: off track — ${verdict.reason}\n` +
+                "Stop repeating what isn't working and change your approach. Re-check the " +
+                "request and the current workspace state, then take a different next action.",
+        };
+        this.conversation.push(nudge);
+        workingMessages.push(nudge);
+        continue;
       }
 
       const toolMessages: ChatMessage[] = [];
@@ -257,6 +325,100 @@ export class Orchestrator {
   }
 
   // --------------------------------------------------------------------------
+
+  /**
+   * Fold the older portion of the conversation into a single summary
+   * `system` message when the transcript grows past the configured
+   * threshold. Runs at the top of each user turn, BEFORE the new user
+   * message is appended, so the summarizer only sees prior completed
+   * exchanges.
+   *
+   * The tail boundary is snapped forward to avoid orphaning a `role:"tool"`
+   * message from its parent assistant tool-call turn.
+   */
+  private async maybeSummarize(
+    emit: OrchestratorListener,
+    signal?: AbortSignal
+  ): Promise<void> {
+    const threshold = this.registry.orchestration.summarizeAtMessages;
+    if (this.conversation.length <= threshold) return;
+
+    const desiredKeep = this.registry.orchestration.summarizerKeepLastN;
+    const tailStart = findCleanTailStart(this.conversation, desiredKeep);
+    if (tailStart === 0) return;
+
+    const prefix = this.conversation.slice(0, tailStart);
+    const tail = this.conversation.slice(tailStart);
+
+    let summaryText: string;
+    try {
+      const summarizer = new Summarizer(this.registry.getSummarizerProvider());
+      summaryText = await summarizer.summarize(prefix, { signal });
+    } catch (err) {
+      emit({
+        type: "warning",
+        data: { message: `summarization failed: ${(err as Error).message}` },
+      });
+      return;
+    }
+
+    const summaryMessage: ChatMessage = {
+      role: "system",
+      content:
+        `Conversation summary (covers ${prefix.length} earlier message(s), ` +
+        `condensed by the summarizer model). Treat this as ground-truth ` +
+        `context for everything that happened before the messages below.\n\n` +
+        summaryText,
+    };
+
+    this.conversation.length = 0;
+    this.conversation.push(summaryMessage, ...tail);
+
+    emit({
+      type: "summarization",
+      data: {
+        summarizedCount: prefix.length,
+        keptCount: tail.length,
+        summaryChars: summaryText.length,
+      },
+    });
+  }
+
+  /**
+   * Run the completion gate. Asks the evaluator whether `proposedAnswer`,
+   * together with the work in `transcript`, fulfils the original question.
+   * Fails OPEN: any evaluator error is treated as satisfied so a flaky
+   * judge can never trap the user in an endless loop.
+   */
+  private async evaluateCompletion(
+    question: string,
+    proposedAnswer: string,
+    transcript: ChatMessage[],
+    emit: OrchestratorListener,
+    signal?: AbortSignal
+  ): Promise<EvaluationVerdict> {
+    emit({ type: "evaluation-start", data: {} });
+
+    try {
+      const evaluator = new Evaluator(this.registry.getEvaluatorProvider());
+      const verdict = await evaluator.evaluate(
+        { question, proposedAnswer, transcript },
+        { signal, temperature: this.registry.orchestration.evaluatorTemperature }
+      );
+      emit({
+        type: "evaluation-verdict",
+        data: { state: verdict.state, reason: verdict.reason },
+      });
+      return verdict;
+    } catch (err) {
+      // Fail open — never trap the user because the judge errored.
+      emit({
+        type: "warning",
+        data: { message: `evaluation failed, treating as satisfied: ${(err as Error).message}` },
+      });
+      return { state: "satisfied", reason: "evaluator error; defaulting to satisfied" };
+    }
+  }
 
   private buildSystemMessages(
     orchestrator: LLMProvider,
@@ -413,6 +575,25 @@ function parseDispatchAsk(
       intent,
     },
   };
+}
+
+/**
+ * Find a tail-start index that does NOT begin with a `role:"tool"`
+ * message. Tool messages must follow an assistant message that called
+ * them — keeping a tool message without its parent would produce an
+ * orphan and break providers that validate tool_call_id pairing.
+ *
+ * Starts from the desired window (`messages.length - desiredTailLen`)
+ * and walks forward until a non-tool message is found. If the entire
+ * remaining slice is tool messages, returns `messages.length` so the
+ * caller summarizes everything.
+ */
+function findCleanTailStart(messages: ChatMessage[], desiredTailLen: number): number {
+  const initial = Math.max(0, messages.length - desiredTailLen);
+  for (let i = initial; i < messages.length; i += 1) {
+    if (messages[i].role !== "tool") return i;
+  }
+  return messages.length;
 }
 
 function formatFeedbackForOrchestrator(feedback: ExecutorFeedback): string {

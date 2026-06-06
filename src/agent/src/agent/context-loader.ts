@@ -57,6 +57,21 @@ export async function loadProjectContext(
   return { sourcePath: target, content };
 }
 
+/**
+ * Re-read the context file from disk.
+ *
+ * Semantically identical to `loadProjectContext`, but named so callers
+ * (the Orchestrator's reset path) express intent clearly: pick up any
+ * edits made to agentcontext.md mid-session. Kept in this module so the
+ * file read stays in the Repository layer — the Orchestrator never
+ * touches the filesystem itself.
+ */
+export function reloadProjectContext(
+  workspaceRoot: string
+): Promise<ProjectContext | null> {
+  return loadProjectContext(workspaceRoot);
+}
+
 function resolveTarget(workspaceRoot: string, override: string | undefined): string {
   if (!override || override.length === 0) {
     return path.resolve(workspaceRoot, DEFAULT_RELATIVE_PATH);

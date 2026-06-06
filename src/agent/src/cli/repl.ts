@@ -19,16 +19,18 @@ import { renderBanner, renderEvent, renderHelp } from "./render.js";
 
 export interface ReplOptions {
   workspaceRoot: string;
+  /** The fs tool sandbox root — where all fsmcp file I/O is confined. */
+  sandboxRoot: string;
   registry: ModelRegistry;
   tools: McpToolClient;
   projectContext?: ProjectContext | null;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, registry, tools, projectContext = null } = options;
-  const orchestrator = new Orchestrator(registry, tools, projectContext);
+  const { workspaceRoot, sandboxRoot, registry, tools, projectContext = null } = options;
+  const orchestrator = new Orchestrator(registry, tools, projectContext, workspaceRoot);
 
-  renderBanner(workspaceRoot, projectContext?.sourcePath ?? null);
+  renderBanner(workspaceRoot, sandboxRoot, projectContext?.sourcePath ?? null);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -95,10 +97,15 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       renderHelp();
       return false;
 
-    case "reset":
-      ctx.orchestrator.reset();
-      process.stdout.write(chalk.gray("(conversation cleared)\n"));
+    case "reset": {
+      const result = await ctx.orchestrator.reset();
+      const contextNote = result.context
+        ? `context reloaded from ${result.context.sourcePath}` +
+          (result.contextChanged ? " (changed)" : " (unchanged)")
+        : "no project context file";
+      process.stdout.write(chalk.gray(`(conversation cleared; ${contextNote})\n`));
       return false;
+    }
 
     case "think":
       // The planner phase no longer exists. Accept the command so old muscle

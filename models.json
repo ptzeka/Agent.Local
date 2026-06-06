@@ -35,7 +35,8 @@
   "roles": {
     "orchestrator": "qwen-coder",
     "executor": "qwen-coder",
-    "summarizer": "llama-fast"
+    "summarizer": "llama-fast",
+    "evaluator": "qwen-coder"
   },
 
   "orchestration": {
@@ -43,6 +44,9 @@
     "maxExecutorDispatchesPerTurn": 8,
     "maxExecutorIterationsPerAsk": 6,
     "orchestratorTemperature": 0.2,
-    "executorTemperature": 0.1
+    "executorTemperature": 0.1,
+    "evaluatorTemperature": 0.1,
+    "summarizeAtMessages": 30,
+    "summarizerKeepLastN": 8
   }
 }

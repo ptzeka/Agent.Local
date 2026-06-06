@@ -103,6 +103,36 @@ export function renderEvent(event: OrchestratorEvent): void {
       break;
     }
 
+    case "summarization": {
+      const summarized = Number(event.data.summarizedCount ?? 0);
+      const kept = Number(event.data.keptCount ?? 0);
+      const chars = Number(event.data.summaryChars ?? 0);
+      process.stdout.write(
+        chalk.gray(
+          `[summarizer] folded ${summarized} message(s) into ~${chars} chars; kept last ${kept}\n`
+        )
+      );
+      break;
+    }
+
+    case "evaluation-start": {
+      process.stdout.write(chalk.gray("  [EVALUATOR] checking whether the request is fulfilled…\n"));
+      break;
+    }
+
+    case "evaluation-verdict": {
+      const state = String(event.data.state ?? "");
+      const reason = String(event.data.reason ?? "");
+      const stamp =
+        state === "satisfied"
+          ? chalk.greenBright("SATISFIED")
+          : state === "continue"
+            ? chalk.cyanBright("CONTINUE")
+            : chalk.yellowBright("UNSATISFIED");
+      process.stdout.write(chalk.magenta("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`));
+      break;
+    }
+
     case "warning": {
       const message = String(event.data.message ?? "");
       process.stdout.write(chalk.yellowBright(`[warning] ${message}\n`));
@@ -164,11 +194,16 @@ function renderExecutorEvent(data: Record<string, unknown>): void {
   }
 }
 
-export function renderBanner(workspaceRoot: string, contextPath?: string | null): void {
+export function renderBanner(
+  workspaceRoot: string,
+  sandboxRoot: string,
+  contextPath?: string | null
+): void {
   const lines = [
     "",
     chalk.bold("Agent.Local") + chalk.gray(" — local coding agent (Ollama + MCP)"),
-    chalk.gray(`workspace: ${workspaceRoot}`),
+    chalk.gray(`project:   ${workspaceRoot}`),
+    chalk.gray(`fs sandbox: ${sandboxRoot} (all file I/O confined here)`),
     chalk.gray("architecture: orchestrator (read-only) → dispatch_executor → executor (mutations)"),
   ];
   if (contextPath) {

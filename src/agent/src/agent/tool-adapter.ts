@@ -110,17 +110,101 @@ export function extractPromptedToolCalls(message: ChatMessage): {
     }
   }
 
+  // Fallback: some models (including native-tool ones that misfire) emit the
+  // call as bare, unfenced JSON in prose. If the fenced pass found nothing,
+  // scan for balanced top-level { … } spans and recover any that clearly look
+  // like a tool call (name + arguments object). We require `arguments` here to
+  // avoid misreading a model legitimately answering with JSON.
+  if (calls.length === 0) {
+    for (const candidate of extractBalancedJsonObjects(cleaned)) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(candidate);
+      } catch {
+        continue;
+      }
+
+      const toolCall = parseToolCallShape(parsed, { requireArguments: true });
+      if (toolCall) {
+        calls.push({
+          id: `prompted_${Date.now()}_${counter}`,
+          name: toolCall.name,
+          arguments: toolCall.arguments,
+        });
+        counter += 1;
+        cleaned = cleaned.replace(candidate, "").trim();
+      }
+    }
+  }
+
   return { toolCalls: calls, cleanedContent: cleaned };
 }
 
-function parseToolCallShape(parsed: unknown): { name: string; arguments: Record<string, unknown> } | null {
+/**
+ * Scan text for top-level, balanced `{ … }` substrings, returning each as a
+ * candidate JSON string. Brace counting ignores braces inside string literals
+ * and honours backslash escapes, so JSON containing `{`/`}` or quotes inside
+ * values is captured whole. Nested objects are returned as part of their
+ * outermost parent, not separately.
+ */
+function extractBalancedJsonObjects(text: string): string[] {
+  const objects: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === "{") {
+      if (depth === 0) start = i;
+      depth += 1;
+    } else if (ch === "}") {
+      if (depth > 0) {
+        depth -= 1;
+        if (depth === 0 && start >= 0) {
+          objects.push(text.slice(start, i + 1));
+          start = -1;
+        }
+      }
+    }
+  }
+
+  return objects;
+}
+
+function parseToolCallShape(
+  parsed: unknown,
+  options: { requireArguments?: boolean } = {}
+): { name: string; arguments: Record<string, unknown> } | null {
   if (!parsed || typeof parsed !== "object") return null;
   const root = parsed as Record<string, unknown>;
   const candidate = (root.tool_call ?? root) as Record<string, unknown>;
 
-  if (typeof candidate.name !== "string") return null;
+  if (typeof candidate.name !== "string" || candidate.name.length === 0) return null;
   const args = candidate.arguments;
-  if (args !== undefined && (typeof args !== "object" || args === null || Array.isArray(args))) {
+  const argsIsObject = typeof args === "object" && args !== null && !Array.isArray(args);
+
+  if (args !== undefined && !argsIsObject) {
+    return null;
+  }
+  // For bare-JSON recovery we insist on a real arguments object so we don't
+  // misread arbitrary JSON prose as a call.
+  if (options.requireArguments && !argsIsObject) {
     return null;
   }
 
