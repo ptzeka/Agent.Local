@@ -13,9 +13,10 @@ import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
 } from "./tool-adapter.js";
-import { reloadProjectContext, type ProjectContext } from "./context-loader.js";
 import { Summarizer } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
+import type { Session } from "./session.js";
+import type { Workspace } from "./workspace-registry.js";
 
 /**
  * Orchestrator.
@@ -30,6 +31,12 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
  * and feeds the structured feedback (ACK + RESULT + deterministic
  * verdict) back to the LLM as a `role: "tool"` message. The LLM then
  * recalculates: next dispatch, or final answer.
+ *
+ * The orchestrator is STATELESS. It holds only app-level dependencies
+ * (the model registry and tool client); every piece of per-turn state —
+ * the transcript and the project context — arrives as arguments to `run`
+ * via the `Session` and `Workspace` it is handed. The Initializer owns
+ * those objects, their lifecycle, and their persistence.
  */
 
 const DISPATCH_TOOL_NAME = "dispatch_executor";
@@ -65,70 +72,34 @@ export interface RunResult {
   dispatches: number;
 }
 
-export interface ResetResult {
-  /** The context now in effect after the reload (null if no file present). */
-  context: ProjectContext | null;
-  /** True if the reloaded context differs from what was loaded before. */
-  contextChanged: boolean;
-}
-
 export class Orchestrator {
-  private readonly conversation: ChatMessage[] = [];
-
-  // Mutable: a reset re-reads the context file from disk so mid-session
-  // edits to agentcontext.md take effect.
-  private projectContext: ProjectContext | null;
-
   constructor(
     private readonly registry: ModelRegistry,
-    private readonly tools: McpToolClient,
-    projectContext: ProjectContext | null = null,
-    private readonly workspaceRoot: string | null = null
-  ) {
-    this.projectContext = projectContext;
-  }
+    private readonly tools: McpToolClient
+  ) {}
 
   /**
-   * Reset to session start: drop the entire conversation and re-read the
-   * project context file from disk. The context read lives in the
-   * Repository layer (context-loader) — we only swap the result in here.
-   */
-  public async reset(): Promise<ResetResult> {
-    this.conversation.length = 0;
-
-    if (this.workspaceRoot === null) {
-      // No workspace to reload from; just report the unchanged context.
-      return { context: this.projectContext, contextChanged: false };
-    }
-
-    const previousContent = this.projectContext?.content ?? null;
-    const reloaded = await reloadProjectContext(this.workspaceRoot);
-    this.projectContext = reloaded;
-
-    return {
-      context: reloaded,
-      contextChanged: (reloaded?.content ?? null) !== previousContent,
-    };
-  }
-
-  public history(): readonly ChatMessage[] {
-    return this.conversation;
-  }
-
-  /**
-   * Run one user turn end-to-end. The orchestrator loop:
+   * Run one user turn end-to-end against the given session and workspace.
+   * Mutates `session.conversation` in place (the turn's work product); holds
+   * no reference to it afterward. The orchestrator loop:
    *   - asks its LLM for the next move
    *   - dispatches any read-only tool calls directly via MCP
    *   - catches `dispatch_executor` calls and routes them to Executor.run
    *   - feeds structured feedback back to the LLM
    *   - returns when the LLM produces a final tool-free message or caps out
    */
-  public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
+  public async run(
+    session: Session,
+    workspace: Workspace,
+    userInput: string,
+    options: RunOptions = {}
+  ): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
+    const conversation = session.conversation;
 
-    await this.maybeSummarize(emit, options.signal);
+    await this.maybeSummarize(conversation, emit, options.signal);
 
-    this.conversation.push({ role: "user", content: userInput });
+    conversation.push({ role: "user", content: userInput });
 
     const orchestratorProvider = this.registry.getProviderForRole("orchestrator");
     const executorProvider = this.registry.getProviderForRole("executor");
@@ -151,14 +122,23 @@ export class Orchestrator {
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, visibleTools);
-    const workingMessages: ChatMessage[] = [...systemMessages, ...this.conversation];
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, visibleTools, workspace);
+    const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     const maxIterations = this.registry.orchestration.maxOrchestratorIterations;
     const maxDispatches = this.registry.orchestration.maxExecutorDispatchesPerTurn;
     const maxExecutorIterations = this.registry.orchestration.maxExecutorIterationsPerAsk;
+    const checkInterval = this.registry.orchestration.validatorCheckIntervalDispatches;
 
     let dispatches = 0;
+    // Signatures (tool + stable-stringified args) of dispatches that already
+    // SUCCEEDED this turn. A re-dispatch of an identical, already-succeeded
+    // mutation is a no-progress loop — the validator stops it and forces a
+    // rethink instead of re-running the executor.
+    const succeededSignatures = new Set<string>();
+    // Dispatches since the last periodic validator check. Drives the
+    // every-N-dispatches progress gate.
+    let dispatchesSinceCheck = 0;
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       emit({ type: "orchestrator-iteration", data: { iteration, max: maxIterations } });
@@ -181,7 +161,7 @@ export class Orchestrator {
         },
       });
 
-      this.conversation.push(assistantMessage);
+      conversation.push(assistantMessage);
       workingMessages.push(assistantMessage);
 
       if (toolCalls.length === 0) {
@@ -211,7 +191,7 @@ export class Orchestrator {
                 "Stop repeating what isn't working and change your approach. Re-check the " +
                 "request and the current workspace state, then take a different next action.",
         };
-        this.conversation.push(nudge);
+        conversation.push(nudge);
         workingMessages.push(nudge);
         continue;
       }
@@ -247,6 +227,31 @@ export class Orchestrator {
             continue;
           }
 
+          // Duplicate guard. If this exact mutation already landed this turn,
+          // re-running it makes no progress — the validator intervenes with a
+          // stop-and-rethink steer instead of dispatching the executor again.
+          // (The dispatch still counted against maxDispatches above, so a hard
+          // loop also burns down toward the cap as a backstop.)
+          const signature = dispatchSignature(ask.value);
+          if (succeededSignatures.has(signature)) {
+            toolMessages.push({
+              role: "tool",
+              content:
+                `EVALUATOR: STOP — duplicate dispatch. You already ran this exact ` +
+                `mutation (tool=${ask.value.tool}) successfully this turn; repeating ` +
+                `it changes nothing. Re-read the request and the current workspace ` +
+                `state, then take a DIFFERENT next action — or, if the task is done, ` +
+                `produce a final answer with NO tool calls.`,
+              toolCallId: call.id,
+              toolName: DISPATCH_TOOL_NAME,
+            });
+            emit({
+              type: "warning",
+              data: { message: "duplicate dispatch blocked by validator", tool: ask.value.tool },
+            });
+            continue;
+          }
+
           emit({
             type: "dispatch-start",
             data: { tool: ask.value.tool, intent: ask.value.intent, args: ask.value.args },
@@ -277,6 +282,14 @@ export class Orchestrator {
             toolCallId: call.id,
             toolName: DISPATCH_TOOL_NAME,
           });
+
+          // Only a genuinely-successful mutation counts as progress: record its
+          // signature (so a later identical re-dispatch is caught above) and
+          // advance the periodic-check counter.
+          if (feedback.ok) {
+            succeededSignatures.add(signature);
+            dispatchesSinceCheck += 1;
+          }
           continue;
         }
 
@@ -306,8 +319,35 @@ export class Orchestrator {
         });
       }
 
-      this.conversation.push(...toolMessages);
+      conversation.push(...toolMessages);
       workingMessages.push(...toolMessages);
+
+      // Periodic progress gate. Every N successful dispatches, run the
+      // validator mid-flight (not only at completion) so a no-progress streak
+      // that never stops calling tools still gets caught. Only an off-track
+      // verdict steers; CONTINUE/SATISFIED let the loop run on, since a
+      // lenient mid-loop judge must not terminate the turn early.
+      if (checkInterval > 0 && dispatchesSinceCheck >= checkInterval) {
+        dispatchesSinceCheck = 0;
+        const verdict = await this.evaluateCompletion(
+          userInput,
+          "(in-progress checkpoint — no final answer yet)",
+          workingMessages,
+          emit,
+          options.signal
+        );
+        if (verdict.state === "unsatisfied") {
+          const nudge: ChatMessage = {
+            role: "user",
+            content:
+              `EVALUATOR: off track — ${verdict.reason}\n` +
+              "Stop repeating what isn't working and change your approach. Re-check the " +
+              "request and the current workspace state, then take a different next action.",
+          };
+          conversation.push(nudge);
+          workingMessages.push(nudge);
+        }
+      }
     }
 
     const truncationNotice: ChatMessage = {
@@ -316,7 +356,7 @@ export class Orchestrator {
         `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
         "Try a narrower request or raise maxOrchestratorIterations in models.json.",
     };
-    this.conversation.push(truncationNotice);
+    conversation.push(truncationNotice);
     emit({
       type: "warning",
       data: { message: "orchestrator hit iteration cap", iterations: maxIterations },
@@ -333,22 +373,24 @@ export class Orchestrator {
    * message is appended, so the summarizer only sees prior completed
    * exchanges.
    *
-   * The tail boundary is snapped forward to avoid orphaning a `role:"tool"`
-   * message from its parent assistant tool-call turn.
+   * Mutates the passed `conversation` array in place. The tail boundary is
+   * snapped forward to avoid orphaning a `role:"tool"` message from its
+   * parent assistant tool-call turn.
    */
   private async maybeSummarize(
+    conversation: ChatMessage[],
     emit: OrchestratorListener,
     signal?: AbortSignal
   ): Promise<void> {
     const threshold = this.registry.orchestration.summarizeAtMessages;
-    if (this.conversation.length <= threshold) return;
+    if (conversation.length <= threshold) return;
 
     const desiredKeep = this.registry.orchestration.summarizerKeepLastN;
-    const tailStart = findCleanTailStart(this.conversation, desiredKeep);
+    const tailStart = findCleanTailStart(conversation, desiredKeep);
     if (tailStart === 0) return;
 
-    const prefix = this.conversation.slice(0, tailStart);
-    const tail = this.conversation.slice(tailStart);
+    const prefix = conversation.slice(0, tailStart);
+    const tail = conversation.slice(tailStart);
 
     let summaryText: string;
     try {
@@ -371,8 +413,8 @@ export class Orchestrator {
         summaryText,
     };
 
-    this.conversation.length = 0;
-    this.conversation.push(summaryMessage, ...tail);
+    conversation.length = 0;
+    conversation.push(summaryMessage, ...tail);
 
     emit({
       type: "summarization",
@@ -422,18 +464,19 @@ export class Orchestrator {
 
   private buildSystemMessages(
     orchestrator: LLMProvider,
-    visibleTools: ToolDescriptor[]
+    visibleTools: ToolDescriptor[],
+    workspace: Workspace
   ): ChatMessage[] {
     const messages: ChatMessage[] = [];
 
-    if (this.projectContext) {
+    if (workspace.projectContext) {
       messages.push({
         role: "system",
         content:
-          `Project context (from ${this.projectContext.sourcePath}). ` +
+          `Project context (from ${workspace.projectContext.sourcePath}). ` +
           `Treat this as standing direction from the user; follow it unless ` +
           `a specific request overrides it.\n\n` +
-          this.projectContext.content,
+          workspace.projectContext.content,
       });
     }
 
@@ -539,6 +582,30 @@ function buildDispatchToolDescriptor(executorTools: ToolDescriptor[]): ToolDescr
       },
     },
   };
+}
+
+/**
+ * Stable identity for a dispatch: its tool name plus a canonical stringify of
+ * its args (object keys sorted recursively). Order-independence matters because
+ * weak models re-emit args via the prompted-JSON fallback, where key order can
+ * drift between otherwise-identical calls — a naive JSON.stringify would miss
+ * the duplicate.
+ */
+function dispatchSignature(ask: ExecutorAsk): string {
+  return `${ask.tool}::${stableStringify(ask.args)}`;
+}
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) =>
+    a < b ? -1 : a > b ? 1 : 0
+  );
+  return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stableStringify(v)}`).join(",")}}`;
 }
 
 function parseDispatchAsk(

@@ -29,14 +29,20 @@
       "model": "llama3.2:3b",
       "supportsTools": true,
       "description": "Small, quick model for summarization and lightweight follow-ups."
+    },
+    "claude-haiku": {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "supportsTools": true,
+      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Requires ANTHROPIC_API_KEY."
     }
   },
 
   "roles": {
-    "orchestrator": "qwen-coder",
+    "orchestrator": "claude-haiku",
     "executor": "qwen-coder",
     "summarizer": "llama-fast",
-    "evaluator": "qwen-coder"
+    "evaluator": "claude-haiku"
   },
 
   "orchestration": {

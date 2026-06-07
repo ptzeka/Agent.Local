@@ -20,7 +20,7 @@ import dotenv from "dotenv";
 
 import { McpToolClient } from "../agent/mcp-client.js";
 import { ModelRegistry } from "../agent/model-registry.js";
-import { loadProjectContext } from "../agent/context-loader.js";
+import { Initializer } from "../agent/initializer.js";
 import { runRepl } from "./repl.js";
 
 async function main(): Promise<void> {
@@ -46,9 +46,20 @@ async function main(): Promise<void> {
 
   const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot);
   const registry = await ModelRegistry.load(modelsConfigPath);
-  // Project context lives at the project root (src/context/agentcontext.md),
-  // not inside the fs sandbox — load it from there.
-  const projectContext = await loadProjectContext(projectRoot);
+
+  // The Initializer is the stateful session owner. It builds the file-backed
+  // session store and drives the stateless orchestrator. Sessions persist
+  // under .sessions (override with AGENT_SESSIONS_DIR).
+  const sessionsDir = path.resolve(
+    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, ".sessions")
+  );
+  const initializer = Initializer.create({ registry, tools, sessionsDir });
+
+  // New session every run for now. Project context lives at the project root
+  // (src/context/agentcontext.md), so the workspace root is the project root,
+  // not the fs sandbox.
+  const mainSession = await initializer.openSession({ workspaceRoot: projectRoot });
+  const projectContext = initializer.getWorkspaceContext(mainSession.sessionId);
 
   // Wire shutdown so child MCP servers don't outlive us.
   const shutdown = async (): Promise<void> => {
@@ -62,7 +73,15 @@ async function main(): Promise<void> {
   });
 
   try {
-    await runRepl({ workspaceRoot: projectRoot, sandboxRoot, registry, tools, projectContext });
+    await runRepl({
+      workspaceRoot: projectRoot,
+      sandboxRoot,
+      registry,
+      tools,
+      initializer,
+      sessionId: mainSession.sessionId,
+      projectContext,
+    });
   } finally {
     await shutdown();
   }

@@ -1,3 +1,4 @@
+import { AnthropicProvider } from "./anthropic-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
 import type { LLMProvider } from "./provider.js";
 
@@ -15,6 +16,8 @@ export interface ProviderFactoryInput {
   supportsTools: boolean;
   reasoning?: boolean;
   host: string;
+  /** API key for cloud providers (e.g. Anthropic). Undefined for local backends. */
+  apiKey?: string;
 }
 
 export function createProvider(input: ProviderFactoryInput): LLMProvider {
@@ -26,6 +29,20 @@ export function createProvider(input: ProviderFactoryInput): LLMProvider {
         supportsNativeTools: input.supportsTools,
         stripThinkBlocks: input.reasoning ?? false,
       });
+
+    case "anthropic": {
+      if (!input.apiKey) {
+        throw new Error(
+          `Model "${input.model}" uses provider "anthropic" but no API key is set. ` +
+            "Add ANTHROPIC_API_KEY to your environment (.env)."
+        );
+      }
+      return new AnthropicProvider({
+        apiKey: input.apiKey,
+        model: input.model,
+        supportsNativeTools: input.supportsTools,
+      });
+    }
 
     default:
       throw new Error(

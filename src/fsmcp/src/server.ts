@@ -26,6 +26,7 @@ import { workspaceFromEnv, WorkspaceViolationError } from "./workspace.js";
 import { readFile, readFileSchema } from "./fs/read-file.js";
 import { writeFile, writeFileSchema } from "./fs/write-file.js";
 import { editFile, editFileSchema, EditFileError } from "./fs/edit-file.js";
+import { deleteFile, deleteFileSchema, DeleteFileError } from "./fs/delete-file.js";
 import { listDir, listDirSchema } from "./fs/list-dir.js";
 import { glob, globSchema } from "./search/glob.js";
 import { grep, grepSchema } from "./search/grep.js";
@@ -92,6 +93,15 @@ async function main(): Promise<void> {
         "unless replace_all is true. Fails if old_string is not found verbatim.",
       schema: editFileSchema,
       handler: (input, ws) => editFile(input, ws),
+    }),
+    defineTool({
+      name: "delete_file",
+      description:
+        "Delete a file or directory in the workspace. Files are removed directly; " +
+        "deleting a directory requires recursive: true and removes all of its contents. " +
+        "Refuses to delete the workspace root and fails if the path does not exist.",
+      schema: deleteFileSchema,
+      handler: (input, ws) => deleteFile(input, ws),
     }),
     defineTool({
       name: "list_dir",
@@ -196,6 +206,9 @@ function formatToolError(err: unknown): string {
   }
   if (err instanceof EditFileError) {
     return `Edit failed: ${err.message}`;
+  }
+  if (err instanceof DeleteFileError) {
+    return `Delete failed: ${err.message}`;
   }
   if (err instanceof Error) {
     return `${err.name}: ${err.message}`;

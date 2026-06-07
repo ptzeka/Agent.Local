@@ -228,6 +228,7 @@ const READ_ONLY_TAILS = new Set([
 const MUTATING_TAILS = new Set([
   "write_file",
   "edit_file",
+  "delete_file",
   "exec",
   "shell",
   "powershell",

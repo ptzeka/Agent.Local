@@ -4,17 +4,17 @@ import chalk from "chalk";
 import type { McpToolClient } from "../agent/mcp-client.js";
 import type { ModelRegistry } from "../agent/model-registry.js";
 import type { ProjectContext } from "../agent/context-loader.js";
-import { Orchestrator } from "../agent/orchestrator.js";
+import type { Initializer } from "../agent/initializer.js";
 
 import { renderBanner, renderEvent, renderHelp } from "./render.js";
 
 /**
  * Interactive REPL.
  *
- * Wraps the orchestrator with a readline prompt and a small set of slash
+ * Wraps a single session with a readline prompt and a small set of slash
  * commands. The REPL itself contains no model or tool logic — it only
- * routes user input into the orchestrator and routes events back out
- * through the renderer.
+ * routes user input into the initializer (addressed by sessionId) and
+ * routes events back out through the renderer.
  */
 
 export interface ReplOptions {
@@ -23,12 +23,15 @@ export interface ReplOptions {
   sandboxRoot: string;
   registry: ModelRegistry;
   tools: McpToolClient;
+  /** The stateful session owner that drives the orchestrator. */
+  initializer: Initializer;
+  /** The session this REPL drives — every action is addressed to it. */
+  sessionId: string;
   projectContext?: ProjectContext | null;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, sandboxRoot, registry, tools, projectContext = null } = options;
-  const orchestrator = new Orchestrator(registry, tools, projectContext, workspaceRoot);
+  const { workspaceRoot, sandboxRoot, registry, tools, initializer, sessionId, projectContext = null } = options;
 
   renderBanner(workspaceRoot, sandboxRoot, projectContext?.sourcePath ?? null);
 
@@ -53,7 +56,8 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     if (input.startsWith("/")) {
       const command = input.slice(1).trim();
       const exitRequested = await handleSlashCommand(command, {
-        orchestrator,
+        initializer,
+        sessionId,
         registry,
         tools,
       });
@@ -62,7 +66,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     }
 
     try {
-      await orchestrator.run(input, { onEvent: renderEvent });
+      await initializer.dispatch(sessionId, input, { onEvent: renderEvent });
     } catch (err) {
       process.stdout.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
     }
@@ -76,7 +80,8 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 // ----------------------------------------------------------------------------
 
 interface SlashContext {
-  orchestrator: Orchestrator;
+  initializer: Initializer;
+  sessionId: string;
   registry: ModelRegistry;
   tools: McpToolClient;
 }
@@ -98,7 +103,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "reset": {
-      const result = await ctx.orchestrator.reset();
+      const result = await ctx.initializer.reset(ctx.sessionId);
       const contextNote = result.context
         ? `context reloaded from ${result.context.sourcePath}` +
           (result.contextChanged ? " (changed)" : " (unchanged)")
@@ -185,7 +190,7 @@ function handleToolsCommand(ctx: SlashContext): void {
 }
 
 function handleHistoryCommand(ctx: SlashContext): void {
-  const history = ctx.orchestrator.history();
+  const history = ctx.initializer.history(ctx.sessionId);
   if (history.length === 0) {
     process.stdout.write(chalk.gray("(empty)\n"));
     return;

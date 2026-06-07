@@ -5,7 +5,9 @@
       "Bash(npx openclaw *)",
       "Bash(node src/openclaw/scripts/sync-context.mjs)",
       "Bash(npx tsc *)",
-      "Bash(echo \"exit=$?\")"
+      "Bash(echo \"exit=$?\")",
+      "Bash(npm run *)",
+      "Bash(timeout 60 node dist/cli/index.js)"
     ]
   }
 }

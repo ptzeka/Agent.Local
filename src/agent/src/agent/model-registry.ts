@@ -36,6 +36,12 @@ export interface OrchestrationConfig {
   /** Sampling temperature for the evaluator (completion-gate) judge. */
   evaluatorTemperature: number;
   /**
+   * Run the evaluator as a progress check every this-many successful
+   * executor dispatches, not only at completion. Catches no-progress
+   * loops mid-flight. Set very high to effectively disable.
+   */
+  validatorCheckIntervalDispatches: number;
+  /**
    * Summarize the conversation prefix once it grows beyond this many
    * messages. Lower = more aggressive compaction, more summarizer LLM
    * calls. Set very high to effectively disable.
@@ -72,6 +78,7 @@ const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
   orchestratorTemperature: 0.2,
   executorTemperature: 0.1,
   evaluatorTemperature: 0.1,
+  validatorCheckIntervalDispatches: 3,
   summarizeAtMessages: 30,
   summarizerKeepLastN: 8,
 };
@@ -105,6 +112,7 @@ export class ModelRegistry {
     // Build one provider per declared model. If AGENT_FORCE_MODEL is set,
     // we still build every provider — but the role table gets remapped so
     // the forced model handles every role.
+    const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
     for (const [id, def] of Object.entries(definitions)) {
       this.providers.set(
         id,
@@ -114,6 +122,7 @@ export class ModelRegistry {
           supportsTools: def.supportsTools,
           reasoning: def.reasoning,
           host: ollamaHost,
+          apiKey: anthropicApiKey,
         })
       );
     }
