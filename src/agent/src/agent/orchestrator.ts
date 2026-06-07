@@ -17,6 +17,7 @@ import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "./scoped-tool-client.js";
 import type { Session } from "./session.js";
+import type { SubSessionCoordinator, SubSessionSnapshot } from "./subsession.js";
 import type { Workspace } from "./workspace-registry.js";
 
 /**
@@ -42,6 +43,14 @@ import type { Workspace } from "./workspace-registry.js";
 
 const DISPATCH_TOOL_NAME = "dispatch_executor";
 
+// Synthetic sub-session tools. Like dispatch_executor, the orchestrator's LLM
+// sees these but the orchestrator intercepts the calls before they reach MCP
+// and routes them to the SubSessionCoordinator.
+const CREATE_SUBSESSION_TOOL = "create_subsession";
+const SUBSESSION_STATUS_TOOL = "get_subsession_status";
+const LIST_SUBSESSIONS_TOOL = "list_subsessions";
+const FINALIZE_SUBSESSION_TOOL = "finalize_subsession";
+
 export interface OrchestratorEvent {
   type:
     | "orchestrator-start"
@@ -56,6 +65,10 @@ export interface OrchestratorEvent {
     | "summarization"
     | "evaluation-start"
     | "evaluation-verdict"
+    | "injected-input"
+    | "subsession-start"
+    | "subsession-status"
+    | "subsession-finalize"
     | "warning";
   data: Record<string, unknown>;
 }
@@ -65,12 +78,41 @@ export type OrchestratorListener = (event: OrchestratorEvent) => void;
 export interface RunOptions {
   signal?: AbortSignal;
   onEvent?: OrchestratorListener;
+  /**
+   * Coordinator that lets this run spawn and manage sub-sessions. When present,
+   * the orchestrator exposes the synthetic create/status/finalize sub-session
+   * tools and intercepts them. Detached sub-session runs are launched WITHOUT a
+   * coordinator, so sub-sessions are one level deep.
+   */
+  coordinator?: SubSessionCoordinator;
+  /**
+   * Pull seam for externally-injected prompts. Called at the top of each loop
+   * iteration; any returned strings are appended to the conversation as user
+   * turns before the model is asked. This is how an outside producer (a REPL
+   * command, a future API call) steers a live run without racing the loop.
+   */
+  pullInjectedPrompts?: () => string[];
 }
 
 export interface RunResult {
   finalMessage: ChatMessage;
   iterations: number;
   dispatches: number;
+}
+
+/**
+ * The capability the SessionManager needs to drive a sub-session: run a session
+ * to completion. Declared here and satisfied structurally by `Orchestrator`, so
+ * the manager depends on this narrow contract rather than the concrete class —
+ * keeping the orchestrator ⇄ manager construction acyclic.
+ */
+export interface SessionRunner {
+  run(
+    session: Session,
+    workspace: Workspace,
+    userInput: string,
+    options?: RunOptions
+  ): Promise<RunResult>;
 }
 
 export class Orchestrator {
@@ -108,8 +150,15 @@ export class Orchestrator {
     const orchestratorTools = this.tools.listToolsForOrchestrator();
     const executorTools = this.tools.listToolsForExecutor();
 
+    const coordinator = options.coordinator;
     const dispatchDescriptor = buildDispatchToolDescriptor(executorTools);
     const visibleTools: ToolDescriptor[] = [...orchestratorTools, dispatchDescriptor];
+    // Only advertise the sub-session tools when a coordinator is wired in. The
+    // detached sub-session runs themselves get no coordinator, so they never see
+    // these tools — enforcing the one-level-deep guard at the source.
+    if (coordinator) {
+      visibleTools.push(...buildSessionToolDescriptors());
+    }
 
     // Bind every tool call this turn to the session's workspace segment. The
     // executor's mutations and the orchestrator's own read calls both go through
@@ -155,6 +204,18 @@ export class Orchestrator {
     let dispatchesSinceCheck = 0;
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+      // Fold in any externally-injected prompts before asking the model. The
+      // orchestrator is the sole writer of `conversation`; outside producers
+      // enqueue (see InputInbox) and we drain here, at a safe boundary, so a
+      // mid-run injection becomes a user turn the next iteration acts on.
+      const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
+      for (const text of injectedPrompts) {
+        const injected: ChatMessage = { role: "user", content: text };
+        conversation.push(injected);
+        workingMessages.push(injected);
+        emit({ type: "injected-input", data: { iteration, content: text } });
+      }
+
       emit({ type: "orchestrator-iteration", data: { iteration, max: maxIterations } });
 
       const response = await orchestratorProvider.chat(workingMessages, {
@@ -304,6 +365,21 @@ export class Orchestrator {
             succeededSignatures.add(signature);
             dispatchesSinceCheck += 1;
           }
+          continue;
+        }
+
+        // Synthetic sub-session tools. Intercepted before MCP and routed to the
+        // coordinator. parentSessionId is always THIS session's id — the LLM
+        // never supplies it, so it can't be spoofed or get out of sync.
+        if (
+          call.name === CREATE_SUBSESSION_TOOL ||
+          call.name === SUBSESSION_STATUS_TOOL ||
+          call.name === LIST_SUBSESSIONS_TOOL ||
+          call.name === FINALIZE_SUBSESSION_TOOL
+        ) {
+          toolMessages.push(
+            await this.handleSubSessionCall(call, session, workspace, coordinator, emit, options.signal)
+          );
           continue;
         }
 
@@ -544,6 +620,124 @@ export class Orchestrator {
       toolCalls,
     };
   }
+
+  /**
+   * Handle a synthetic sub-session tool call. Validates args, auto-injects this
+   * session's id as the parent, routes to the coordinator, and shapes the
+   * snapshot (or a `[subsession-error]`) into the `role:"tool"` reply.
+   */
+  private async handleSubSessionCall(
+    call: ToolCall,
+    session: Session,
+    workspace: Workspace,
+    coordinator: SubSessionCoordinator | undefined,
+    emit: OrchestratorListener,
+    signal?: AbortSignal
+  ): Promise<ChatMessage> {
+    const toolError = (reason: string): ChatMessage => ({
+      role: "tool",
+      content: `[subsession-error] ${reason}`,
+      toolCallId: call.id,
+      toolName: call.name,
+    });
+
+    if (!coordinator) {
+      return toolError("sub-sessions are not available in this run");
+    }
+
+    const args = call.arguments;
+
+    if (call.name === CREATE_SUBSESSION_TOOL) {
+      const intent = args.intent;
+      if (typeof intent !== "string" || intent.trim().length === 0) {
+        return toolError("create_subsession.intent must be a non-empty string");
+      }
+      const context = typeof args.context === "string" ? args.context : undefined;
+      const result = coordinator.createSubSession({
+        parentSessionId: session.sessionId,
+        workspace,
+        intent,
+        context,
+      });
+
+      // Rejected by the per-parent cap — surface as a tool error so the model
+      // waits on or finalizes an existing child instead of retrying blindly.
+      if (result.outcome === "rejected" || !result.snapshot) {
+        emit({ type: "subsession-start", data: { intent, outcome: "rejected", reason: result.reason } });
+        return toolError(result.reason ?? "sub-session creation rejected");
+      }
+
+      // created or reused — both return the live child's snapshot. The reused
+      // note tells the model it already has this work in flight.
+      emit({
+        type: "subsession-start",
+        data: { subSessionId: result.snapshot.subSessionId, intent, outcome: result.outcome },
+      });
+      const prefix = result.outcome === "reused" ? `[subsession-reused] ${result.reason}\n` : "";
+      return {
+        role: "tool",
+        content: prefix + JSON.stringify(result.snapshot, null, 2),
+        toolCallId: call.id,
+        toolName: call.name,
+      };
+    }
+
+    if (call.name === LIST_SUBSESSIONS_TOOL) {
+      const snapshots = coordinator.list(session.sessionId);
+      emit({ type: "subsession-status", data: { count: snapshots.length } });
+      return {
+        role: "tool",
+        content: JSON.stringify({ count: snapshots.length, subSessions: snapshots }, null, 2),
+        toolCallId: call.id,
+        toolName: call.name,
+      };
+    }
+
+    // get_status and finalize both key off a subSessionId.
+    const subSessionId = args.subSessionId;
+    if (typeof subSessionId !== "string" || subSessionId.length === 0) {
+      return toolError(`${call.name}.subSessionId must be a non-empty string`);
+    }
+
+    if (call.name === SUBSESSION_STATUS_TOOL) {
+      const result = await coordinator.getStatus(session.sessionId, subSessionId, signal);
+      if (!result) return toolError(`unknown subSessionId "${subSessionId}" for this session`);
+      emit({
+        type: "subsession-status",
+        data: { subSessionId, status: result.snapshot.status, backoffMs: result.backoffMs },
+      });
+      // When a backoff was applied the status hasn't changed since last poll —
+      // tell the model to stop hammering and do other work before re-checking.
+      const note =
+        result.backoffMs > 0
+          ? `[backoff ${result.backoffMs}ms — status unchanged ("${result.snapshot.status}") since your last check; ` +
+            `do other useful work or finalize it instead of polling again immediately]\n`
+          : "";
+      return {
+        role: "tool",
+        content: note + JSON.stringify(result.snapshot, null, 2),
+        toolCallId: call.id,
+        toolName: call.name,
+      };
+    }
+
+    // FINALIZE_SUBSESSION_TOOL
+    const finalStatus =
+      args.finalStatus === "done" || args.finalStatus === "error" ? args.finalStatus : undefined;
+    const snapshot = coordinator.finalize(session.sessionId, subSessionId, finalStatus);
+    if (!snapshot) return toolError(`unknown subSessionId "${subSessionId}" for this session`);
+    emit({ type: "subsession-finalize", data: { subSessionId, status: snapshot.status } });
+    return this.subSessionResult(call, snapshot);
+  }
+
+  private subSessionResult(call: ToolCall, snapshot: SubSessionSnapshot): ChatMessage {
+    return {
+      role: "tool",
+      content: JSON.stringify(snapshot, null, 2),
+      toolCallId: call.id,
+      toolName: call.name,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +783,110 @@ function buildDispatchToolDescriptor(executorTools: ToolDescriptor[]): ToolDescr
       },
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Sub-session tools — synthetic, intercepted before MCP and routed to the
+// SubSessionCoordinator. parentSessionId is auto-injected by the orchestrator,
+// so it never appears in any schema.
+// ---------------------------------------------------------------------------
+
+function buildSessionToolDescriptors(): ToolDescriptor[] {
+  return [
+    {
+      name: CREATE_SUBSESSION_TOOL,
+      description: [
+        "Spawn an autonomous SUB-SESSION to pursue an independent sub-goal.",
+        "The child runs the orchestrator loop on its own, driving toward the",
+        "given intent until the evaluator is satisfied — it does NOT wait for a",
+        "user prompt. Use this to delegate a self-contained chunk of work so you",
+        "can continue in parallel.",
+        "",
+        "Returns IMMEDIATELY with a snapshot whose status is usually \"running\".",
+        "Poll its progress with get_subsession_status, and end it (cancelling it",
+        "if still running) with finalize_subsession. The child shares this",
+        "session's workspace sandbox.",
+        "",
+        "GUARDED: a request whose intent matches an active child reuses that",
+        "child instead of duplicating it, and there is a small cap on how many",
+        "children may run at once — call list_subsessions first to see what is",
+        "already in flight, and finalize_subsession to free a slot.",
+      ].join("\n"),
+      inputSchema: {
+        type: "object",
+        required: ["intent"],
+        properties: {
+          intent: {
+            type: "string",
+            description:
+              "The goal the sub-session must resolve, phrased as you would a user request.",
+          },
+          context: {
+            type: "string",
+            description:
+              "Optional standing context seeded for the child before the intent (background, constraints).",
+          },
+        },
+      },
+    },
+    {
+      name: SUBSESSION_STATUS_TOOL,
+      description: [
+        "Get a snapshot of a sub-session you spawned: its status",
+        "(running/done/error/archived), and — once finished — its result or",
+        "error. If you poll and the status has not changed since your last check,",
+        "this call deliberately backs off (waits, with growing delay) before",
+        "returning — so do other useful work between checks rather than polling",
+        "in a tight loop.",
+      ].join("\n"),
+      inputSchema: {
+        type: "object",
+        required: ["subSessionId"],
+        properties: {
+          subSessionId: {
+            type: "string",
+            description: "The id returned by create_subsession.",
+          },
+        },
+      },
+    },
+    {
+      name: LIST_SUBSESSIONS_TOOL,
+      description: [
+        "List the sub-sessions currently active for this session — each with its",
+        "id, intent, and status. Use this to see how many you have running and",
+        "whether the work you are about to delegate is already in flight, before",
+        "calling create_subsession. Takes no arguments.",
+      ].join("\n"),
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
+    {
+      name: FINALIZE_SUBSESSION_TOOL,
+      description: [
+        "Finalize a sub-session: cancel it if still running, record a final",
+        "status, and archive it (dereferencing it from this session). Idempotent.",
+      ].join("\n"),
+      inputSchema: {
+        type: "object",
+        required: ["subSessionId"],
+        properties: {
+          subSessionId: {
+            type: "string",
+            description: "The id returned by create_subsession.",
+          },
+          finalStatus: {
+            type: "string",
+            enum: ["done", "error"],
+            description:
+              "Optional outcome to record when finalizing a child that has not finished on its own.",
+          },
+        },
+      },
+    },
+  ];
 }
 
 /**

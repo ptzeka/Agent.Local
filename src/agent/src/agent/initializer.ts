@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 
+import { InputInbox } from "./input-inbox.js";
 import type { McpToolClient } from "./mcp-client.js";
 import type { ModelRegistry } from "./model-registry.js";
 import { Orchestrator, type RunOptions, type RunResult } from "./orchestrator.js";
 import type { ProjectContext } from "./context-loader.js";
 import type { ChatMessage } from "./providers/provider.js";
+import { SessionManager } from "./session-manager.js";
 import { createSession, type Session } from "./session.js";
 import { SessionStore } from "./session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "./summarizer.js";
@@ -64,10 +66,17 @@ export interface CompactResult {
 export class Initializer {
   private readonly sessions = new Map<string, Session>();
   private readonly orchestrator: Orchestrator;
+  /** Shared pull-seam for externally-injected prompts (top-level + sub-sessions). */
+  private readonly inbox = new InputInbox();
+  /** Owns the orchestrator's in-memory sub-sessions. */
+  private readonly sessionManager: SessionManager;
 
   constructor(private readonly deps: InitializerDeps) {
     // One stateless orchestrator serves every session.
     this.orchestrator = new Orchestrator(deps.registry, deps.tools);
+    // The manager drives sub-sessions through the orchestrator (as a runner) and
+    // shares the inbox so a running sub-session is steerable too.
+    this.sessionManager = new SessionManager(this.orchestrator, this.inbox);
   }
 
   /**
@@ -127,8 +136,17 @@ export class Initializer {
     const workspace = this.deps.workspaces.get(session.workspaceId);
     session.status = "running";
 
+    // Hand the run the sub-session coordinator and bind the injection pull-seam
+    // to this session's id. Caller-supplied options win for signal/onEvent, but
+    // these wiring fields are owned by the Initializer.
+    const runOptions: RunOptions = {
+      ...options,
+      coordinator: this.sessionManager,
+      pullInjectedPrompts: () => this.inbox.drain(sessionId),
+    };
+
     try {
-      const result = await this.orchestrator.run(session, workspace, userInput, options);
+      const result = await this.orchestrator.run(session, workspace, userInput, runOptions);
       session.status = "awaiting-input";
       session.counters.turns += 1;
       return result;
@@ -139,6 +157,18 @@ export class Initializer {
       session.updatedAt = Date.now();
       await this.deps.sessionStore.save(session);
     }
+  }
+
+  /**
+   * Inject a prompt into a session from outside the orchestrator loop. The
+   * prompt is queued and folded into the conversation as a user turn at the
+   * start of the next orchestrator iteration (so it works whether or not a turn
+   * is currently in flight). This is the entry point an external producer — a
+   * REPL command today, an HTTP API later — lands on. Works for sub-session ids
+   * too, since they share the same inbox.
+   */
+  public injectInput(sessionId: string, content: string, source?: string): void {
+    this.inbox.push(sessionId, content, source);
   }
 
   /**

@@ -71,6 +71,28 @@ Completion gate:
   Only a SATISFIED verdict ends the turn, so do not stop early — keep
   working until the request is actually fulfilled.
 
+Sub-sessions (delegating autonomous work):
+  When some self-contained sub-goal can proceed on its own, you may delegate
+  it to a SUB-SESSION instead of doing every step yourself:
+    - list_subsessions() — the children active for this session, each with its
+      id, intent, and status. ALWAYS call this before create_subsession to see
+      what is already in flight.
+    - create_subsession({ intent, context? }) — spawns an autonomous child
+      that runs its own orchestrator loop toward \`intent\` until ITS evaluator
+      is satisfied. It does not wait for prompts. Returns IMMEDIATELY with a
+      snapshot (status usually "running") including a \`subSessionId\`. If an
+      active child already has the same intent it is REUSED (you get that child
+      back, marked [subsession-reused]); and there is a small cap on how many
+      children run at once — exceeding it returns a [subsession-error].
+    - get_subsession_status({ subSessionId }) — non-blocking snapshot. Poll it
+      to see when status becomes "done" (with a \`result\`) or "error".
+    - finalize_subsession({ subSessionId }) — cancel if still running, archive,
+      and dereference it. Finalize children you no longer need to free a slot.
+  Use these only for genuinely independent work; for a single mutation, dispatch
+  the executor directly. The child shares your workspace sandbox. Do not spin in
+  a tight status-polling loop — check, do other useful work, and check again. If
+  you hit the cap, finalize a finished child before spawning another.
+
 Workspace sandbox:
   - All file tools (read_file, list_dir, glob, grep, write_file, edit_file)
     are confined to a workspace sandbox directory. Use workspace-relative
