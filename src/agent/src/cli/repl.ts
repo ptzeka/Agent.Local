@@ -112,6 +112,24 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
     }
 
+    case "compact": {
+      process.stdout.write(chalk.gray("(summarizing…)\n"));
+      try {
+        const result = await ctx.initializer.compact(ctx.sessionId);
+        if (result.skipped) {
+          process.stdout.write(chalk.gray("(nothing to compact)\n"));
+        } else {
+          process.stdout.write(`\n${chalk.bold.gray("[SUMMARY]")}\n${result.summary}\n`);
+          process.stdout.write(
+            chalk.gray(`\n(compacted ${result.summarizedCount} messages into a summary checkpoint)\n`)
+          );
+        }
+      } catch (err) {
+        process.stdout.write(chalk.red(`error: ${(err as Error).message}\n`));
+      }
+      return false;
+    }
+
     case "think":
       // The planner phase no longer exists. Accept the command so old muscle
       // memory doesn't error out, but report the new architecture.

@@ -38,6 +38,16 @@ export interface ToolExecutionResult {
   content: string;
 }
 
+/**
+ * Minimal tool-dispatch surface. Both the concrete `McpToolClient` and the
+ * per-workspace `ScopedToolClient` satisfy it, so callers that only need to
+ * invoke a tool (the executor, the orchestrator's direct read calls) can depend
+ * on the abstraction rather than the concrete client.
+ */
+export interface ToolInvoker {
+  callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
+}
+
 export class McpToolClient {
   private connections: ServerConnection[] = [];
   private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();

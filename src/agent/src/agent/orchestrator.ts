@@ -13,8 +13,9 @@ import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
 } from "./tool-adapter.js";
-import { Summarizer } from "./summarizer.js";
+import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
+import { ScopedToolClient } from "./scoped-tool-client.js";
 import type { Session } from "./session.js";
 import type { Workspace } from "./workspace-registry.js";
 
@@ -110,7 +111,12 @@ export class Orchestrator {
     const dispatchDescriptor = buildDispatchToolDescriptor(executorTools);
     const visibleTools: ToolDescriptor[] = [...orchestratorTools, dispatchDescriptor];
 
-    const executor = new Executor(executorProvider, this.tools, executorTools);
+    // Bind every tool call this turn to the session's workspace segment. The
+    // executor's mutations and the orchestrator's own read calls both go through
+    // this clamp; fsmcp stays workspace-agnostic, the limiting lives here.
+    const scopedTools = new ScopedToolClient(this.tools, workspace.workspaceId);
+
+    const executor = new Executor(executorProvider, scopedTools, executorTools);
 
     emit({
       type: "orchestrator-start",
@@ -124,6 +130,14 @@ export class Orchestrator {
 
     const systemMessages = this.buildSystemMessages(orchestratorProvider, visibleTools, workspace);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
+
+    // The evaluator judges only THIS turn — the current user request and the
+    // work done in response to it — not the whole session. `userInput` was just
+    // pushed onto `conversation`, so it is the last element of workingMessages;
+    // everything from here on is appended, so this index bounds the turn for the
+    // rest of the loop. (Summarization runs only at the top of a turn, before
+    // the user push, so it can never shift this index mid-loop.)
+    const turnStartIndex = workingMessages.length - 1;
 
     const maxIterations = this.registry.orchestration.maxOrchestratorIterations;
     const maxDispatches = this.registry.orchestration.maxExecutorDispatchesPerTurn;
@@ -171,7 +185,7 @@ export class Orchestrator {
         const verdict = await this.evaluateCompletion(
           userInput,
           assistantMessage.content,
-          workingMessages,
+          workingMessages.slice(turnStartIndex),
           emit,
           options.signal
         );
@@ -299,7 +313,7 @@ export class Orchestrator {
           data: { id: call.id, name: call.name, arguments: call.arguments },
         });
 
-        const execution: ToolExecutionResult = await this.tools.callTool(call.name, call.arguments);
+        const execution: ToolExecutionResult = await scopedTools.callTool(call.name, call.arguments);
 
         emit({
           type: "tool-result",
@@ -332,7 +346,7 @@ export class Orchestrator {
         const verdict = await this.evaluateCompletion(
           userInput,
           "(in-progress checkpoint — no final answer yet)",
-          workingMessages,
+          workingMessages.slice(turnStartIndex),
           emit,
           options.signal
         );
@@ -404,14 +418,7 @@ export class Orchestrator {
       return;
     }
 
-    const summaryMessage: ChatMessage = {
-      role: "system",
-      content:
-        `Conversation summary (covers ${prefix.length} earlier message(s), ` +
-        `condensed by the summarizer model). Treat this as ground-truth ` +
-        `context for everything that happened before the messages below.\n\n` +
-        summaryText,
-    };
+    const summaryMessage = buildSummaryMessage(summaryText, prefix.length);
 
     conversation.length = 0;
     conversation.push(summaryMessage, ...tail);

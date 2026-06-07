@@ -1,4 +1,4 @@
-import type { McpToolClient, ToolExecutionResult } from "./mcp-client.js";
+import type { ToolExecutionResult, ToolInvoker } from "./mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -78,7 +78,7 @@ const DEFAULT_TEMPERATURE = 0.1;
 export class Executor {
   constructor(
     private readonly provider: LLMProvider,
-    private readonly tools: McpToolClient,
+    private readonly tools: ToolInvoker,
     private readonly availableTools: ToolDescriptor[]
   ) {}
 

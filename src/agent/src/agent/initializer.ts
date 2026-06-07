@@ -7,6 +7,7 @@ import type { ProjectContext } from "./context-loader.js";
 import type { ChatMessage } from "./providers/provider.js";
 import { createSession, type Session } from "./session.js";
 import { SessionStore } from "./session-store.js";
+import { Summarizer, buildSummaryMessage, isSummaryMessage } from "./summarizer.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
 /**
@@ -49,6 +50,15 @@ export interface ResetResult {
   context: ProjectContext | null;
   /** True if the reloaded context differs from what was loaded before. */
   contextChanged: boolean;
+}
+
+export interface CompactResult {
+  /** Number of messages folded into the summary (0 when skipped). */
+  summarizedCount: number;
+  /** True when there was nothing worth compacting (empty / already a summary). */
+  skipped: boolean;
+  /** The condensed summary text produced, or null when skipped. */
+  summary: string | null;
 }
 
 export class Initializer {
@@ -133,7 +143,8 @@ export class Initializer {
 
   /**
    * Reset a session to its start: clear the transcript and re-read the
-   * workspace context from disk (picking up edits to agentcontext.md).
+   * workspace context from disk (picking up edits to agentcontext.md). A clean
+   * slate — to keep a summarized checkpoint instead, use `compact`.
    */
   public async reset(sessionId: string): Promise<ResetResult> {
     const session = this.requireSession(sessionId);
@@ -149,6 +160,44 @@ export class Initializer {
     await this.deps.sessionStore.save(session);
 
     return { context: workspace.projectContext, contextChanged: before !== after };
+  }
+
+  /**
+   * Compact a session on demand: fold the ENTIRE conversation into a single
+   * summary checkpoint and continue from it (reset + summarize). Unlike the
+   * orchestrator's automatic, threshold-gated summarization, this keeps no
+   * verbatim tail — the whole transcript collapses to one summary message. The
+   * summary marks its work as already done (see buildSummaryMessage), so the
+   * session resumes without re-executing anything.
+   *
+   * A no-op when there's nothing worth folding (empty, or already a lone
+   * summary), and refused while a turn is in flight to avoid racing the
+   * orchestrator's in-place mutation of the same conversation.
+   */
+  public async compact(
+    sessionId: string,
+    options: { signal?: AbortSignal } = {}
+  ): Promise<CompactResult> {
+    const session = this.requireSession(sessionId);
+    if (session.status === "running") {
+      throw new Error(`Session "${sessionId}" is running a turn; cannot compact now.`);
+    }
+
+    const messages = session.conversation;
+    if (messages.length === 0 || (messages.length === 1 && isSummaryMessage(messages[0]))) {
+      return { summarizedCount: 0, skipped: true, summary: null };
+    }
+
+    const summarizer = new Summarizer(this.deps.registry.getSummarizerProvider());
+    const summaryText = await summarizer.summarize(messages, { signal: options.signal });
+    const summarizedCount = messages.length;
+
+    session.conversation.length = 0;
+    session.conversation.push(buildSummaryMessage(summaryText, summarizedCount));
+    session.updatedAt = Date.now();
+    await this.deps.sessionStore.save(session);
+
+    return { summarizedCount, skipped: false, summary: summaryText };
   }
 
   public history(sessionId: string): readonly ChatMessage[] {

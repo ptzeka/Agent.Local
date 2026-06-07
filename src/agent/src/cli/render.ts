@@ -220,6 +220,7 @@ export function renderHelp(): void {
     "  /help                       show this help",
     "  /exit                       quit the REPL",
     "  /reset                      clear conversation history",
+    "  /compact                    fold the conversation into a summary checkpoint and continue",
     "  /models                     list configured models and current role assignments",
     "  /model <role>=<model-id>    reassign a role (orchestrator, executor, …)",
     "  /tools                      list every tool exposed by connected MCP servers",
