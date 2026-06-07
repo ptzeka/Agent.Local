@@ -51,6 +51,13 @@ export interface ToolInvoker {
 export class McpToolClient {
   private connections: ServerConnection[] = [];
   private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();
+  /**
+   * The file-sandbox container root every server was launched against
+   * (AGENT_WORKSPACE). Captured at connect so in-process consumers — e.g. the
+   * synthetic Excel tools — resolve files to the SAME root fsmcp writes to,
+   * rather than re-deriving it from the environment.
+   */
+  private workspaceRootValue = "";
 
   /**
    * Static factory: reads mcp.json, launches every server, and waits for
@@ -66,6 +73,7 @@ export class McpToolClient {
     }
 
     const client = new McpToolClient();
+    client.workspaceRootValue = workspaceRoot;
 
     for (const [serverName, serverConfig] of Object.entries(parsed.mcpServers)) {
       const connection = await client.startServer(serverName, serverConfig, workspaceRoot);
@@ -78,6 +86,11 @@ export class McpToolClient {
     }
 
     return client;
+  }
+
+  /** The file-sandbox container root all servers were launched against. */
+  public get sandboxRoot(): string {
+    return this.workspaceRootValue;
   }
 
   /**

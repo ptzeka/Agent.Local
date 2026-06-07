@@ -1,6 +1,7 @@
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { DispatchExecutorTool } from "./dispatch-executor.js";
+import { createExcelTools } from "./excel-tools.js";
 import { createSubSessionTools } from "./subsessions.js";
 import { toolError, type SyntheticTool, type SyntheticToolContext } from "./types.js";
 
@@ -46,16 +47,16 @@ export class SyntheticToolRegistry {
 }
 
 /**
- * Assemble the synthetic tools for a turn. `dispatch_executor` is always
- * present; the sub-session tools are included only when `includeSubSessions` is
- * set — the detached sub-session runs pass `false`, so a child never sees them
- * and the spawn tree stays one level deep.
+ * Assemble the synthetic tools for a turn. `dispatch_executor` and the Excel
+ * data tools are always present; the sub-session tools are included only when
+ * `includeSubSessions` is set — the detached sub-session runs pass `false`, so a
+ * child never sees them and the spawn tree stays one level deep.
  */
 export function buildSyntheticTools(params: {
   executorTools: ToolDescriptor[];
   includeSubSessions: boolean;
 }): SyntheticToolRegistry {
-  const tools: SyntheticTool[] = [new DispatchExecutorTool(params.executorTools)];
+  const tools: SyntheticTool[] = [new DispatchExecutorTool(params.executorTools), ...createExcelTools()];
   if (params.includeSubSessions) {
     tools.push(...createSubSessionTools());
   }

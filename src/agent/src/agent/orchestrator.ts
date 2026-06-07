@@ -200,6 +200,7 @@ export class Orchestrator {
     const syntheticContext: SyntheticToolContext = {
       session,
       workspace,
+      sandboxRoot: this.tools.sandboxRoot,
       executor,
       coordinator,
       tracker,

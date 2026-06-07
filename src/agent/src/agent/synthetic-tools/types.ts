@@ -30,6 +30,13 @@ export interface SyntheticToolContext {
   readonly session: Session;
   /** Workspace sandbox shared with any spawned executor or child session. */
   readonly workspace: Workspace;
+  /**
+   * The file-sandbox container root (AGENT_WORKSPACE) every MCP server runs
+   * against. Synthetic tools that touch disk in-process (e.g. the Excel tools)
+   * resolve under `{sandboxRoot}/{workspace.workspaceId}/` so their files land
+   * in the exact same segment fsmcp / the executor write to.
+   */
+  readonly sandboxRoot: string;
   /** The executor sub-agent — the sole path to a mutation. */
   readonly executor: Executor;
   /** Hard cap on executor LLM iterations per dispatch (from orchestration config). */
