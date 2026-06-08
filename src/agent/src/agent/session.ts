@@ -23,6 +23,18 @@ export type SessionStatus =
 export interface SessionCounters {
   /** Completed user turns. */
   turns: number;
+
+  /**
+   * Cumulative model token usage for this session, summed across every
+   * orchestrator chat call. A running tally for cost/cache visibility — not a
+   * per-turn figure. (Executor and evaluator usage are not yet folded in.)
+   * Fields may be absent on sessions persisted before this was added; read
+   * them through `?? 0`.
+   */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
 }
 
 export interface Session {
@@ -57,7 +69,13 @@ export function createSession(params: CreateSessionParams): Session {
     parentSessionId: params.parentSessionId,
     conversation: [],
     status: "idle",
-    counters: { turns: 0 },
+    counters: {
+      turns: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+    },
     createdAt: now,
     updatedAt: now,
   };

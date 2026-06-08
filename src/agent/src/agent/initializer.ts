@@ -27,6 +27,24 @@ import { WorkspaceRegistry } from "./workspace-registry.js";
  * Everything below it is stateless: the orchestrator, executor, evaluator,
  * summarizer and providers all receive their state as arguments and hold
  * nothing between calls.
+ *
+ * Ownership is a tree, not a chain — the Initializer owns top-level sessions
+ * AND the SessionManager as siblings; the manager owns only sub-sessions, and
+ * each sub-session wraps its own Session (so the containment runs
+ * SubSession → Session, never the reverse):
+ *
+ *   Initializer  (stateful owner + logical entry point)
+ *   ├─ Map<sessionId, Session>   top-level sessions (persisted via SessionStore)
+ *   ├─ Orchestrator              ONE, stateless — runs every session AND sub-session
+ *   ├─ InputInbox                shared steering seam (top-level + sub-sessions)
+ *   ├─ SessionStore / WorkspaceRegistry   (repository layer)
+ *   └─ SessionManager            owns sub-sessions only, in memory:
+ *      └─ parentSessionId → (subSessionId → SubSession)
+ *         └─ SubSession.session : Session   the live child state it drives
+ *
+ * A sub-session is spawned from WITHIN a top-level session's orchestrator run
+ * (a synthetic tool calls `coordinator.createSubSession`), which mints the
+ * child and launches a detached run on the same shared Orchestrator.
  */
 
 export interface InitializerDeps {
@@ -148,6 +166,18 @@ export class Initializer {
       session.status = "awaiting-input";
     }
 
+    // Drop a trailing assistant turn whose tool calls never received results — a
+    // turn that was interrupted (error/abort) mid tool-use and persisted ending
+    // on a dangling tool_use. Resumed as-is, the next user message would land
+    // right after it and leave the tool_use unanswered. (The Anthropic provider
+    // also heals this defensively at send time; trimming keeps the persisted
+    // transcript itself clean.)
+    const conversation = session.conversation;
+    const last = conversation[conversation.length - 1];
+    if (last && last.role === "assistant" && last.toolCalls && last.toolCalls.length > 0) {
+      conversation.pop();
+    }
+
     this.sessions.set(session.sessionId, session);
     return session;
   }
@@ -166,6 +196,27 @@ export class Initializer {
    */
   public onSubSessionEvent(listener: SubSessionNotificationListener): () => void {
     return this.sessionManager.onNotification(listener);
+  }
+
+  /**
+   * Block until every sub-session spawned under `sessionId` has settled.
+   * Delegates to the SessionManager so callers never reach it directly. The
+   * interactive REPL doesn't need this (children report back asynchronously),
+   * but a headless single run awaits it before exiting so no detached sub-task
+   * is abandoned mid-flight.
+   */
+  public awaitSubSessions(sessionId: string): Promise<void> {
+    return this.sessionManager.awaitActive(sessionId);
+  }
+
+  /**
+   * Block until every sub-session across all sessions has settled. The shared
+   * CLI teardown awaits this before tearing down MCP so a normal exit abandons
+   * no background task. Delegates to the SessionManager so callers never reach
+   * it directly.
+   */
+  public awaitAllSubSessions(): Promise<void> {
+    return this.sessionManager.awaitAllActive();
   }
 
   /**
@@ -198,7 +249,11 @@ export class Initializer {
 
     try {
       const result = await this.orchestrator.run(session, workspace, userInput, runOptions);
-      session.status = "awaiting-input";
+      // A capped run gave up without a satisfied verdict; record it as "error"
+      // (the partial transcript is persisted below) so the failure is visible
+      // on disk. SessionStatus has no dedicated "capped" member, and a headless
+      // caller distinguishes the two via RunResult.outcome regardless.
+      session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
       session.counters.turns += 1;
       return result;
     } catch (err) {

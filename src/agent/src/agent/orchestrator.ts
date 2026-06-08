@@ -16,7 +16,7 @@ import {
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "./scoped-tool-client.js";
-import type { Session } from "./session.js";
+import type { Session, SessionCounters } from "./session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
 import type { Workspace } from "./workspace-registry.js";
 import {
@@ -93,6 +93,14 @@ export interface RunResult {
   finalMessage: ChatMessage;
   iterations: number;
   dispatches: number;
+  /**
+   * How the run ended. "satisfied" — the evaluator accepted the final answer;
+   * "capped" — the loop hit the orchestrator iteration cap without a satisfied
+   * verdict (the natural "tried too many times / all fails" bound). Lets a
+   * caller distinguish a real completion from a give-up without inspecting the
+   * transcript, and drives the headless exit code.
+   */
+  outcome: "satisfied" | "capped";
 }
 
 /**
@@ -231,6 +239,8 @@ export class Orchestrator {
         signal: options.signal,
       });
 
+      accumulateUsage(session.counters, response.usage);
+
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(orchestratorProvider, response, emit);
 
       emit({
@@ -259,7 +269,12 @@ export class Orchestrator {
         );
 
         if (verdict.state === "satisfied") {
-          return { finalMessage: assistantMessage, iterations: iteration, dispatches: tracker.count };
+          return {
+            finalMessage: assistantMessage,
+            iterations: iteration,
+            dispatches: tracker.count,
+            outcome: "satisfied",
+          };
         }
 
         const nudge: ChatMessage = {
@@ -357,7 +372,12 @@ export class Orchestrator {
       type: "warning",
       data: { message: "orchestrator hit iteration cap", iterations: maxIterations },
     });
-    return { finalMessage: truncationNotice, iterations: maxIterations, dispatches: tracker.count };
+    return {
+      finalMessage: truncationNotice,
+      iterations: maxIterations,
+      dispatches: tracker.count,
+      outcome: "capped",
+    };
   }
 
   // --------------------------------------------------------------------------
@@ -527,6 +547,24 @@ export class Orchestrator {
     };
   }
 
+}
+
+// ---------------------------------------------------------------------------
+// Fold one chat response's token usage into the session's running tally.
+// Defensive `?? 0` on the counters covers sessions persisted before the token
+// fields existed; on the usage side it covers providers (or requests) that
+// report no caching. Mutates in place — the counters ride along on the Session
+// the caller already persists.
+// ---------------------------------------------------------------------------
+
+function accumulateUsage(counters: SessionCounters, usage: ChatResponse["usage"]): void {
+  if (!usage) return;
+  counters.inputTokens = (counters.inputTokens ?? 0) + (usage.inputTokens ?? 0);
+  counters.outputTokens = (counters.outputTokens ?? 0) + (usage.outputTokens ?? 0);
+  counters.cacheReadInputTokens =
+    (counters.cacheReadInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
+  counters.cacheCreationInputTokens =
+    (counters.cacheCreationInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
 }
 
 // ---------------------------------------------------------------------------

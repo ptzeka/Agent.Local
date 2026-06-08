@@ -13,9 +13,15 @@
   "models": {
     "qwen-coder": {
       "provider": "ollama",
+      "model": "qwen3-coder:30b-a3b-q4_K_M",
+      "supportsTools": true,
+      "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available."
+    },
+    "qwen-coder-14b": {
+      "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
-      "description": "Strong coding model with native Ollama tool calling. Default orchestrator and executor."
+      "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU."
     },
     "deepseek-r1": {
       "provider": "ollama",
@@ -26,7 +32,7 @@
     },
     "llama-fast": {
       "provider": "ollama",
-      "model": "llama3.2:3b",
+      "model": "gemma3:4b",
       "supportsTools": true,
       "description": "Small, quick model for summarization and lightweight follow-ups."
     },
@@ -40,7 +46,7 @@
 
   "roles": {
     "orchestrator": "claude-haiku",
-    "executor": "qwen-coder",
+    "executor": "qwen-coder-14b",
     "summarizer": "llama-fast",
     "evaluator": "claude-haiku"
   },

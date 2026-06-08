@@ -31,6 +31,10 @@ const POLL_BACKOFF_MAX_MS = 15000;
 /**
  * SessionManager — Service layer. Owns the orchestrator's sub-sessions.
  *
+ * Sits as a sibling of the top-level session map under the Initializer, NOT
+ * above it: the Initializer owns top-level sessions directly and owns this
+ * manager separately. See the ownership tree on the `Initializer` class.
+ *
  * Sub-sessions are held in memory exactly as the two-level map the design
  * calls for: parentSessionId → (subSessionId → SubSession). Nothing is
  * persisted — sub-sessions are transient, in-flight work, not durable state.
@@ -232,15 +236,26 @@ export class SessionManager implements SubSessionCoordinator {
    * steerable through the same injection seam as the top-level session.
    */
   private launch(sub: SubSession, params: CreateSubSessionParams): void {
-    this.runner
+    // Retain the settle promise on the record so a caller can block on this
+    // child's completion (the headless single run drains all children before
+    // exiting). Both arms resolve, so it never rejects — awaiting it is safe.
+    sub.settled = this.runner
       .run(sub.session, params.workspace, sub.intent, {
         signal: sub.abort.signal,
         pullInjectedPrompts: () => this.inbox.drain(sub.subSessionId),
       })
       .then((result) => {
         this.settle(sub, () => {
-          sub.status = "done";
-          sub.result = result.finalMessage.content;
+          // A capped run gave up without a satisfied verdict — record it as an
+          // error so "didn't finish" means the same thing here as it does for a
+          // top-level run, rather than masquerading as a clean "done".
+          if (result.outcome === "capped") {
+            sub.status = "error";
+            sub.error = "sub-session hit the orchestrator iteration cap without completing";
+          } else {
+            sub.status = "done";
+            sub.result = result.finalMessage.content;
+          }
           sub.iterations = result.iterations;
           sub.dispatches = result.dispatches;
         });
@@ -251,6 +266,45 @@ export class SessionManager implements SubSessionCoordinator {
           sub.error = err instanceof Error ? err.message : String(err);
         });
       });
+  }
+
+  /**
+   * Block until every active child of `parentSessionId` has settled. The
+   * interactive path never calls this — children there report back through the
+   * notification channel after the parent's turn ends. A headless single run
+   * does: it must leave no detached sub-task in flight when the process exits.
+   *
+   * One pass is complete because sub-sessions are one level deep (detached runs
+   * get no coordinator, so a child cannot spawn grandchildren) and the parent's
+   * own run has already returned by the time this is called, so no new children
+   * will appear. settle() leaves a finished child in the active set with a
+   * terminal status, so awaiting each child's `settled` promise is sufficient.
+   */
+  public async awaitActive(parentSessionId: string): Promise<void> {
+    const map = this.active.get(parentSessionId);
+    if (!map) return;
+    const pending = [...map.values()].map((sub) => sub.settled ?? Promise.resolve());
+    await Promise.all(pending);
+  }
+
+  /**
+   * Block until every active child across ALL parents has settled. The shared
+   * process teardown calls this on a normal exit so no detached sub-task is
+   * abandoned: the REPL fires children and forgets them across turns, but on the
+   * way out we join them. One pass suffices for the same reason awaitActive's
+   * does — by teardown the REPL loop has stopped and any headless run has
+   * returned, so no new children can appear, and settle() leaves a finished
+   * child in the active set with a terminal status (its `settled` already
+   * resolved).
+   */
+  public async awaitAllActive(): Promise<void> {
+    const pending: Promise<void>[] = [];
+    for (const map of this.active.values()) {
+      for (const sub of map.values()) {
+        pending.push(sub.settled ?? Promise.resolve());
+      }
+    }
+    await Promise.all(pending);
   }
 
   /**

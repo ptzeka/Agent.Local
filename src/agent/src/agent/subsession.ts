@@ -40,6 +40,14 @@ export interface SubSession {
   dispatches?: number;
   /** Cancels the detached run; fired by finalize() on a still-running child. */
   abort: AbortController;
+  /**
+   * Resolves when the detached run settles (done OR error — it never rejects,
+   * since launch() handles both arms). Lets a caller block on a child's
+   * completion: the interactive path ignores it (children report back via
+   * notifications), but a headless single run awaits it so no sub-task is left
+   * pending when the process exits.
+   */
+  settled?: Promise<void>;
   /** Status returned to the most recent get_status poll — drives poll backoff. */
   lastPolledStatus?: SubSessionStatus;
   /** Count of consecutive polls that saw `lastPolledStatus` unchanged. */

@@ -29,11 +29,17 @@ export interface AnthropicProviderConfig {
   apiKey: string;
   model: string;
   supportsNativeTools: boolean;
-  /** Per-request output cap when a caller does not specify one. */
+  /**
+   * Per-request output cap when a caller does not specify one. The default is
+   * comfortably high because chat() streams the response — see DEFAULT_MAX_TOKENS.
+   */
   defaultMaxTokens?: number;
 }
 
-const DEFAULT_MAX_TOKENS = 4096;
+// Safe to set high because chat() streams via messages.stream() + finalMessage()
+// rather than the non-streaming create(), which would hit SDK HTTP timeouts as
+// max_tokens climbs past ~16K. Opus supports up to 128K output over a stream.
+const DEFAULT_MAX_TOKENS = 16000;
 const DEFAULT_TEMPERATURE = 0.2;
 
 export class AnthropicProvider implements LLMProvider {
@@ -62,6 +68,16 @@ export class AnthropicProvider implements LLMProvider {
     };
 
     if (system.length > 0) {
+      // Prompt caching: mark the last system block as a cache breakpoint. Render
+      // order is tools -> system -> messages, so a breakpoint here caches the
+      // whole stable prefix (tool definitions + system) as one ephemeral entry.
+      // The orchestrator re-sends this identical prefix every iteration; after
+      // the first write it reads back at ~0.1x input cost. 5-minute TTL (the
+      // ephemeral default) comfortably outlasts a single chatty turn.
+      system[system.length - 1] = {
+        ...system[system.length - 1],
+        cache_control: { type: "ephemeral" },
+      };
       request.system = system;
     }
 
@@ -72,7 +88,12 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const startedAt = Date.now();
-    const response = await this.client.messages.create(request, { signal: options.signal });
+    // Stream the response so high max_tokens values don't trip the SDK's
+    // non-streaming HTTP timeout. We still collect the full message before
+    // returning — finalMessage() yields the same Anthropic.Message that
+    // create() would have, so everything downstream is unchanged.
+    const stream = this.client.messages.stream(request, { signal: options.signal });
+    const response = await stream.finalMessage();
     const totalDurationMs = Date.now() - startedAt;
 
     const { content, toolCalls } = fromAnthropicContent(response.content);
@@ -89,6 +110,10 @@ export class AnthropicProvider implements LLMProvider {
       usage: {
         inputTokens: response.usage.input_tokens,
         outputTokens: response.usage.output_tokens,
+        // null (no caching this request) is normalised to undefined so callers
+        // can treat "unsupported" and "zero" uniformly via ?? 0.
+        cacheReadInputTokens: response.usage.cache_read_input_tokens ?? undefined,
+        cacheCreationInputTokens: response.usage.cache_creation_input_tokens ?? undefined,
         totalDurationMs,
       },
     };
@@ -97,11 +122,12 @@ export class AnthropicProvider implements LLMProvider {
 
 /**
  * Split a flat ChatMessage[] into Anthropic's (system, messages) pair.
- * System messages are concatenated into the top-level system string; tool
- * results are folded into user-turn `tool_result` blocks.
+ * System messages are concatenated into a single top-level system text block
+ * (so chat() can attach one cache breakpoint to it); tool results are folded
+ * into user-turn `tool_result` blocks.
  */
 function toAnthropicMessages(messages: ChatMessage[]): {
-  system: string;
+  system: Anthropic.TextBlockParam[];
   anthropicMessages: Anthropic.MessageParam[];
 } {
   const systemParts: string[] = [];
@@ -159,7 +185,87 @@ function toAnthropicMessages(messages: ChatMessage[]): {
     }
   }
 
-  return { system: systemParts.join("\n\n"), anthropicMessages: out };
+  // Heal any tool_use ⇄ tool_result pairing the source transcript left broken
+  // (e.g. a turn interrupted after the assistant's tool_use was recorded but
+  // before its results) before handing the array to the API, which rejects an
+  // unmatched tool_use outright.
+  // System parts collapse into a single text block (one cacheable unit). An
+  // empty array means "no system prompt" — chat() omits the field entirely.
+  const system: Anthropic.TextBlockParam[] =
+    systemParts.length > 0 ? [{ type: "text", text: systemParts.join("\n\n") }] : [];
+
+  return { system, anthropicMessages: repairToolPairing(out) };
+}
+
+/** Placeholder result for a tool_use whose real result was never recorded. */
+const MISSING_TOOL_RESULT =
+  "[tool result unavailable — the previous run was interrupted before this tool completed]";
+
+/**
+ * Ensure every assistant `tool_use` block is answered by a `tool_result` in the
+ * immediately-following user turn — the invariant the Messages API enforces.
+ *
+ * A persisted transcript can violate it: if a turn is interrupted (error,
+ * abort) after the assistant's tool_use is recorded but before the tool runs,
+ * the session is saved ending on a dangling tool_use, and the next user message
+ * lands right after it. Rather than reject such a transcript, we synthesize an
+ * error-flagged tool_result for each unanswered id and fold it into the
+ * following user turn (so no two consecutive user turns are created), or append
+ * a fresh user turn when nothing follows.
+ */
+export function repairToolPairing(messages: Anthropic.MessageParam[]): Anthropic.MessageParam[] {
+  const result: Anthropic.MessageParam[] = [];
+
+  for (let i = 0; i < messages.length; i += 1) {
+    const message = messages[i];
+    result.push(message);
+
+    if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+
+    const toolUseIds = message.content
+      .filter((block) => blockType(block) === "tool_use")
+      .map((block) => (block as Anthropic.ToolUseBlockParam).id);
+    if (toolUseIds.length === 0) continue;
+
+    const next = messages[i + 1];
+    const providedIds =
+      next && next.role === "user" && Array.isArray(next.content)
+        ? next.content
+            .filter((block) => blockType(block) === "tool_result")
+            .map((block) => (block as Anthropic.ToolResultBlockParam).tool_use_id)
+        : [];
+
+    const missing = toolUseIds.filter((id) => !providedIds.includes(id));
+    if (missing.length === 0) continue;
+
+    const synthetic: Anthropic.ToolResultBlockParam[] = missing.map((id) => ({
+      type: "tool_result",
+      tool_use_id: id,
+      content: MISSING_TOOL_RESULT,
+      is_error: true,
+    }));
+
+    if (next && next.role === "user") {
+      // Lead the next user turn with the synthetic results, keeping it a single
+      // user turn. Replace the upcoming element so it is emitted merged.
+      const nextBlocks: Anthropic.ContentBlockParam[] = Array.isArray(next.content)
+        ? next.content
+        : [{ type: "text", text: next.content }];
+      messages[i + 1] = { role: "user", content: [...synthetic, ...nextBlocks] };
+    } else {
+      // Nothing (or an assistant turn) follows: insert a standalone results turn.
+      result.push({ role: "user", content: synthetic });
+    }
+  }
+
+  return result;
+}
+
+/** The discriminant `type` of a content block param, or undefined for a string. */
+function blockType(block: Anthropic.ContentBlockParam | string): string | undefined {
+  return typeof block === "object" && block !== null
+    ? (block as { type?: string }).type
+    : undefined;
 }
 
 /** True when every block in a user turn is a tool_result (a result batch). */

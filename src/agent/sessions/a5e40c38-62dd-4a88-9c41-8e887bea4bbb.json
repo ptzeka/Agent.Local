@@ -1,0 +1,21 @@
+{
+  "sessionId": "a5e40c38-62dd-4a88-9c41-8e887bea4bbb",
+  "workspaceId": "1f2331c0-131e-40d9-9607-ce4ce256a755",
+  "parentSessionId": "57c64770-8208-4a4b-9cda-111b723b3f22",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "Create hello_world.txt file with \"Hello, World!\" content"
+    }
+  ],
+  "status": "idle",
+  "counters": {
+    "turns": 0,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1780902825898,
+  "updatedAt": 1780902825898
+}

@@ -81,6 +81,13 @@ export interface ChatResponse {
   usage?: {
     inputTokens?: number;
     outputTokens?: number;
+    /**
+     * Tokens served from the prompt cache (~0.1x input price). Present only
+     * for providers that support prompt caching; verifies cache hits land.
+     */
+    cacheReadInputTokens?: number;
+    /** Tokens written to the prompt cache this request (~1.25x input price). */
+    cacheCreationInputTokens?: number;
     totalDurationMs?: number;
   };
 }
