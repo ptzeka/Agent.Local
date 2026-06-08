@@ -22,6 +22,7 @@ import { McpToolClient } from "../agent/mcp-client.js";
 import { ModelRegistry } from "../agent/model-registry.js";
 import { Initializer } from "../agent/initializer.js";
 import { runRepl } from "./repl.js";
+import { pickSession } from "./session-picker.js";
 
 async function main(): Promise<void> {
   // Load .env if present. Silently no-op if missing.
@@ -49,16 +50,23 @@ async function main(): Promise<void> {
 
   // The Initializer is the stateful session owner. It builds the file-backed
   // session store and drives the stateless orchestrator. Sessions persist
-  // under .sessions (override with AGENT_SESSIONS_DIR).
+  // under src/agent/sessions (override with AGENT_SESSIONS_DIR).
   const sessionsDir = path.resolve(
-    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, ".sessions")
+    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, "src", "agent", "sessions")
   );
   const initializer = Initializer.create({ registry, tools, sessionsDir });
 
-  // New session every run for now. Project context lives at the project root
-  // (src/context/agentcontext.md), so the workspace root is the project root,
-  // not the fs sandbox.
-  const mainSession = await initializer.openSession({ workspaceRoot: projectRoot });
+  // Always force a session choice at startup — resume an existing one or
+  // bootstrap a new one — rather than silently minting a just-in-time session.
+  // With none saved the picker still shows its lone "create new" row. Project
+  // context lives at the project root (src/context/agentcontext.md), so the
+  // workspace root is the project root, not the fs sandbox.
+  const saved = await initializer.listSavedSessions();
+  const choice = await pickSession(saved);
+  const mainSession =
+    choice.kind === "resume"
+      ? await initializer.resumeSession({ sessionId: choice.sessionId, workspaceRoot: projectRoot })
+      : await initializer.openSession({ workspaceRoot: projectRoot });
   const projectContext = initializer.getWorkspaceContext(mainSession.sessionId);
 
   // Wire shutdown so child MCP servers don't outlive us.
@@ -80,6 +88,7 @@ async function main(): Promise<void> {
       tools,
       initializer,
       sessionId: mainSession.sessionId,
+      resumed: choice.kind === "resume",
       projectContext,
     });
   } finally {

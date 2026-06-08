@@ -1,6 +1,7 @@
 import chalk from "chalk";
 
 import type { OrchestratorEvent } from "../agent/orchestrator.js";
+import type { SubSessionNotification } from "../agent/subsession.js";
 
 /**
  * REPL renderer.
@@ -141,6 +142,38 @@ export function renderEvent(event: OrchestratorEvent): void {
   }
 }
 
+/**
+ * Render a sub-session completion that arrived out-of-band (the child settled
+ * after the parent's turn ended). Prefixed with a newline so it doesn't smear
+ * the live `you>` prompt, and tagged so it's clearly an async report rather
+ * than part of the current turn's output.
+ */
+export function renderSubSessionNotification(notification: SubSessionNotification): void {
+  const shortId = notification.subSessionId.split("-")[0] ?? notification.subSessionId.slice(0, 8);
+  const intent = notification.intent.replace(/\s+/g, " ").trim();
+
+  if (notification.status === "done") {
+    const result = (notification.result ?? "").replace(/\s+/g, " ").trim();
+    const preview = result.length > 200 ? `${result.slice(0, 199)}…` : result;
+    process.stdout.write(
+      "\n" +
+        chalk.greenBright(`✓ [sub-session ${shortId} done] `) +
+        chalk.gray(intent) +
+        (preview.length > 0 ? `\n  ${preview}` : "") +
+        "\n"
+    );
+    return;
+  }
+
+  const reason = (notification.error ?? "unknown error").replace(/\s+/g, " ").trim();
+  process.stdout.write(
+    "\n" +
+      chalk.redBright(`✗ [sub-session ${shortId} error] `) +
+      chalk.gray(intent) +
+      `\n  ${reason}\n`
+  );
+}
+
 function renderExecutorEvent(data: Record<string, unknown>): void {
   const kind = String(data.kind ?? "");
   switch (kind) {
@@ -194,14 +227,27 @@ function renderExecutorEvent(data: Record<string, unknown>): void {
   }
 }
 
+/** Identity of the session this REPL drives, shown in the startup banner. */
+export interface BannerSession {
+  sessionId: string;
+  /** True when resumed from disk, false for a freshly bootstrapped session. */
+  resumed: boolean;
+  /** Completed user turns (0 for a new session). */
+  turns: number;
+  /** Short description — the first user message, or null when none yet. */
+  preview: string | null;
+}
+
 export function renderBanner(
   workspaceRoot: string,
   sandboxRoot: string,
+  session: BannerSession,
   contextPath?: string | null
 ): void {
   const lines = [
     "",
     chalk.bold("Agent.Local") + chalk.gray(" — local coding agent (Ollama + MCP)"),
+    chalk.gray(`session:   ${sessionLine(session)}`),
     chalk.gray(`project:   ${workspaceRoot}`),
     chalk.gray(`fs sandbox: ${sandboxRoot} (all file I/O confined here)`),
     chalk.gray("architecture: orchestrator (read-only) → dispatch_executor → executor (mutations)"),
@@ -211,6 +257,19 @@ export function renderBanner(
   }
   lines.push(chalk.gray("type /help for commands, /exit to quit"), "");
   process.stdout.write(lines.join("\n"));
+}
+
+/** "3f8a1c2b (resumed) — 5 turns · <description>" identity line. */
+function sessionLine(session: BannerSession): string {
+  const shortId = session.sessionId.split("-")[0] ?? session.sessionId.slice(0, 8);
+  const origin = session.resumed ? "resumed" : "new";
+  let line = `${shortId} (${origin})`;
+  if (session.resumed) {
+    const turns = `${session.turns} turn${session.turns === 1 ? "" : "s"}`;
+    const desc = session.preview ? ` · ${session.preview}` : "";
+    line += ` — ${turns}${desc}`;
+  }
+  return line;
 }
 
 export function renderHelp(): void {

@@ -6,7 +6,7 @@ import type { ModelRegistry } from "../agent/model-registry.js";
 import type { ProjectContext } from "../agent/context-loader.js";
 import type { Initializer } from "../agent/initializer.js";
 
-import { renderBanner, renderEvent, renderHelp } from "./render.js";
+import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification } from "./render.js";
 
 /**
  * Interactive REPL.
@@ -27,18 +27,34 @@ export interface ReplOptions {
   initializer: Initializer;
   /** The session this REPL drives — every action is addressed to it. */
   sessionId: string;
+  /** True when the session was resumed from disk rather than freshly created. */
+  resumed: boolean;
   projectContext?: ProjectContext | null;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, sandboxRoot, registry, tools, initializer, sessionId, projectContext = null } = options;
+  const { workspaceRoot, sandboxRoot, registry, tools, initializer, sessionId, resumed, projectContext = null } = options;
 
-  renderBanner(workspaceRoot, sandboxRoot, projectContext?.sourcePath ?? null);
+  const session = initializer.getSession(sessionId);
+  const firstUser = session.conversation.find((message) => message.role === "user");
+  const preview = firstUser ? previewOf(firstUser.content) : null;
+
+  renderBanner(
+    workspaceRoot,
+    sandboxRoot,
+    { sessionId, resumed, turns: session.counters.turns, preview },
+    projectContext?.sourcePath ?? null
+  );
 
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
   });
+
+  // Surface sub-session completions as they arrive — these fire after the
+  // parent turn that spawned them has already ended, so they land out-of-band
+  // here rather than in the orchestrator's event stream.
+  const unsubscribe = initializer.onSubSessionEvent(renderSubSessionNotification);
 
   while (true) {
     const promptLabel = chalk.bold.cyan("you> ");
@@ -72,6 +88,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     }
   }
 
+  unsubscribe();
   rl.close();
 }
 
@@ -220,6 +237,13 @@ function handleHistoryCommand(ctx: SlashContext): void {
     process.stdout.write(`  ${colour(label)} ${message.content}\n`);
   }
   process.stdout.write("\n");
+}
+
+/** Whitespace-collapsed, truncated first message — a short session description. */
+function previewOf(content: string): string | null {
+  const flat = content.replace(/\s+/g, " ").trim();
+  if (flat.length === 0) return null;
+  return flat.length > 60 ? `${flat.slice(0, 59)}…` : flat;
 }
 
 function roleColour(role: string): (s: string) => string {

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { InputInbox } from "./input-inbox.js";
 import type { SessionRunner } from "./orchestrator.js";
 import { createSession } from "./session.js";
+import type { SessionStore } from "./session-store.js";
 import {
   makeSubSession,
   toSnapshot,
@@ -11,7 +12,10 @@ import {
   type StatusResult,
   type SubSession,
   type SubSessionCoordinator,
+  type SubSessionNotification,
+  type SubSessionNotificationListener,
   type SubSessionSnapshot,
+  type SubSessionStatus,
 } from "./subsession.js";
 
 /** Default ceiling on concurrently-active children per parent. Configurable via
@@ -42,12 +46,30 @@ export class SessionManager implements SubSessionCoordinator {
   private readonly active = new Map<string, Map<string, SubSession>>();
   /** Finalized children, kept so getStatus can still answer after archival. */
   private readonly archived = new Map<string, Map<string, SubSession>>();
+  /** Report-back subscribers, notified when a child settles (done/error). */
+  private readonly notificationListeners = new Set<SubSessionNotificationListener>();
 
   constructor(
     private readonly runner: SessionRunner,
     private readonly inbox: InputInbox,
+    /** Repository the child's transcript + terminal status are persisted to.
+     *  Children carry a parentSessionId, so the store keeps them out of the
+     *  startup picker — they are durable and inspectable, but not resumable
+     *  as top-level sessions. */
+    private readonly store: SessionStore,
     private readonly maxActivePerParent: number = DEFAULT_MAX_ACTIVE_PER_PARENT
   ) {}
+
+  /**
+   * Subscribe to child completions. The returned function unsubscribes. This is
+   * the push seam the UI (and, later, an external transport) listens on so a
+   * finished child reports itself instead of being polled. In-memory only —
+   * subscriptions do not survive a restart.
+   */
+  public onNotification(listener: SubSessionNotificationListener): () => void {
+    this.notificationListeners.add(listener);
+    return () => this.notificationListeners.delete(listener);
+  }
 
   public createSubSession(params: CreateSubSessionParams): CreateSubSessionResult {
     const siblings = this.active.get(params.parentSessionId);
@@ -104,6 +126,10 @@ export class SessionManager implements SubSessionCoordinator {
     });
 
     this.track(sub);
+    // Persist the initial record (status "running") so a sessions/<subId>.json
+    // exists the moment the child is spawned. Fire-and-forget, mirroring the
+    // detached run launch: creation must stay synchronous for the tool reply.
+    this.persist(sub);
     this.launch(sub, params);
 
     return { outcome: "created", snapshot: toSnapshot(sub) };
@@ -231,11 +257,59 @@ export class SessionManager implements SubSessionCoordinator {
    * Apply a terminal mutation only if the sub-session is still running. Guards
    * against a finalize() that already aborted-and-archived the child: the
    * resulting run rejection must not flip "archived" back to "error".
+   *
+   * On a genuine settle it also mirrors the outcome onto the persisted child
+   * session, writes it, and fires the report-back notification — the two
+   * effects that make a finished child both durable and visible without a poll.
    */
   private settle(sub: SubSession, mutate: () => void): void {
     if (sub.status !== "running") return;
     mutate();
     sub.updatedAt = Date.now();
+
+    // Mirror the sub-session outcome onto the underlying Session so the
+    // persisted file records a terminal status alongside the full transcript
+    // the orchestrator mutated in place. The cast re-widens `status`: the guard
+    // above narrowed it to "running", and TS can't see that the opaque mutate()
+    // just moved it to a terminal state.
+    const settledStatus = sub.status as SubSessionStatus;
+    if (settledStatus === "done" || settledStatus === "error") {
+      sub.session.status = settledStatus;
+      sub.session.counters.turns = Math.max(sub.session.counters.turns, 1);
+      sub.session.updatedAt = sub.updatedAt;
+      this.persist(sub);
+      this.emitNotification(sub);
+    }
+  }
+
+  /** Fire-and-forget persist of a child's underlying Session. The detached
+   *  lifecycle is already async, so a failed write is logged-by-rejection
+   *  rather than allowed to crash the run. */
+  private persist(sub: SubSession): void {
+    void this.store.save(sub.session).catch(() => {
+      /* best-effort: a child that fails to persist still runs and notifies */
+    });
+  }
+
+  /** Notify every subscriber that a child reached a terminal state. Listener
+   *  errors are isolated so one bad subscriber can't starve the others. */
+  private emitNotification(sub: SubSession): void {
+    if (sub.status !== "done" && sub.status !== "error") return;
+    const notification: SubSessionNotification = {
+      subSessionId: sub.subSessionId,
+      parentSessionId: sub.parentSessionId,
+      intent: sub.intent,
+      status: sub.status,
+      result: sub.result,
+      error: sub.error,
+    };
+    for (const listener of this.notificationListeners) {
+      try {
+        listener(notification);
+      } catch {
+        /* a throwing subscriber must not break the settle path */
+      }
+    }
   }
 }
 

@@ -1,0 +1,39 @@
+{
+  "sessionId": "98b3ed81-3ba1-4bb0-be3e-6c9a3ca31d87",
+  "workspaceId": "45ea75f7-d426-4770-ade3-243fbd9ddef5",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "do we have anything in our workspace"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll check what's in the workspace for you.",
+      "toolCalls": [
+        {
+          "id": "toolu_011u8WLvz3VWSdJn9wPBypef",
+          "name": "fsmcp__list_dir",
+          "arguments": {
+            "path": "."
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\n  \"path\": \".\",\n  \"total_entries\": 1,\n  \"truncated\": false,\n  \"entries\": [\n    {\n      \"name\": \"helloworld.txt\",\n      \"type\": \"file\",\n      \"size_bytes\": 13\n    }\n  ]\n}",
+      "toolCallId": "toolu_011u8WLvz3VWSdJn9wPBypef",
+      "toolName": "fsmcp__list_dir"
+    },
+    {
+      "role": "assistant",
+      "content": "Yes, we have one file in the workspace:\n\n- **helloworld.txt** (13 bytes)\n\nWould you like me to read it or do something else with it?"
+    }
+  ],
+  "status": "awaiting-input",
+  "counters": {
+    "turns": 1
+  },
+  "createdAt": 1780859391821,
+  "updatedAt": 1780889739586
+}

@@ -79,6 +79,29 @@ export interface StatusResult {
   backoffMs: number;
 }
 
+/**
+ * Push notification fired when a detached child reaches a terminal state. This
+ * is the report-back seam that replaces polling: the parent does NOT block on
+ * get_status — it spawns the child, ends its turn, and is told the outcome
+ * through this channel when the run actually settles. Carries only the terminal
+ * facts an outside listener (the REPL today, an external transport later) needs
+ * to surface the result; the live session is never exposed.
+ */
+export interface SubSessionNotification {
+  subSessionId: string;
+  parentSessionId: string;
+  intent: string;
+  /** Terminal outcome only — `running` is never notified. */
+  status: "done" | "error";
+  /** Final assistant message when status is "done". */
+  result?: string;
+  /** Failure detail when status is "error". */
+  error?: string;
+}
+
+/** A subscriber on the coordinator's notification channel. */
+export type SubSessionNotificationListener = (notification: SubSessionNotification) => void;
+
 export interface CreateSubSessionParams {
   parentSessionId: string;
   /** Workspace the child shares with its parent (same sandbox segment). */

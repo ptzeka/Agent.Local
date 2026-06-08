@@ -4,6 +4,23 @@ import path from "node:path";
 import type { Session } from "./session.js";
 
 /**
+ * Lightweight description of a persisted session, enough for a picker to show
+ * a useful row without the caller having to load and parse every file itself.
+ */
+export interface SessionSummary {
+  sessionId: string;
+  /** Epoch millis of the last persist; drives most-recent-first ordering. */
+  updatedAt: number;
+  /** Completed user turns. */
+  turns: number;
+  /** Truncated first user message, or null when the transcript has none yet. */
+  preview: string | null;
+}
+
+/** Cap on preview length so a long opening message can't wreck the layout. */
+const PREVIEW_MAX_LENGTH = 60;
+
+/**
  * SessionStore — Repository layer.
  *
  * Persists one JSON file per session under a single directory. Chosen for
@@ -52,6 +69,34 @@ export class SessionStore {
   }
 
   /**
+   * Summaries of every persisted top-level session, most-recently-updated
+   * first. Loads each file once and projects it to the small shape a picker
+   * needs; files that fail to parse (partial/corrupt) are skipped rather than
+   * aborting the whole listing.
+   *
+   * Sub-sessions (any session carrying a `parentSessionId`) are deliberately
+   * omitted: they are persisted for durability/inspection but are not
+   * resumable as standalone sessions, so the startup picker must never offer
+   * them.
+   */
+  public async summaries(): Promise<SessionSummary[]> {
+    const ids = await this.list();
+    const summaries: SessionSummary[] = [];
+    for (const id of ids) {
+      const session = await this.load(id).catch(() => null);
+      if (!session) continue;
+      if (session.parentSessionId) continue;
+      summaries.push({
+        sessionId: session.sessionId,
+        updatedAt: session.updatedAt,
+        turns: session.counters.turns,
+        preview: firstUserPreview(session),
+      });
+    }
+    return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  /**
    * Map a sessionId to its file. The id is sanitised so a hostile or
    * malformed value can't escape the store directory via path traversal.
    */
@@ -59,4 +104,16 @@ export class SessionStore {
     const safe = sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
     return path.join(this.directory, `${safe}.json`);
   }
+}
+
+/**
+ * First user message of a session, whitespace-collapsed and truncated, to hint
+ * at what the session was about. Returns null when no user turn exists yet.
+ */
+function firstUserPreview(session: Session): string | null {
+  const firstUser = session.conversation.find((message) => message.role === "user");
+  if (!firstUser) return null;
+  const flat = firstUser.content.replace(/\s+/g, " ").trim();
+  if (flat.length === 0) return null;
+  return flat.length > PREVIEW_MAX_LENGTH ? `${flat.slice(0, PREVIEW_MAX_LENGTH - 1)}…` : flat;
 }

@@ -8,7 +8,8 @@ import type { ProjectContext } from "./context-loader.js";
 import type { ChatMessage } from "./providers/provider.js";
 import { SessionManager } from "./session-manager.js";
 import { createSession, type Session } from "./session.js";
-import { SessionStore } from "./session-store.js";
+import { SessionStore, type SessionSummary } from "./session-store.js";
+import type { SubSessionNotificationListener } from "./subsession.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "./summarizer.js";
 import { WorkspaceRegistry } from "./workspace-registry.js";
 
@@ -47,6 +48,13 @@ export interface OpenSessionParams {
   parentSessionId?: string;
 }
 
+export interface ResumeSessionParams {
+  /** Id of an already-persisted session to load back into memory. */
+  sessionId: string;
+  /** Filesystem root used to re-resolve the workspace's project context. */
+  workspaceRoot: string;
+}
+
 export interface ResetResult {
   /** The context now in effect after the reload (null if no file present). */
   context: ProjectContext | null;
@@ -74,9 +82,10 @@ export class Initializer {
   constructor(private readonly deps: InitializerDeps) {
     // One stateless orchestrator serves every session.
     this.orchestrator = new Orchestrator(deps.registry, deps.tools);
-    // The manager drives sub-sessions through the orchestrator (as a runner) and
-    // shares the inbox so a running sub-session is steerable too.
-    this.sessionManager = new SessionManager(this.orchestrator, this.inbox);
+    // The manager drives sub-sessions through the orchestrator (as a runner),
+    // shares the inbox so a running sub-session is steerable too, and persists
+    // each child through the same store top-level sessions use.
+    this.sessionManager = new SessionManager(this.orchestrator, this.inbox, deps.sessionStore);
   }
 
   /**
@@ -115,6 +124,48 @@ export class Initializer {
     this.sessions.set(session.sessionId, session);
     await this.deps.sessionStore.save(session);
     return session;
+  }
+
+  /**
+   * Resume a previously-persisted session. Loads it from the store, re-registers
+   * its workspace (the in-memory registry starts empty each run, so a resumed
+   * session's workspace must be re-resolved from disk), and tracks it in memory.
+   *
+   * A status of "running" left over from a process that crashed mid-turn is
+   * normalized to "awaiting-input": there is no live turn after a restart, so
+   * the session must be dispatchable again rather than stuck behind the
+   * running-guard.
+   */
+  public async resumeSession(params: ResumeSessionParams): Promise<Session> {
+    const session = await this.deps.sessionStore.load(params.sessionId);
+    if (!session) {
+      throw new Error(`No persisted session "${params.sessionId}" to resume.`);
+    }
+
+    await this.deps.workspaces.register(session.workspaceId, params.workspaceRoot);
+
+    if (session.status === "running") {
+      session.status = "awaiting-input";
+    }
+
+    this.sessions.set(session.sessionId, session);
+    return session;
+  }
+
+  /** Summaries of every persisted session, for a resume picker. Delegates to
+   *  the store so the UI never reaches into the repository directly. */
+  public listSavedSessions(): Promise<SessionSummary[]> {
+    return this.deps.sessionStore.summaries();
+  }
+
+  /**
+   * Subscribe to sub-session completions. The returned function unsubscribes.
+   * This is the seam the UI listens on so a finished child reports its outcome
+   * directly to the user instead of the orchestrator polling for it. Delegates
+   * to the SessionManager so callers never reach the manager directly.
+   */
+  public onSubSessionEvent(listener: SubSessionNotificationListener): () => void {
+    return this.sessionManager.onNotification(listener);
   }
 
   /**
