@@ -1,15 +1,12 @@
 import { randomUUID } from "node:crypto";
 
-import type { InputInbox } from "./input-inbox.js";
-import type { SessionRunner } from "./orchestrator.js";
-import { createSession } from "./session.js";
-import type { SessionStore } from "./session-store.js";
 import {
   makeSubSession,
   toSnapshot,
   type CreateSubSessionParams,
   type CreateSubSessionResult,
   type StatusResult,
+  type SubRuntimeFactory,
   type SubSession,
   type SubSessionCoordinator,
   type SubSessionNotification,
@@ -35,15 +32,16 @@ const POLL_BACKOFF_MAX_MS = 15000;
  * above it: the Initializer owns top-level sessions directly and owns this
  * manager separately. See the ownership tree on the `Initializer` class.
  *
- * Sub-sessions are held in memory exactly as the two-level map the design
- * calls for: parentSessionId → (subSessionId → SubSession). Nothing is
- * persisted — sub-sessions are transient, in-flight work, not durable state.
+ * The in-memory two-level map (parentSessionId → subSessionId → SubSession) is
+ * the live tracking state; the child's transcript is persisted by its own
+ * runtime, so the manager itself holds no durable state.
  *
- * `create` spawns a DETACHED orchestrator run for the intent and returns
- * immediately with a `running` snapshot; the parent polls via `getStatus` and
- * ends a child with `finalize`. The run is launched through the injected
- * `SessionRunner` (the orchestrator) WITHOUT a coordinator in its options, so a
- * sub-session cannot itself spawn sub-sessions — a deliberate one-level guard.
+ * `create` builds the child its OWN runtime through the injected
+ * `subRuntimeFactory` (the sub-pipeline, with parent-fed steps), then DETACHES a
+ * single dispatch of the intent — the headless lifecycle — and returns
+ * immediately with a `running` snapshot. The parent polls via `getStatus` and
+ * ends a child with `finalize`. The child's own coordinator is capped at 0, so a
+ * sub-session cannot itself spawn sub-sessions — the one-level-deep guard.
  */
 export class SessionManager implements SubSessionCoordinator {
   /** Active children, keyed parent → sub. */
@@ -54,13 +52,10 @@ export class SessionManager implements SubSessionCoordinator {
   private readonly notificationListeners = new Set<SubSessionNotificationListener>();
 
   constructor(
-    private readonly runner: SessionRunner,
-    private readonly inbox: InputInbox,
-    /** Repository the child's transcript + terminal status are persisted to.
-     *  Children carry a parentSessionId, so the store keeps them out of the
-     *  startup picker — they are durable and inspectable, but not resumable
-     *  as top-level sessions. */
-    private readonly store: SessionStore,
+    /** Builds a fresh child runtime per spawn — the sub-pipeline composed with
+     *  parent-fed steps. Undefined on a leaf coordinator (cap 0), which never
+     *  spawns and so never calls it. */
+    private readonly subRuntimeFactory: SubRuntimeFactory | undefined,
     private readonly maxActivePerParent: number = DEFAULT_MAX_ACTIVE_PER_PARENT
   ) {}
 
@@ -107,33 +102,17 @@ export class SessionManager implements SubSessionCoordinator {
 
     const subSessionId = randomUUID();
 
-    // The child shares its parent's workspace segment; its own sessionId IS the
+    // The record is created synchronously (so the tool reply carries a running
+    // snapshot immediately), but the child's Session is owned by its runtime and
+    // attached once launch() builds it. The child's sessionId IS the
     // subSessionId, so the inbox key and the run's session identity coincide.
-    const session = createSession({
-      sessionId: subSessionId,
-      workspaceId: params.workspace.workspaceId,
-      parentSessionId: params.parentSessionId,
-    });
-
-    if (params.context && params.context.trim().length > 0) {
-      session.conversation.push({
-        role: "system",
-        content: `Sub-session standing context:\n\n${params.context.trim()}`,
-      });
-    }
-
     const sub = makeSubSession({
       subSessionId,
       parentSessionId: params.parentSessionId,
       intent: params.intent,
-      session,
     });
 
     this.track(sub);
-    // Persist the initial record (status "running") so a sessions/<subId>.json
-    // exists the moment the child is spawned. Fire-and-forget, mirroring the
-    // detached run launch: creation must stay synchronous for the tool reply.
-    this.persist(sub);
     this.launch(sub, params);
 
     return { outcome: "created", snapshot: toSnapshot(sub) };
@@ -229,23 +208,22 @@ export class SessionManager implements SubSessionCoordinator {
   }
 
   /**
-   * Fire-and-forget the orchestrator run that drives the intent to resolution.
-   * The run loops internally until the evaluator is SATISFIED (or it caps out);
-   * we just record the outcome when the promise settles. Drains the shared
-   * inbox under the child's id each iteration, so a running sub-session stays
-   * steerable through the same injection seam as the top-level session.
+   * Fire-and-forget the child's own one-shot runtime. Each sub-session is built
+   * through the sub-pipeline (giving it a UNIQUE orchestrator/runner, inherited
+   * user, and its own contextHash), then driven by a single dispatch of the
+   * intent — the headless lifecycle. The build + run are folded into the
+   * detached promise so createSubSession stays synchronous for the tool reply.
+   *
+   * The child runtime owns its inbox; future parent-driven steering injects into
+   * `sub.runtime` rather than through a shared inbox.
    */
   private launch(sub: SubSession, params: CreateSubSessionParams): void {
     // Retain the settle promise on the record so a caller can block on this
     // child's completion (the headless single run drains all children before
     // exiting). Both arms resolve, so it never rejects — awaiting it is safe.
-    sub.settled = this.runner
-      .run(sub.session, params.workspace, sub.intent, {
-        signal: sub.abort.signal,
-        pullInjectedPrompts: () => this.inbox.drain(sub.subSessionId),
-      })
+    sub.settled = this.run(sub, params)
       .then((result) => {
-        this.settle(sub, () => {
+        return this.settle(sub, () => {
           // A capped run gave up without a satisfied verdict — record it as an
           // error so "didn't finish" means the same thing here as it does for a
           // top-level run, rather than masquerading as a clean "done".
@@ -261,11 +239,35 @@ export class SessionManager implements SubSessionCoordinator {
         });
       })
       .catch((err: unknown) => {
-        this.settle(sub, () => {
+        return this.settle(sub, () => {
           sub.status = "error";
           sub.error = err instanceof Error ? err.message : String(err);
         });
       });
+  }
+
+  /**
+   * Build the child runtime from the injected factory and run its single turn.
+   * Attaches the live runtime + session to the record (for status reads and
+   * future steering) before dispatching.
+   */
+  private async run(sub: SubSession, params: CreateSubSessionParams) {
+    if (!this.subRuntimeFactory) {
+      throw new Error("SessionManager: no subRuntimeFactory configured; cannot launch a sub-session.");
+    }
+
+    const runtime = await this.subRuntimeFactory({
+      sessionId: sub.subSessionId,
+      parentSessionId: params.parentSessionId,
+      workspaceId: params.workspace.workspaceId,
+      user: params.user,
+      standingContext: params.context,
+    }).build();
+
+    sub.runtime = runtime;
+    sub.session = runtime.getSession();
+
+    return runtime.dispatchAsync(sub.intent, { signal: sub.abort.signal });
   }
 
   /**
@@ -274,11 +276,11 @@ export class SessionManager implements SubSessionCoordinator {
    * notification channel after the parent's turn ends. A headless single run
    * does: it must leave no detached sub-task in flight when the process exits.
    *
-   * One pass is complete because sub-sessions are one level deep (detached runs
-   * get no coordinator, so a child cannot spawn grandchildren) and the parent's
-   * own run has already returned by the time this is called, so no new children
-   * will appear. settle() leaves a finished child in the active set with a
-   * terminal status, so awaiting each child's `settled` promise is sufficient.
+   * One pass is complete because sub-sessions are one level deep (a child
+   * runtime's coordinator is capped at 0, so it cannot spawn grandchildren) and
+   * the parent's own run has already returned by the time this is called, so no
+   * new children will appear. settle() leaves a finished child in the active set
+   * with a terminal status, so awaiting each child's `settled` promise suffices.
    */
   public async awaitActive(parentSessionId: string): Promise<void> {
     const map = this.active.get(parentSessionId);
@@ -316,7 +318,7 @@ export class SessionManager implements SubSessionCoordinator {
    * session, writes it, and fires the report-back notification — the two
    * effects that make a finished child both durable and visible without a poll.
    */
-  private settle(sub: SubSession, mutate: () => void): void {
+  private async settle(sub: SubSession, mutate: () => void): Promise<void> {
     if (sub.status !== "running") return;
     mutate();
     sub.updatedAt = Date.now();
@@ -328,21 +330,20 @@ export class SessionManager implements SubSessionCoordinator {
     // just moved it to a terminal state.
     const settledStatus = sub.status as SubSessionStatus;
     if (settledStatus === "done" || settledStatus === "error") {
-      sub.session.status = settledStatus;
-      sub.session.counters.turns = Math.max(sub.session.counters.turns, 1);
-      sub.session.updatedAt = sub.updatedAt;
-      this.persist(sub);
+      // The child's runtime owns persistence; stamp the terminal sub-session
+      // status onto its session and let it write. A run that errored before the
+      // runtime came up has neither — there is nothing to persist, but we still
+      // notify so the parent learns the spawn failed.
+      if (sub.runtime && sub.session) {
+        sub.session.status = settledStatus;
+        sub.session.counters.turns = Math.max(sub.session.counters.turns, 1);
+        sub.session.updatedAt = sub.updatedAt;
+        await sub.runtime.finalize().catch(() => {
+          /* best-effort: a child that fails to persist still notifies */
+        });
+      }
       this.emitNotification(sub);
     }
-  }
-
-  /** Fire-and-forget persist of a child's underlying Session. The detached
-   *  lifecycle is already async, so a failed write is logged-by-rejection
-   *  rather than allowed to crash the run. */
-  private persist(sub: SubSession): void {
-    void this.store.save(sub.session).catch(() => {
-      /* best-effort: a child that fails to persist still runs and notifies */
-    });
   }
 
   /** Notify every subscriber that a child reached a terminal state. Listener

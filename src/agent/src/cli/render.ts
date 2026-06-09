@@ -230,6 +230,10 @@ function renderExecutorEvent(data: Record<string, unknown>): void {
 /** Identity of the session this REPL drives, shown in the startup banner. */
 export interface BannerSession {
   sessionId: string;
+  /** Workspace the session is bound to. */
+  workspaceId: string;
+  /** Content-addressed pointer to the captured context, when one was stamped. */
+  contextHash?: string;
   /** True when resumed from disk, false for a freshly bootstrapped session. */
   resumed: boolean;
   /** Completed user turns (0 for a new session). */
@@ -259,17 +263,29 @@ export function renderBanner(
   process.stdout.write(lines.join("\n"));
 }
 
-/** "3f8a1c2b (resumed) — 5 turns · <description>" identity line. */
+/**
+ * "id=b1557363 · ctx=3f8a1c2b · ws=ad2f457f · new" identity line. On a resumed
+ * session the origin is followed by the turn count and a description of the
+ * opening message. ctx falls back to "none" when no snapshot was stamped.
+ */
 function sessionLine(session: BannerSession): string {
-  const shortId = session.sessionId.split("-")[0] ?? session.sessionId.slice(0, 8);
-  const origin = session.resumed ? "resumed" : "new";
-  let line = `${shortId} (${origin})`;
+  const id = `id=${short(session.sessionId)}`;
+  const ctx = `ctx=${session.contextHash ? short(session.contextHash) : "none"}`;
+  const ws = `ws=${short(session.workspaceId)}`;
+
+  let origin: string = session.resumed ? "resumed" : "new";
   if (session.resumed) {
     const turns = `${session.turns} turn${session.turns === 1 ? "" : "s"}`;
     const desc = session.preview ? ` · ${session.preview}` : "";
-    line += ` — ${turns}${desc}`;
+    origin += ` — ${turns}${desc}`;
   }
-  return line;
+
+  return `${id} · ${ctx} · ${ws} · ${origin}`;
+}
+
+/** First 8 chars — enough to eyeball/grep an id without wrapping the banner. */
+function short(value: string): string {
+  return value.slice(0, 8);
 }
 
 export function renderHelp(): void {

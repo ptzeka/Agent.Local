@@ -1,0 +1,57 @@
+{
+  "sessionId": "d9223784-0b04-4041-8bd3-e5d03cc1a334",
+  "workspaceId": "42c331f3-5010-4003-8a35-dbf59ab7257f",
+  "parentSessionId": "24f2ae2c-c5f9-4e3f-b3a6-f61bea8427be",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "Create a file named 'hello.txt' containing the text 'Hello, World!'."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "yLW7TCew",
+          "name": "dispatch_executor",
+          "arguments": {
+            "tool": "fsmcp__write_file",
+            "intent": "Create a file named 'hello.txt' with the content 'Hello, World!'.",
+            "args": {
+              "path": "hello.txt",
+              "content": "Hello, World!"
+            }
+          },
+          "signature": "EjQKMgEMOdbH6gpxYgHpuCgczTaZ/hbSn2QHguxXTHNTBvRVj0wJPfxrcyx1Gzw7gmrW7EQt"
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "EXECUTOR: ACK fsmcp__write_file\nEXECUTOR: ACK fsmcp__write_file\n\n\n\nNow validating the write operation...\n\n\n\nEXECUTOR: RESULT OK file now contains 'Hello, World!'\nEXECUTOR: DETERMINISTIC OK — wrote 13 chars to \"hello.txt\"\nEXECUTOR: FINAL OK",
+      "toolCallId": "yLW7TCew",
+      "toolName": "dispatch_executor"
+    },
+    {
+      "role": "assistant",
+      "content": "ORCHESTRATOR: The file 'hello.txt' has been successfully created with the content 'Hello, World!'."
+    }
+  ],
+  "status": "done",
+  "counters": {
+    "turns": 1,
+    "inputTokens": 13150,
+    "outputTokens": 90,
+    "cacheReadInputTokens": 12966,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781032602470,
+  "updatedAt": 1781032616347,
+  "user": {
+    "sub": "anonymous",
+    "isAuthenticated": false,
+    "claims": {},
+    "scopes": []
+  },
+  "contextHash": "52705165e0ced34a"
+}

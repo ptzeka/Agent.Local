@@ -1,3 +1,5 @@
+import type { Principal } from "./identity/types.js";
+import type { RunResult } from "./orchestrator.js";
 import type { Session } from "./session.js";
 import type { Workspace } from "./workspace-registry.js";
 
@@ -28,8 +30,14 @@ export interface SubSession {
   /** The goal this sub-session was spawned to resolve. */
   intent: string;
   status: SubSessionStatus;
-  /** The live conversational state the detached run mutates. */
-  session: Session;
+  /**
+   * The live conversational state the detached run mutates. Owned by the child
+   * runtime and populated once it is built, so it is absent in the brief window
+   * between the synchronous create call and the runtime coming up.
+   */
+  session?: Session;
+  /** Handle to the child's own runtime, set after build — drives + steers the run. */
+  runtime?: ChildRuntime;
   /** Final assistant message content once the run completes. */
   result?: string;
   /** Failure detail when status is "error". */
@@ -117,7 +125,42 @@ export interface CreateSubSessionParams {
   intent: string;
   /** Optional standing context seeded as a system message before the intent. */
   context?: string;
+  /** Identity inherited from the parent, stamped onto the child session. */
+  user?: Principal;
 }
+
+/**
+ * Identity + linkage the sub-runtime pipeline needs to provision a child. The
+ * coordinator mints `sessionId` up front (so it can answer synchronously) and
+ * the factory feeds these into the child's InheritedUser + ChildSession steps.
+ */
+export interface SubRuntimeRefs {
+  sessionId: string;
+  parentSessionId: string;
+  workspaceId: string;
+  user?: Principal;
+  standingContext?: string;
+}
+
+/**
+ * The slice of a freshly-composed child AgentRuntime the coordinator drives:
+ * build it, run its single turn, and read/steer its session. Declared here
+ * rather than imported from the runtime layer so SessionManager depends only on
+ * this contract — AgentRuntime satisfies it structurally, keeping the Service
+ * layer off the composition layer (no import inversion).
+ */
+export interface ChildRuntime {
+  build(): Promise<ChildRuntime>;
+  getSession(): Session;
+  dispatchAsync(input: string, options?: { signal?: AbortSignal }): Promise<RunResult>;
+  injectInput(content: string, source?: string): void;
+  awaitAllSubSessions(): Promise<void>;
+  /** Persist the child session — used to stamp its terminal done/error status. */
+  finalize(): Promise<void>;
+}
+
+/** Composes (but does not build) a child sub-runtime for the given refs. */
+export type SubRuntimeFactory = (refs: SubRuntimeRefs) => ChildRuntime;
 
 /**
  * Outcome of a createSubSession call. Creation is GUARDED: an identical
@@ -169,7 +212,6 @@ export function makeSubSession(params: {
   subSessionId: string;
   parentSessionId: string;
   intent: string;
-  session: Session;
 }): SubSession {
   const now = Date.now();
   return {
@@ -177,7 +219,6 @@ export function makeSubSession(params: {
     parentSessionId: params.parentSessionId,
     intent: params.intent,
     status: "running",
-    session: params.session,
     abort: new AbortController(),
     pollRepeat: 0,
     createdAt: now,

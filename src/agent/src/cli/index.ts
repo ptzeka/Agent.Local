@@ -26,7 +26,10 @@ import dotenv from "dotenv";
 import { McpToolClient } from "../agent/mcp-client.js";
 import { ModelRegistry } from "../agent/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
+import { buildSubRuntime } from "../agent/runtime/build-sub-runtime.js";
+import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import { AnonymousMiddleware } from "../agent/runtime/middleware/anonymous.js";
+import { ContextMiddleware } from "../agent/runtime/middleware/context.js";
 import { IdentityMiddleware } from "../agent/runtime/middleware/identity.js";
 import { InputInboxMiddleware } from "../agent/runtime/middleware/input-inbox.js";
 import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator.js";
@@ -120,6 +123,7 @@ async function bootstrap(): Promise<Bootstrap> {
  *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
  *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
  *   SessionMiddleware           — open or resume the session, stamp session.user
+ *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
  *   OrchestratorMiddleware      — build the stateless turn orchestrator
  *   InputInboxMiddleware        — create the external input injection seam
  *   SessionManagerMiddleware    — build the sub-session manager
@@ -130,21 +134,25 @@ function buildRuntime(
 ): AgentRuntime {
   const { projectRoot, sessionsDir, registry, tools } = boot;
   const token = process.env.AGENT_API_TOKEN;
-  return new AgentRuntime({
+  const deps: AgentRuntimeDeps = {
     registry,
     tools,
     sessionsDir,
     workspaceRoot: projectRoot,
     credentials: token ? { token } : {},
-  })
+  };
+  return new AgentRuntime(deps)
   .add(new StoreMiddleware())
   .add(new WorkspaceRegistryMiddleware())
   .add(new IdentityMiddleware())
   .add(new AnonymousMiddleware())
   .add(new SessionMiddleware({ sessionId }))
+  .add(new ContextMiddleware())
   .add(new OrchestratorMiddleware())
   .add(new InputInboxMiddleware())
-  .add(new SessionManagerMiddleware());
+  // The manager provisions each child by building a fresh sub-runtime from the
+  // same deps — a one-shot pipeline run with parent-fed steps (see buildSubRuntime).
+  .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
 }
 
 /**

@@ -56,6 +56,13 @@ export interface Session {
    * sessions persisted before identity was added — treat as anonymous.
    */
   user?: Principal;
+  /**
+   * Pointer into the content-addressed context store
+   * (`<contextsDir>/<contextHash>.json`) recording the system prompt + project
+   * direction + tool block this session ran on. Stamped by ContextMiddleware at
+   * init. Absent on sessions persisted before context snapshots were added.
+   */
+  contextHash?: string;
 }
 
 export interface CreateSessionParams {

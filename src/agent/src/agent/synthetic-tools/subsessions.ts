@@ -64,6 +64,9 @@ async function handleCreate(
     workspace: ctx.workspace,
     intent,
     context,
+    // Inherit the parent's identity so the child runs (and persists) under the
+    // same principal rather than as a fresh anonymous session.
+    user: ctx.session.user,
   });
 
   // Rejected by the per-parent cap — surface as an error so the model waits on

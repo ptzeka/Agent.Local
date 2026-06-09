@@ -34,7 +34,14 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   renderBanner(
     workspaceRoot,
     sandboxRoot,
-    { sessionId: session.sessionId, resumed, turns: session.counters.turns, preview },
+    {
+      sessionId: session.sessionId,
+      workspaceId: session.workspaceId,
+      contextHash: session.contextHash,
+      resumed,
+      turns: session.counters.turns,
+      preview,
+    },
     runtime.getWorkspaceContext()?.sourcePath ?? null
   );
 

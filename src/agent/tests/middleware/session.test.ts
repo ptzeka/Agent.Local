@@ -4,11 +4,21 @@ import os from "node:os";
 import path from "node:path";
 
 import { ANONYMOUS_PRINCIPAL } from "../../src/agent/identity/types.js";
+import type { McpToolClient } from "../../src/agent/mcp-client.js";
 import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
 import { createSession } from "../../src/agent/session.js";
 import { SessionStore } from "../../src/agent/session-store.js";
 import { WorkspaceRegistry } from "../../src/agent/workspace-registry.js";
 import { makeContext } from "./context.js";
+
+/**
+ * Minimal tools stub carrying just the `sandboxRoot` SessionMiddleware reads to
+ * create the session's workspace segment dir. Rooted in the test's temp dir so
+ * the created segment is cleaned up with everything else in afterEach.
+ */
+function fakeTools(root: string): McpToolClient {
+  return { sandboxRoot: path.join(root, "sandbox") } as unknown as McpToolClient;
+}
 
 /**
  * SessionMiddleware business logic: open a fresh session or resume a persisted
@@ -31,7 +41,13 @@ describe("SessionMiddleware", () => {
   });
 
   test("opens a fresh session, resolves its workspace, stamps the user, and persists it", async () => {
-    const ctx = makeContext({ workspaceRoot: root, store, workspaces, user: ANONYMOUS_PRINCIPAL });
+    const ctx = makeContext({
+      workspaceRoot: root,
+      store,
+      workspaces,
+      user: ANONYMOUS_PRINCIPAL,
+      tools: fakeTools(root),
+    });
     const next = jest.fn(async () => {});
 
     await new SessionMiddleware().initialize(ctx, next);
@@ -54,7 +70,7 @@ describe("SessionMiddleware", () => {
     });
     await store.save(crashed);
 
-    const ctx = makeContext({ workspaceRoot: root, store, workspaces });
+    const ctx = makeContext({ workspaceRoot: root, store, workspaces, tools: fakeTools(root) });
     await new SessionMiddleware({ sessionId: "crashed" }).initialize(ctx, jest.fn(async () => {}));
 
     expect(ctx.session!.status).toBe("awaiting-input");
