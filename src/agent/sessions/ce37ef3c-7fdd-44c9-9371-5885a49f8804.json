@@ -1,0 +1,39 @@
+{
+  "sessionId": "ce37ef3c-7fdd-44c9-9371-5885a49f8804",
+  "workspaceId": "47534494-4986-4a4d-ab40-9d7f1c2bf9c0",
+  "parentSessionId": "b6e80349-4440-4a6f-b5e5-cce0a9100577",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "Create a hello world text file in the workspace"
+    },
+    {
+      "role": "assistant",
+      "content": "I'll create a hello world text file in the workspace for you.",
+      "toolCalls": [
+        {
+          "id": "toolu_01Cpwb5VBehmd69jqKhiBuiS",
+          "name": "dispatch_executor",
+          "arguments": {
+            "tool": "fsmcp__write_file",
+            "args": {
+              "path": "hello_world.txt",
+              "content": "Hello, World!"
+            },
+            "intent": "Create a hello world text file in the workspace"
+          }
+        }
+      ]
+    }
+  ],
+  "status": "error",
+  "counters": {
+    "turns": 1,
+    "inputTokens": 332,
+    "outputTokens": 133,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 6482
+  },
+  "createdAt": 1780962656092,
+  "updatedAt": 1780962659248
+}

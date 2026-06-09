@@ -4,7 +4,7 @@
     "fsmcp": {
       "type": "stdio",
       "command": "node",
-      "args": ["C:/www/Agent.Local/src/fsmcp/dist/server.js"],
+      "args": ["/Applications/WWW/Agent.Local/src/fsmcp/dist/server.js"],
       "env": {
         "AGENT_WORKSPACE": "."
       }
@@ -13,7 +13,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "C:/www/Agent.Local/src/codemcp/dist/server.js",
+        "/Applications/WWW/Agent.Local/src/codemcp/dist/server.js",
         "--backend",
         "file"
       ]

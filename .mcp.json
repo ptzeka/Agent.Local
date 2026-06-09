@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "codemcp": {
+      "command": "node",
+      "args": ["/Applications/WWW/Agent.Local/src/codemcp/dist/server.js"]
+    },
+    "fsmcp": {
+      "command": "node",
+      "args": ["/Applications/WWW/Agent.Local/src/fsmcp/dist/server.js"]
+    }
+  }
+}

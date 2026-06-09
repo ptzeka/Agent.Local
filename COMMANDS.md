@@ -1,4 +1,8 @@
+# ollama serve
+# ollama serve &>/tmp/ollama.log &
 # ollama pull qwen3-coder:30b-a3b-q4_K_M
+# pkill -f "ollama serve"
+# ollama pull qwen2.5-coder:14b
 # ollama pull deepseek-r1:14b
 # ollama pull llama3.2:3b
 # ollama pull gemma3:4b
