@@ -36,25 +36,31 @@
       "supportsTools": true,
       "description": "Small, quick model for summarization and lightweight follow-ups."
     },
-    "claude-haiku": {
+    "claude-haiku-4-5": {
       "provider": "anthropic",
       "model": "claude-haiku-4-5",
       "supportsTools": true,
-      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Requires ANTHROPIC_API_KEY."
+      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY."
     },
-    "gemini-flash-lite": {
+    "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
       "supportsTools": true,
-      "description": "Google Gemini 3.1 Flash-Lite (cloud). Fast and cost-efficient. Requires GEMINI_API_KEY."
-    }
+      "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY."
+    },
+    "gemini-2.5-flash-lite": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "supportsTools": true,
+      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY."
+    }    
   },
 
   "roles": {
-    "orchestrator": "claude-haiku",
+    "orchestrator": "gemini-3.1-flash-lite",
     "executor": "qwen-coder-14b",
     "summarizer": "llama-fast",
-    "evaluator": "claude-haiku"
+    "evaluator": "qwen-coder-14b"
   },
 
   "orchestration": {

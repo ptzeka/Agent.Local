@@ -32,7 +32,12 @@ export interface CompactResult {
  * Construction (via the fluent builder):
  *
  *   const runtime = await new AgentRuntime({ registry, tools, sessionsDir, workspaceRoot })
+ *     .add(new StoreMiddleware())
+ *     .add(new WorkspaceRegistryMiddleware())
  *     .add(new SessionMiddleware({ sessionId }))
+ *     .add(new OrchestratorMiddleware())
+ *     .add(new InputInboxMiddleware())
+ *     .add(new SessionManagerMiddleware())
  *     .build();
  *
  * Per-turn operations:
@@ -76,38 +81,56 @@ export class AgentRuntime {
   }
 
   /**
-   * Run the initialize pipeline, then wire up the internal subsystems.
-   * Must be called (and awaited) before any other method.
+   * Seed the context with the raw deps, run the initialize pipeline, then claim
+   * ownership of every subsystem the pipeline built. build() constructs nothing
+   * itself — each subsystem is produced by a middleware step (see RuntimeContext
+   * for the pipeline convention). Must be called (and awaited) before any other
+   * method.
    */
   async build(): Promise<this> {
-    this.store = SessionStore.create(this.deps.sessionsDir);
-    this.workspaces = new WorkspaceRegistry();
-
     const ctx: RuntimeContext = {
-      store: this.store,
-      workspaces: this.workspaces,
+      registry: this.deps.registry,
+      tools: this.deps.tools,
+      sessionsDir: this.deps.sessionsDir,
       workspaceRoot: this.deps.workspaceRoot,
       credentials: this.deps.credentials ?? {},
+      store: undefined,
+      workspaces: undefined,
       user: undefined,
       session: undefined,
       workspace: undefined,
+      orchestrator: undefined,
+      inbox: undefined,
+      sessionManager: undefined,
     };
 
     await this.runPipeline(ctx, 0);
 
-    if (!ctx.session || !ctx.workspace) {
+    // Every owned field must have been set by a pipeline step. Report all gaps
+    // at once so a misordered/incomplete pipeline is easy to fix.
+    const missing = [
+      !ctx.store && "store (StoreMiddleware)",
+      !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
+      !ctx.session && "session (SessionMiddleware)",
+      !ctx.workspace && "workspace (SessionMiddleware)",
+      !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
+      !ctx.inbox && "inbox (InputInboxMiddleware)",
+      !ctx.sessionManager && "sessionManager (SessionManagerMiddleware)",
+    ].filter(Boolean);
+    if (missing.length > 0) {
       throw new Error(
-        "AgentRuntime.build(): pipeline completed without setting a session. " +
-          "Add a SessionMiddleware (or equivalent) to the pipeline."
+        `AgentRuntime.build(): pipeline left these unset: ${missing.join(", ")}. ` +
+          "Add the listed step(s) to the pipeline."
       );
     }
 
-    this.session = ctx.session;
-    this.workspace = ctx.workspace;
-
-    this.orchestrator = new Orchestrator(this.deps.registry, this.deps.tools);
-    this.inbox = new InputInbox();
-    this.sessionManager = new SessionManager(this.orchestrator, this.inbox, this.store);
+    this.store = ctx.store!;
+    this.workspaces = ctx.workspaces!;
+    this.session = ctx.session!;
+    this.workspace = ctx.workspace!;
+    this.orchestrator = ctx.orchestrator!;
+    this.inbox = ctx.inbox!;
+    this.sessionManager = ctx.sessionManager!;
 
     return this;
   }

@@ -1,12 +1,22 @@
 {
+  "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "mcpServers": {
-    "codemcp": {
-      "command": "node",
-      "args": ["/Applications/WWW/Agent.Local/src/codemcp/dist/server.js"]
-    },
     "fsmcp": {
+      "type": "stdio",
       "command": "node",
-      "args": ["/Applications/WWW/Agent.Local/src/fsmcp/dist/server.js"]
+      "args": ["C:/www/Agent.Local/Agent.Local/src/fsmcp/dist/server2.js"],
+      "env": {
+        "AGENT_WORKSPACE": "."
+      }
+    },
+    "codemcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/www/Agent.Local/Agent.Local/src/codemcp/dist/server2.js",
+        "--backend",
+        "file"
+      ]
     }
   }
 }

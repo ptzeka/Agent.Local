@@ -36,6 +36,15 @@ export interface ToolCall {
   id: string;
   name: string;
   arguments: Record<string, unknown>;
+
+  /**
+   * Opaque provider round-trip token. Some thinking models (Gemini) attach a
+   * `thoughtSignature` to each function-call part and reject (HTTP 400) any
+   * later request that replays the call without it. Capturing it here lets the
+   * signature survive session persistence and be echoed back verbatim on the
+   * next turn. Undefined for providers that don't use it (Anthropic, Ollama).
+   */
+  signature?: string;
 }
 
 export interface ToolDescriptor {

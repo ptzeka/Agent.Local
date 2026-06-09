@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
 
 import { createSession } from "../../session.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
@@ -31,6 +33,13 @@ export class SessionMiddleware implements IMiddleware {
   constructor(private readonly params: SessionMiddlewareParams = {}) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
+    if (!ctx.store || !ctx.workspaces) {
+      throw new Error(
+        "SessionMiddleware: requires ctx.store and ctx.workspaces. Add StoreMiddleware " +
+          "and WorkspaceRegistryMiddleware earlier in the pipeline."
+      );
+    }
+
     if (this.params.sessionId) {
       await this.resume(ctx, this.params.sessionId);
     } else {
@@ -42,12 +51,20 @@ export class SessionMiddleware implements IMiddleware {
       ctx.session!.user = ctx.user;
     }
 
-    ctx.workspace = ctx.workspaces.get(ctx.session!.workspaceId);
+    ctx.workspace = ctx.workspaces!.get(ctx.session!.workspaceId);
+
+    // Materialise the session's workspace segment on disk. ScopedToolClient
+    // confines tool I/O to {sandboxRoot}/{workspaceId}; without the directory
+    // the first list_dir/glob fails with ENOENT (scandir). recursive: true is
+    // idempotent, so a resumed session with an existing segment is a no-op.
+    const segmentDir = path.join(ctx.tools.sandboxRoot, ctx.session!.workspaceId);
+    await mkdir(segmentDir, { recursive: true });
+
     await next();
   }
 
   private async resume(ctx: RuntimeContext, sessionId: string): Promise<void> {
-    const session = await ctx.store.load(sessionId);
+    const session = await ctx.store!.load(sessionId);
     if (!session) {
       throw new Error(`No persisted session "${sessionId}" to resume.`);
     }
@@ -68,20 +85,20 @@ export class SessionMiddleware implements IMiddleware {
       session.conversation.pop();
     }
 
-    await ctx.workspaces.register(session.workspaceId, ctx.workspaceRoot);
+    await ctx.workspaces!.register(session.workspaceId, ctx.workspaceRoot);
     ctx.session = session;
   }
 
   private async open(ctx: RuntimeContext): Promise<void> {
     const workspaceId = this.params.workspaceId ?? randomUUID();
-    await ctx.workspaces.register(workspaceId, ctx.workspaceRoot);
+    await ctx.workspaces!.register(workspaceId, ctx.workspaceRoot);
 
     const session = createSession({
       sessionId: randomUUID(),
       workspaceId,
     });
 
-    await ctx.store.save(session);
+    await ctx.store!.save(session);
     ctx.session = session;
   }
 }

@@ -1,0 +1,75 @@
+import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { ANONYMOUS_PRINCIPAL } from "../../src/agent/identity/types.js";
+import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
+import { createSession } from "../../src/agent/session.js";
+import { SessionStore } from "../../src/agent/session-store.js";
+import { WorkspaceRegistry } from "../../src/agent/workspace-registry.js";
+import { makeContext } from "./context.js";
+
+/**
+ * SessionMiddleware business logic: open a fresh session or resume a persisted
+ * one, register its workspace, stamp the resolved identity, and heal a
+ * crash-interrupted transcript on resume.
+ */
+describe("SessionMiddleware", () => {
+  let root: string;
+  let store: SessionStore;
+  let workspaces: WorkspaceRegistry;
+
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), "session-mw-"));
+    store = SessionStore.create(path.join(root, "sessions"));
+    workspaces = new WorkspaceRegistry();
+  });
+
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  test("opens a fresh session, resolves its workspace, stamps the user, and persists it", async () => {
+    const ctx = makeContext({ workspaceRoot: root, store, workspaces, user: ANONYMOUS_PRINCIPAL });
+    const next = jest.fn(async () => {});
+
+    await new SessionMiddleware().initialize(ctx, next);
+
+    expect(ctx.session).toBeDefined();
+    expect(ctx.workspace?.workspaceId).toBe(ctx.session!.workspaceId);
+    expect(ctx.session!.user).toBe(ANONYMOUS_PRINCIPAL);
+    expect((await store.load(ctx.session!.sessionId))?.sessionId).toBe(ctx.session!.sessionId);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  test("resuming heals a crash-interrupted session: normalizes status and trims a dangling tool_use", async () => {
+    const crashed = createSession({ sessionId: "crashed", workspaceId: "ws-1" });
+    crashed.status = "running"; // left over from a process that died mid-turn
+    crashed.conversation.push({ role: "user", content: "do the thing" });
+    crashed.conversation.push({
+      role: "assistant",
+      content: "",
+      toolCalls: [{ id: "t1", name: "noop", arguments: {} }],
+    });
+    await store.save(crashed);
+
+    const ctx = makeContext({ workspaceRoot: root, store, workspaces });
+    await new SessionMiddleware({ sessionId: "crashed" }).initialize(ctx, jest.fn(async () => {}));
+
+    expect(ctx.session!.status).toBe("awaiting-input");
+    // The unanswered tool_use tail is dropped so the next user turn lands cleanly.
+    expect(ctx.session!.conversation).toHaveLength(1);
+    expect(ctx.session!.conversation[0].role).toBe("user");
+  });
+
+  test("throws when the store/workspaces steps have not run", async () => {
+    const ctx = makeContext({ workspaceRoot: root }); // store + workspaces undefined
+    const next = jest.fn(async () => {});
+
+    await expect(new SessionMiddleware().initialize(ctx, next)).rejects.toThrow(
+      /requires ctx\.store and ctx\.workspaces/
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+});

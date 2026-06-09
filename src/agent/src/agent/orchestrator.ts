@@ -585,20 +585,32 @@ function wrapToolResult(call: ToolCall, content: string): ChatMessage {
 }
 
 /**
- * Find a tail-start index that does NOT begin with a `role:"tool"`
- * message. Tool messages must follow an assistant message that called
- * them — keeping a tool message without its parent would produce an
- * orphan and break providers that validate tool_call_id pairing.
+ * Find a tail-start index that begins on a turn which can legally HEAD a
+ * provider contents array: a `user` turn, or an `assistant` turn that is NOT
+ * itself a tool-call. Two kinds of head are orphans and must be skipped:
  *
- * Starts from the desired window (`messages.length - desiredTailLen`)
- * and walks forward until a non-tool message is found. If the entire
- * remaining slice is tool messages, returns `messages.length` so the
- * caller summarizes everything.
+ *   - a `role:"tool"` message — it must follow the assistant turn that called
+ *     it; kept alone it breaks providers that validate tool_call_id pairing.
+ *   - an `assistant` turn carrying `toolCalls` — it becomes a model
+ *     functionCall turn, which Gemini rejects unless it immediately follows a
+ *     user turn or a functionResponse (HTTP 400: "function call turn comes
+ *     immediately after a user turn or after a function response turn"). After
+ *     summarization the summary is a `system` message that lands in
+ *     systemInstruction, not contents, so the tail's first turn really is
+ *     contents[0] — it cannot be a bare tool-call.
+ *
+ * Starts from the desired window (`messages.length - desiredTailLen`) and walks
+ * forward until such a head is found. If none remains, returns `messages.length`
+ * so the caller summarizes everything.
  */
 function findCleanTailStart(messages: ChatMessage[], desiredTailLen: number): number {
   const initial = Math.max(0, messages.length - desiredTailLen);
   for (let i = initial; i < messages.length; i += 1) {
-    if (messages[i].role !== "tool") return i;
+    const message = messages[i];
+    if (message.role === "user") return i;
+    if (message.role === "assistant" && !(message.toolCalls && message.toolCalls.length > 0)) {
+      return i;
+    }
   }
   return messages.length;
 }

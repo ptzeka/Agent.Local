@@ -28,7 +28,12 @@ import { ModelRegistry } from "../agent/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { AnonymousMiddleware } from "../agent/runtime/middleware/anonymous.js";
 import { IdentityMiddleware } from "../agent/runtime/middleware/identity.js";
+import { InputInboxMiddleware } from "../agent/runtime/middleware/input-inbox.js";
+import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator.js";
+import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-manager.js";
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
+import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
+import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
 import { renderEvent, renderSubSessionNotification } from "./render.js";
@@ -108,10 +113,16 @@ async function bootstrap(): Promise<Bootstrap> {
 }
 
 /**
- * Build an AgentRuntime with the standard identity pipeline:
- *   IdentityMiddleware   — decode JWT from AGENT_API_TOKEN if present
- *   AnonymousMiddleware  — fall back to anonymous when no creds resolve
- *   SessionMiddleware    — open or resume the session, stamp session.user
+ * Build an AgentRuntime with the standard pipeline. Every subsystem the runtime
+ * owns is produced by a step here — build() constructs nothing itself:
+ *   StoreMiddleware             — open the on-disk session store
+ *   WorkspaceRegistryMiddleware — create the workspace → root/context map
+ *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
+ *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
+ *   SessionMiddleware           — open or resume the session, stamp session.user
+ *   OrchestratorMiddleware      — build the stateless turn orchestrator
+ *   InputInboxMiddleware        — create the external input injection seam
+ *   SessionManagerMiddleware    — build the sub-session manager
  */
 function buildRuntime(
   boot: Bootstrap,
@@ -126,9 +137,14 @@ function buildRuntime(
     workspaceRoot: projectRoot,
     credentials: token ? { token } : {},
   })
-    .add(new IdentityMiddleware())
-    .add(new AnonymousMiddleware())
-    .add(new SessionMiddleware({ sessionId }));
+  .add(new StoreMiddleware())
+  .add(new WorkspaceRegistryMiddleware())
+  .add(new IdentityMiddleware())
+  .add(new AnonymousMiddleware())
+  .add(new SessionMiddleware({ sessionId }))
+  .add(new OrchestratorMiddleware())
+  .add(new InputInboxMiddleware())
+  .add(new SessionManagerMiddleware());
 }
 
 /**

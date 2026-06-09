@@ -1,5 +1,11 @@
 import { GoogleGenAI } from "@google/genai";
-import type { Content, FunctionDeclaration, Part, Tool } from "@google/genai";
+import type {
+  Content,
+  FunctionDeclaration,
+  GenerateContentResponse,
+  Part,
+  Tool,
+} from "@google/genai";
 
 import type {
   ChatMessage,
@@ -143,7 +149,7 @@ export class GeminiProvider implements LLMProvider {
  *  - Tool results are functionResponse parts inside a user turn, merged with
  *    any immediately preceding user turn to keep role alternation intact.
  */
-function toGeminiMessages(messages: ChatMessage[]): {
+export function toGeminiMessages(messages: ChatMessage[]): {
   systemInstruction: string | undefined;
   contents: Content[];
 } {
@@ -174,9 +180,13 @@ function toGeminiMessages(messages: ChatMessage[]): {
         }
         if (message.toolCalls && message.toolCalls.length > 0) {
           for (const call of message.toolCalls) {
-            parts.push({
+            const part: Part = {
               functionCall: { id: call.id, name: call.name, args: call.arguments },
-            });
+            };
+            // Echo the thinking-model signature back verbatim. Gemini 400s on a
+            // replayed functionCall part that is missing its original signature.
+            if (call.signature) part.thoughtSignature = call.signature;
+            parts.push(part);
           }
         }
         if (parts.length === 0) parts.push({ text: "(no content)" });
@@ -211,19 +221,41 @@ function toGeminiMessages(messages: ChatMessage[]): {
   };
 }
 
-function fromGeminiResponse(response: { text?: string; functionCalls?: Array<{ id?: string; name?: string; args?: Record<string, unknown> }> }): {
+/**
+ * Reduce a Gemini response to (content, toolCalls).
+ *
+ * We walk `candidates[0].content.parts` directly rather than using the SDK's
+ * `response.functionCalls` / `response.text` getters, because those convenience
+ * getters discard the per-part `thoughtSignature`. Thinking models require that
+ * signature to be echoed back on the next turn, so we must read it off the raw
+ * part and carry it on the ToolCall. `thought` parts are the model's reasoning
+ * summary, not answer text, so they're skipped when assembling `content`.
+ */
+export function fromGeminiResponse(response: GenerateContentResponse): {
   content: string;
   toolCalls: ToolCall[];
 } {
-  const content = response.text ?? "";
-  const toolCalls: ToolCall[] = (response.functionCalls ?? []).map((fc) => ({
-    // Gemini function call ids are optional; fall back to the name so the
-    // toolCallId on the matching tool-result message stays consistent.
-    id: fc.id ?? fc.name ?? "unknown",
-    name: fc.name ?? "unknown",
-    arguments: fc.args ?? {},
-  }));
-  return { content, toolCalls };
+  const parts: Part[] = response.candidates?.[0]?.content?.parts ?? [];
+  const textChunks: string[] = [];
+  const toolCalls: ToolCall[] = [];
+
+  for (const part of parts) {
+    if (part.functionCall) {
+      const fc = part.functionCall;
+      toolCalls.push({
+        // Gemini function call ids are optional; fall back to the name so the
+        // toolCallId on the matching tool-result message stays consistent.
+        id: fc.id ?? fc.name ?? "unknown",
+        name: fc.name ?? "unknown",
+        arguments: fc.args ?? {},
+        signature: part.thoughtSignature,
+      });
+    } else if (typeof part.text === "string" && !part.thought) {
+      textChunks.push(part.text);
+    }
+  }
+
+  return { content: textChunks.join(""), toolCalls };
 }
 
 function toGeminiTool(descriptor: ToolDescriptor): FunctionDeclaration {
