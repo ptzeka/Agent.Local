@@ -2,25 +2,17 @@
 /**
  * CLI entry point — the composition root.
  *
- * Boots the subsystems in order:
+ * Boots the shared infrastructure in order:
  *   1. Environment + workspace settings.
  *   2. The MCP tool client (spawns the tools server child process).
  *   3. The model registry (instantiates every provider declared in models.json).
- *   4. The Initializer (via `Initializer.create`) — the stateful session owner.
- *      It wires the rest internally: the file-backed SessionStore, the
- *      WorkspaceRegistry, a single stateless Orchestrator, and the
- *      SessionManager that owns sub-sessions. See the ownership tree on the
- *      `Initializer` class.
  *
- * Two run modes share that bootstrap:
- *   - Interactive (default): the session picker resumes a saved top-level
- *     session or opens a fresh one, and control passes to the REPL.
- *   - Headless single run (`--run "<input>" [--session <id>]`): resume or open a
- *     session, dispatch ONE turn to completion (evaluator satisfied, or the
- *     orchestrator iteration cap = the "all fails" bound), drain any sub-tasks,
- *     persist, print the answer, and exit with a status code.
+ * Session setup is deferred to each run mode via AgentRuntime's middleware
+ * pipeline. Both modes share the same infrastructure but build their own
+ * runtime after resolving the session:
  *
- * On exit, either path tears everything down.
+ *   Interactive: session picker → AgentRuntime.build() → REPL
+ *   Headless:    args.sessionId → AgentRuntime.build() → single dispatch → exit
  */
 
 import fs from "node:fs";
@@ -33,26 +25,29 @@ import dotenv from "dotenv";
 
 import { McpToolClient } from "../agent/mcp-client.js";
 import { ModelRegistry } from "../agent/model-registry.js";
-import { Initializer } from "../agent/initializer.js";
+import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
+import { AnonymousMiddleware } from "../agent/runtime/middleware/anonymous.js";
+import { IdentityMiddleware } from "../agent/runtime/middleware/identity.js";
+import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
 import { renderEvent, renderSubSessionNotification } from "./render.js";
 import { pickSession } from "./session-picker.js";
 
-/** Exit codes for the headless single-run path. 0 = the evaluator was
- *  satisfied; non-zero = the run did not complete cleanly. */
+/** Exit codes for the headless single-run path. */
 const EXIT_SATISFIED = 0;
-const EXIT_ERROR = 1; // the run threw
-const EXIT_CAPPED = 2; // hit the orchestrator iteration cap without satisfying
+const EXIT_ERROR = 1;
+const EXIT_CAPPED = 2;
 
-/** The bootstrapped subsystems plus a teardown both run modes share. */
+/** Shared infrastructure produced by bootstrap(). Session setup is NOT here —
+ *  each run mode builds its own AgentRuntime after choosing a session. */
 interface Bootstrap {
   projectRoot: string;
   sandboxRoot: string;
+  sessionsDir: string;
   registry: ModelRegistry;
   tools: McpToolClient;
-  initializer: Initializer;
-  shutdown: (options?: { drain?: boolean }) => Promise<void>;
+  shutdown: () => Promise<void>;
 }
 
 async function main(): Promise<void> {
@@ -73,28 +68,24 @@ async function main(): Promise<void> {
 }
 
 /**
- * Bring up the shared subsystems and return them with a teardown. Both the
- * interactive REPL and the headless single run start here, so the wiring lives
- * in exactly one place — the seam any future entry point (an HTTP server, a
- * batch runner) hangs off of.
+ * Bring up the shared infrastructure (tools + model registry) and return it
+ * with a teardown callback. Session creation happens per run-mode via
+ * AgentRuntime so the session picker and headless session-id argument both
+ * land in the same place — the pipeline.
  */
 async function bootstrap(): Promise<Bootstrap> {
-  // Load .env if present. Silently no-op if missing.
   dotenv.config();
 
   const projectRoot = findProjectRoot();
 
-  // The fs tool sandbox. Every fsmcp operation — read_file, write_file,
-  // edit_file, list_dir, glob, grep — is confined to this directory by the
-  // workspace guard, so all generated output lands here and nowhere else.
-  // Defaults to src/agent/workspace under the project root; override with
-  // AGENT_WORKSPACE. (codemcp resolves its repo from process.cwd() and is
-  // unaffected, so repo-wide code search still spans the whole project.)
   const sandboxRoot = path.resolve(
     process.env.AGENT_WORKSPACE ?? path.join(projectRoot, "src", "agent", "workspace")
   );
-  // Ensure the sandbox exists before fsmcp tries to access it on startup.
   fs.mkdirSync(sandboxRoot, { recursive: true });
+
+  const sessionsDir = path.resolve(
+    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, "src", "agent", "sessions")
+  );
 
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const modelsConfigPath = path.join(projectRoot, "models.json");
@@ -102,122 +93,107 @@ async function bootstrap(): Promise<Bootstrap> {
   const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot);
   const registry = await ModelRegistry.load(modelsConfigPath);
 
-  // The Initializer is the stateful session owner. It builds the file-backed
-  // session store and drives the stateless orchestrator. Sessions persist
-  // under src/agent/sessions (override with AGENT_SESSIONS_DIR).
-  const sessionsDir = path.resolve(
-    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, "src", "agent", "sessions")
-  );
-  const initializer = Initializer.create({ registry, tools, sessionsDir });
-
-  // Wire shutdown so child MCP servers don't outlive us. Idempotent enough for
-  // both the signal handlers and the normal-exit path to call it.
-  //
-  // On a normal exit we first drain any background sub-sessions still in flight,
-  // so a task the REPL fired-and-forgot isn't killed mid-run when MCP tears down.
-  // Signal-driven teardown skips the drain (`drain: false`): Ctrl+C is an
-  // immediate escape hatch and must not block on outstanding work.
-  const shutdown = async (options: { drain?: boolean } = {}): Promise<void> => {
-    if (options.drain ?? true) {
-      await initializer.awaitAllSubSessions();
-    }
+  const shutdown = async (): Promise<void> => {
     await tools.shutdown();
   };
+
   process.on("SIGINT", () => {
-    void shutdown({ drain: false }).finally(() => process.exit(EXIT_ERROR));
+    void shutdown().finally(() => process.exit(EXIT_ERROR));
   });
   process.on("SIGTERM", () => {
-    void shutdown({ drain: false }).finally(() => process.exit(EXIT_ERROR));
+    void shutdown().finally(() => process.exit(EXIT_ERROR));
   });
 
-  return { projectRoot, sandboxRoot, registry, tools, initializer, shutdown };
+  return { projectRoot, sandboxRoot, sessionsDir, registry, tools, shutdown };
 }
 
 /**
- * Interactive mode. Always force a session choice at startup — resume an
- * existing one or bootstrap a new one — rather than silently minting a
- * just-in-time session. With none saved the picker still shows its lone
- * "create new" row. Project context lives at the project root
- * (src/context/agentcontext.md), so the workspace root is the project root,
- * not the fs sandbox.
+ * Build an AgentRuntime with the standard identity pipeline:
+ *   IdentityMiddleware   — decode JWT from AGENT_API_TOKEN if present
+ *   AnonymousMiddleware  — fall back to anonymous when no creds resolve
+ *   SessionMiddleware    — open or resume the session, stamp session.user
  */
-async function runInteractive(boot: Bootstrap): Promise<void> {
-  const { projectRoot, sandboxRoot, registry, tools, initializer } = boot;
-
-  const saved = await initializer.listSavedSessions();
-  const choice = await pickSession(saved);
-  const mainSession =
-    choice.kind === "resume"
-      ? await initializer.resumeSession({ sessionId: choice.sessionId, workspaceRoot: projectRoot })
-      : await initializer.openSession({ workspaceRoot: projectRoot });
-  const projectContext = initializer.getWorkspaceContext(mainSession.sessionId);
-
-  await runRepl({
-    workspaceRoot: projectRoot,
-    sandboxRoot,
+function buildRuntime(
+  boot: Bootstrap,
+  sessionId?: string
+): AgentRuntime {
+  const { projectRoot, sessionsDir, registry, tools } = boot;
+  const token = process.env.AGENT_API_TOKEN;
+  return new AgentRuntime({
     registry,
     tools,
-    initializer,
-    sessionId: mainSession.sessionId,
-    resumed: choice.kind === "resume",
-    projectContext,
-  });
+    sessionsDir,
+    workspaceRoot: projectRoot,
+    credentials: token ? { token } : {},
+  })
+    .add(new IdentityMiddleware())
+    .add(new AnonymousMiddleware())
+    .add(new SessionMiddleware({ sessionId }));
 }
 
 /**
- * Headless single run: drive ONE turn to completion against a resumed or fresh
- * session, then exit. The orchestrator loops internally until the evaluator is
- * satisfied or it caps out — there is no separate wall-clock timeout; the cap
- * is the "tried too many times / all fails" bound and surfaces as a non-zero
- * exit. Before returning, every sub-session this run spawned is drained, so no
- * detached sub-task is abandoned mid-flight (the interactive path lets those
- * report back asynchronously; a one-shot process cannot).
+ * Interactive mode. Lists saved sessions so the user can resume or start
+ * fresh, then builds the runtime through the pipeline and hands off to
+ * the REPL.
+ */
+async function runInteractive(boot: Bootstrap): Promise<void> {
+  const { projectRoot, sandboxRoot, sessionsDir, registry, tools } = boot;
+
+  const saved = await AgentRuntime.listSavedSessions(sessionsDir);
+  const choice = await pickSession(saved);
+
+  const runtime = await buildRuntime(boot, choice.kind === "resume" ? choice.sessionId : undefined).build();
+
+  // Drain any sub-sessions that outlive a turn before the REPL exits.
+  const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
+  try {
+    await runRepl({
+      workspaceRoot: projectRoot,
+      sandboxRoot,
+      registry,
+      tools,
+      runtime,
+      resumed: choice.kind === "resume",
+    });
+  } finally {
+    unsubscribe();
+    await runtime.awaitAllSubSessions();
+  }
+}
+
+/**
+ * Headless single run: build a runtime for the given (or fresh) session,
+ * dispatch ONE turn, drain sub-tasks, persist, print the answer, and return
+ * the process exit code.
  *
- * Progress is rendered to stderr so stdout carries only the final answer,
- * keeping the output pipe-friendly. Returns the process exit code.
+ * Progress goes to stderr so stdout carries only the final answer.
  */
 async function runHeadless(
   boot: Bootstrap,
   input: string,
   sessionId?: string
 ): Promise<number> {
-  const { projectRoot, initializer } = boot;
-
-  // Surface sub-session completions as they settle, same as the REPL does.
-  const unsubscribe = initializer.onSubSessionEvent(renderSubSessionNotification);
-
   try {
-    const session = sessionId
-      ? await initializer.resumeSession({ sessionId, workspaceRoot: projectRoot })
-      : await initializer.openSession({ workspaceRoot: projectRoot });
+    const runtime = await buildRuntime(boot, sessionId).build();
 
-    // Echo the session id (to stderr) so the caller can resume it later.
-    process.stderr.write(chalk.gray(`[session ${session.sessionId}]\n`));
+    const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
 
-    const result = await initializer.dispatch(session.sessionId, input, { onEvent: renderEvent });
+    process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 
-    // Block until any detached children settle and persist themselves before we
-    // tear down — this is the synchronous drain a one-shot run requires.
-    await initializer.awaitSubSessions(session.sessionId);
-
-    // stdout = the answer, and nothing else.
-    process.stdout.write(result.finalMessage.content + "\n");
-
-    return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
+    try {
+      const result = await runtime.dispatchAsync(input, { onEvent: renderEvent });
+      await runtime.awaitSubSessions();
+      process.stdout.write(result.finalMessage.content + "\n");
+      return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
+    } finally {
+      unsubscribe();
+    }
   } catch (err) {
     process.stderr.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
     return EXIT_ERROR;
-  } finally {
-    unsubscribe();
   }
 }
 
-/**
- * Walk up from this file's location until we find a directory containing
- * mcp.json. This lets `npm start` work whether the user runs from the
- * project root or from a subdirectory, and survives the package being
- * nested deeper under src/agent/{dist,src}/cli.
- */
 function findProjectRoot(): string {
   const here = url.fileURLToPath(new URL(".", import.meta.url));
   let cursor = path.resolve(here);
@@ -226,7 +202,7 @@ function findProjectRoot(): string {
     const parent = path.dirname(cursor);
     if (parent === cursor) {
       throw new Error(
-        `Could not locate mcp.json walking up from ${here}. Make sure the agent is launched from inside the workspace.`,
+        `Could not locate mcp.json walking up from ${here}. Make sure the agent is launched from inside the workspace.`
       );
     }
     cursor = parent;

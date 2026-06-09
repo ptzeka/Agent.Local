@@ -1,3 +1,4 @@
+import type { Principal } from "./identity/types.js";
 import type { ChatMessage } from "./providers/provider.js";
 
 /**
@@ -49,6 +50,12 @@ export interface Session {
   createdAt: number;
   /** Epoch millis; bumped on every persist. */
   updatedAt: number;
+  /**
+   * Identity of the caller that opened this session. Always set on in-memory
+   * sessions (anonymous when no credentials were presented). May be absent on
+   * sessions persisted before identity was added — treat as anonymous.
+   */
+  user?: Principal;
 }
 
 export interface CreateSessionParams {

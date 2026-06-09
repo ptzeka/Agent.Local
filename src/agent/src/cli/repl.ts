@@ -3,47 +3,39 @@ import chalk from "chalk";
 
 import type { McpToolClient } from "../agent/mcp-client.js";
 import type { ModelRegistry } from "../agent/model-registry.js";
-import type { ProjectContext } from "../agent/context-loader.js";
-import type { Initializer } from "../agent/initializer.js";
+import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 
 import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification } from "./render.js";
 
 /**
  * Interactive REPL.
  *
- * Wraps a single session with a readline prompt and a small set of slash
- * commands. The REPL itself contains no model or tool logic — it only
- * routes user input into the initializer (addressed by sessionId) and
- * routes events back out through the renderer.
+ * Wraps a single session's AgentRuntime with a readline prompt and a small set
+ * of slash commands. All model and tool logic lives in the runtime — the REPL
+ * only routes input in and events out.
  */
 
 export interface ReplOptions {
   workspaceRoot: string;
-  /** The fs tool sandbox root — where all fsmcp file I/O is confined. */
   sandboxRoot: string;
   registry: ModelRegistry;
   tools: McpToolClient;
-  /** The stateful session owner that drives the orchestrator. */
-  initializer: Initializer;
-  /** The session this REPL drives — every action is addressed to it. */
-  sessionId: string;
-  /** True when the session was resumed from disk rather than freshly created. */
+  runtime: AgentRuntime;
   resumed: boolean;
-  projectContext?: ProjectContext | null;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, sandboxRoot, registry, tools, initializer, sessionId, resumed, projectContext = null } = options;
+  const { workspaceRoot, sandboxRoot, registry, tools, runtime, resumed } = options;
 
-  const session = initializer.getSession(sessionId);
-  const firstUser = session.conversation.find((message) => message.role === "user");
+  const session = runtime.getSession();
+  const firstUser = session.conversation.find((m) => m.role === "user");
   const preview = firstUser ? previewOf(firstUser.content) : null;
 
   renderBanner(
     workspaceRoot,
     sandboxRoot,
-    { sessionId, resumed, turns: session.counters.turns, preview },
-    projectContext?.sourcePath ?? null
+    { sessionId: session.sessionId, resumed, turns: session.counters.turns, preview },
+    runtime.getWorkspaceContext()?.sourcePath ?? null
   );
 
   const rl = readline.createInterface({
@@ -51,19 +43,15 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     output: process.stdout,
   });
 
-  // Surface sub-session completions as they arrive — these fire after the
-  // parent turn that spawned them has already ended, so they land out-of-band
-  // here rather than in the orchestrator's event stream.
-  const unsubscribe = initializer.onSubSessionEvent(renderSubSessionNotification);
+  // Sub-session completions fire out-of-band (after the parent turn that
+  // spawned them has ended). Surface them as they arrive.
+  const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
 
   while (true) {
-    const promptLabel = chalk.bold.cyan("you> ");
-
     let input: string;
     try {
-      input = (await rl.question(promptLabel)).trim();
+      input = (await rl.question(chalk.bold.cyan("you> "))).trim();
     } catch {
-      // Reading was aborted (e.g. Ctrl+C at the prompt). Exit cleanly.
       break;
     }
 
@@ -71,18 +59,13 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     if (input.startsWith("/")) {
       const command = input.slice(1).trim();
-      const exitRequested = await handleSlashCommand(command, {
-        initializer,
-        sessionId,
-        registry,
-        tools,
-      });
+      const exitRequested = await handleSlashCommand(command, { runtime, registry, tools });
       if (exitRequested) break;
       continue;
     }
 
     try {
-      await initializer.dispatch(sessionId, input, { onEvent: renderEvent });
+      await runtime.dispatchAsync(input, { onEvent: renderEvent });
     } catch (err) {
       process.stdout.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
     }
@@ -97,15 +80,11 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 // ----------------------------------------------------------------------------
 
 interface SlashContext {
-  initializer: Initializer;
-  sessionId: string;
+  runtime: AgentRuntime;
   registry: ModelRegistry;
   tools: McpToolClient;
 }
 
-/**
- * Returns true if the REPL should exit.
- */
 async function handleSlashCommand(command: string, ctx: SlashContext): Promise<boolean> {
   const [head, ...rest] = command.split(/\s+/);
   const args = rest.join(" ");
@@ -120,7 +99,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "reset": {
-      const result = await ctx.initializer.reset(ctx.sessionId);
+      const result = await ctx.runtime.reset();
       const contextNote = result.context
         ? `context reloaded from ${result.context.sourcePath}` +
           (result.contextChanged ? " (changed)" : " (unchanged)")
@@ -132,7 +111,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     case "compact": {
       process.stdout.write(chalk.gray("(summarizing…)\n"));
       try {
-        const result = await ctx.initializer.compact(ctx.sessionId);
+        const result = await ctx.runtime.compact();
         if (result.skipped) {
           process.stdout.write(chalk.gray("(nothing to compact)\n"));
         } else {
@@ -148,8 +127,6 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     }
 
     case "think":
-      // The planner phase no longer exists. Accept the command so old muscle
-      // memory doesn't error out, but report the new architecture.
       process.stdout.write(
         chalk.gray(
           "(/think is gone — the orchestrator coordinates every turn and dispatches the executor as needed)\n"
@@ -225,7 +202,7 @@ function handleToolsCommand(ctx: SlashContext): void {
 }
 
 function handleHistoryCommand(ctx: SlashContext): void {
-  const history = ctx.initializer.history(ctx.sessionId);
+  const history = ctx.runtime.history();
   if (history.length === 0) {
     process.stdout.write(chalk.gray("(empty)\n"));
     return;
@@ -239,7 +216,6 @@ function handleHistoryCommand(ctx: SlashContext): void {
   process.stdout.write("\n");
 }
 
-/** Whitespace-collapsed, truncated first message — a short session description. */
 function previewOf(content: string): string | null {
   const flat = content.replace(/\s+/g, " ").trim();
   if (flat.length === 0) return null;
@@ -248,15 +224,10 @@ function previewOf(content: string): string | null {
 
 function roleColour(role: string): (s: string) => string {
   switch (role) {
-    case "user":
-      return chalk.bold.white;
-    case "assistant":
-      return chalk.magenta;
-    case "tool":
-      return chalk.green;
-    case "system":
-      return chalk.gray;
-    default:
-      return chalk.white;
+    case "user":      return chalk.bold.white;
+    case "assistant": return chalk.magenta;
+    case "tool":      return chalk.green;
+    case "system":    return chalk.gray;
+    default:          return chalk.white;
   }
 }
