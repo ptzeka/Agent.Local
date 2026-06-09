@@ -113,6 +113,7 @@ export class ModelRegistry {
     // we still build every provider — but the role table gets remapped so
     // the forced model handles every role.
     const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+    const geminiApiKey = process.env.GEMINI_API_KEY;
     for (const [id, def] of Object.entries(definitions)) {
       this.providers.set(
         id,
@@ -123,6 +124,7 @@ export class ModelRegistry {
           reasoning: def.reasoning,
           host: ollamaHost,
           apiKey: anthropicApiKey,
+          geminiApiKey,
         })
       );
     }

@@ -41,6 +41,12 @@
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Requires ANTHROPIC_API_KEY."
+    },
+    "gemini-flash-lite": {
+      "provider": "gemini",
+      "model": "gemini-3.1-flash-lite",
+      "supportsTools": true,
+      "description": "Google Gemini 3.1 Flash-Lite (cloud). Fast and cost-efficient. Requires GEMINI_API_KEY."
     }
   },
 

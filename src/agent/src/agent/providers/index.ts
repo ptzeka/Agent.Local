@@ -1,4 +1,5 @@
 import { AnthropicProvider } from "./anthropic-provider.js";
+import { GeminiProvider } from "./gemini-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
 import type { LLMProvider } from "./provider.js";
 
@@ -16,8 +17,10 @@ export interface ProviderFactoryInput {
   supportsTools: boolean;
   reasoning?: boolean;
   host: string;
-  /** API key for cloud providers (e.g. Anthropic). Undefined for local backends. */
+  /** API key for cloud providers (e.g. Anthropic, Gemini). Undefined for local backends. */
   apiKey?: string;
+  /** Gemini-specific API key. Falls back to apiKey when absent. */
+  geminiApiKey?: string;
 }
 
 export function createProvider(input: ProviderFactoryInput): LLMProvider {
@@ -39,6 +42,21 @@ export function createProvider(input: ProviderFactoryInput): LLMProvider {
       }
       return new AnthropicProvider({
         apiKey: input.apiKey,
+        model: input.model,
+        supportsNativeTools: input.supportsTools,
+      });
+    }
+
+    case "gemini": {
+      const key = input.geminiApiKey ?? input.apiKey;
+      if (!key) {
+        throw new Error(
+          `Model "${input.model}" uses provider "gemini" but no API key is set. ` +
+            "Add GEMINI_API_KEY to your environment (.env)."
+        );
+      }
+      return new GeminiProvider({
+        apiKey: key,
         model: input.model,
         supportsNativeTools: input.supportsTools,
       });
