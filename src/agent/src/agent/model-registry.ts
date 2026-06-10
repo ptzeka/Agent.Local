@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { createProvider, type LLMProvider } from "./providers/index.js";
+import type { ToolDescriptor } from "./providers/provider.js";
 
 /**
  * Model registry.
@@ -22,6 +23,16 @@ export interface ModelDefinition {
   supportsTools: boolean;
   reasoning?: boolean;
   description?: string;
+  /**
+   * Per-model MCP server whitelist, using server names (e.g. "fsmcp", "codemcp").
+   * Layers ON TOP of the role split: a model only ever sees tools from servers
+   * that are both role-appropriate AND in this list.
+   *
+   * Omitted key  → no restriction (every role-appropriate tool is advertised).
+   * Empty array  → zero tools.
+   * Resolved per role via `filterMcpToolsForRole`.
+   */
+  mcp?: string[];
 }
 
 export interface OrchestrationConfig {
@@ -208,6 +219,31 @@ export class ModelRegistry {
       throw new Error(`Internal error: role "${role}" maps to missing model "${modelId}".`);
     }
     return provider;
+  }
+
+  /**
+   * Narrow a role's MCP tool list down to the model's MCP server whitelist.
+   *
+   * The caller passes the already role-split tools (read-only for the
+   * orchestrator, read+mutate for the executor); this applies the per-model
+   * `mcp` server whitelist on top, matching on the MCP server prefix
+   * (the part before `__` in the tool name). The model→tool mapping lives
+   * here in the registry, so role resolution and the whitelist stay in one place.
+   *
+   * No `mcp` key on the model → returned unchanged (unrestricted). An empty
+   * array → no tools. Under AGENT_FORCE_MODEL the role resolves to the forced
+   * model, so its whitelist (if any) governs every role.
+   */
+  public filterMcpToolsForRole(role: RoleName, tools: ToolDescriptor[]): ToolDescriptor[] {
+    const modelId = this.roleAssignments.get(role);
+    const allowedServers = modelId ? this.definitions[modelId]?.mcp : undefined;
+    if (!allowedServers) return tools;
+    const allowed = new Set(allowedServers);
+    return tools.filter((tool) => {
+      // Extract server name from "server__tool_name" format.
+      const serverName = tool.name.split("__")[0];
+      return allowed.has(serverName);
+    });
   }
 
   /**

@@ -1,14 +1,6 @@
 {
   "$schema": "https://modelcontextprotocol.io/schema/mcp.json",
   "mcpServers": {
-    "fsmcp": {
-      "type": "stdio",
-      "command": "node",
-      "args": ["C:/www/Agent.Local/src/fsmcp/dist/server.js"],
-      "env": {
-        "AGENT_WORKSPACE": "."
-      }
-    },
     "codemcp": {
       "type": "stdio",
       "command": "node",

@@ -24,6 +24,7 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { McpToolClient } from "../agent/mcp-client.js";
+import { createFsMcpServer } from "../agent/synthetic-mcp/fs-server.js";
 import { ModelRegistry } from "../agent/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { buildSubRuntime } from "../agent/runtime/build-sub-runtime.js";
@@ -98,7 +99,11 @@ async function bootstrap(): Promise<Bootstrap> {
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const modelsConfigPath = path.join(projectRoot, "models.json");
 
-  const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot);
+  // The filesystem/search tools run in-process (the former fsmcp server),
+  // linked over an in-memory transport and mounted alongside whatever servers
+  // mcp.json still spawns.
+  const fsmcp = await createFsMcpServer(sandboxRoot);
+  const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
   const registry = await ModelRegistry.load(modelsConfigPath);
 
   const shutdown = async (): Promise<void> => {

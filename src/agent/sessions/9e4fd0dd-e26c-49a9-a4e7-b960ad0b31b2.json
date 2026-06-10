@@ -1,0 +1,57 @@
+{
+  "sessionId": "9e4fd0dd-e26c-49a9-a4e7-b960ad0b31b2",
+  "workspaceId": "3e45dd0b-8eef-46bd-b0f7-97fd3531d174",
+  "parentSessionId": "a8ac715b-f7be-46a0-b37e-29b5cc928cab",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "Create a file named 'hello.txt' containing the text 'Hello, World!'."
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "ukiCKdm9",
+          "name": "dispatch_executor",
+          "arguments": {
+            "args": {
+              "content": "Hello, World!",
+              "path": "hello.txt"
+            },
+            "tool": "fsmcp__write_file",
+            "intent": "Create a file named 'hello.txt' with the content 'Hello, World!'."
+          },
+          "signature": "EjQKMgEMOdbHjxSNlmGIuzk8wOR39hlzTglQlAXUrje35ynMZ6xAsPa2kFIfUVQaDWEaZi+S"
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "EXECUTOR: ACK fsmcp__write_file\nEXECUTOR: ACK fsmcp__write_file\n\n\n\n\n\nEXECUTOR: RESULT OK file now contains 'Hello, World!'\nEXECUTOR: DETERMINISTIC OK — wrote 13 chars to \"hello.txt\"\nEXECUTOR: FINAL OK",
+      "toolCallId": "ukiCKdm9",
+      "toolName": "dispatch_executor"
+    },
+    {
+      "role": "assistant",
+      "content": "ORCHESTRATOR: The file 'hello.txt' has been successfully created with the content 'Hello, World!'."
+    }
+  ],
+  "status": "done",
+  "counters": {
+    "turns": 1,
+    "inputTokens": 13143,
+    "outputTokens": 90,
+    "cacheReadInputTokens": 12966,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781059552563,
+  "updatedAt": 1781059557834,
+  "user": {
+    "sub": "anonymous",
+    "isAuthenticated": false,
+    "claims": {},
+    "scopes": []
+  },
+  "contextHash": "52705165e0ced34a"
+}

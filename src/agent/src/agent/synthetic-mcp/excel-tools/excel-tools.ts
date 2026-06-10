@@ -3,9 +3,9 @@ import path from "node:path";
 
 import * as XLSX from "xlsx";
 
-import type { ToolExecutionResult } from "../mcp-client.js";
-import type { ToolDescriptor } from "../providers/provider.js";
-import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "./types.js";
+import type { ToolExecutionResult } from "../../mcp-client.js";
+import type { ToolDescriptor } from "../../providers/provider.js";
+import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "../types.js";
 
 export const READ_EXCEL_SHEET_TOOL = "read_excel_sheet";
 export const GET_EXCEL_COLUMNS_TOOL = "get_excel_columns";
@@ -29,6 +29,19 @@ export const APPEND_AFTER_EXCEL_ROWS_TOOL = "append_after_excel_rows";
  * fsmcp and the executor write to — absolute paths and `..` escapes are refused
  * deterministically in agent code, never trusting the model to behave.
  */
+
+/**
+ * Build Excel tool descriptors for advertisement (without creating handlers).
+ * Used to include Excel tools in the visible tools list at turn setup.
+ */
+export function getExcelToolDescriptors(): ToolDescriptor[] {
+  return createExcelTools().map((tool) => ({
+    name: tool.name,
+    description: tool.descriptor.description,
+    inputSchema: tool.descriptor.inputSchema,
+  }));
+}
+
 export function createExcelTools(): SyntheticTool[] {
   return [
     { name: LIST_EXCEL_SHEETS_TOOL, descriptor: listSheetsDescriptor(), callTool: handleListSheets },

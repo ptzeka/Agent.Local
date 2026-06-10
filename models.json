@@ -7,7 +7,11 @@
     "Roles: `orchestrator` (coordinates, read-only tools + dispatch_executor) and",
     "`executor` (the only role allowed to mutate state). Legacy names",
     "`coder` and `planner` are still accepted and alias to `orchestrator`.",
-    "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`."
+    "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`.",
+    "`mcp` is an optional per-model list of MCP server names (e.g. `fsmcp`, `codemcp`)",
+    "the model can access. It layers on top of the role split: a model only sees",
+    "tools from servers that are both role-appropriate AND listed here. Omit the key",
+    "for no restriction; an empty array advertises zero tools."
   ],
 
   "models": {
@@ -15,45 +19,52 @@
       "provider": "ollama",
       "model": "qwen3-coder:30b-a3b-q4_K_M",
       "supportsTools": true,
-      "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available."
+      "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "qwen-coder-14b": {
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
-      "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU."
+      "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "deepseek-r1": {
       "provider": "ollama",
       "model": "deepseek-r1:14b",
       "supportsTools": false,
       "reasoning": true,
-      "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff."
+      "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "llama-fast": {
       "provider": "ollama",
       "model": "gemma3:4b",
       "supportsTools": true,
-      "description": "Small, quick model for summarization and lightweight follow-ups."
+      "description": "Small, quick model for summarization and lightweight follow-ups.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
       "model": "claude-haiku-4-5",
       "supportsTools": true,
-      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY."
+      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
       "supportsTools": true,
-      "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY."
+      "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
     },
     "gemini-2.5-flash-lite": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
-      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY."
-    }    
+      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+    }
   },
 
   "roles": {

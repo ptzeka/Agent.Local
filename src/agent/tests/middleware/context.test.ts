@@ -26,10 +26,27 @@ const READ_TOOL: ToolDescriptor = {
   inputSchema: { type: "object" },
 };
 
-/** registry whose orchestrator provider reports the given model + tool mode. */
-function fakeRegistry(modelId: string, nativeTools: boolean): ModelRegistry {
+/**
+ * registry whose orchestrator provider reports the given model + tool mode.
+ * `whitelist` mimics ModelRegistry.filterMcpToolsForRole: a missing entry for a
+ * role means "unrestricted", otherwise only tools from whitelisted MCP servers survive.
+ */
+function fakeRegistry(
+  modelId: string,
+  nativeTools: boolean,
+  whitelist?: Partial<Record<string, string[]>>
+): ModelRegistry {
   return {
     getProviderForRole: () => ({ modelId, supportsNativeTools: nativeTools }),
+    filterMcpToolsForRole: (role: string, tools: ToolDescriptor[]) => {
+      const list = whitelist?.[role];
+      if (!list) return tools;
+      const allow = new Set(list);
+      return tools.filter((tool) => {
+        const serverName = tool.name.split("__")[0];
+        return allow.has(serverName);
+      });
+    },
   } as unknown as ModelRegistry;
 }
 
@@ -60,10 +77,10 @@ describe("ContextMiddleware", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  function ctxWith(nativeTools = true) {
+  function ctxWith(nativeTools = true, whitelist?: Partial<Record<string, string[]>>) {
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1" });
     return makeContext({
-      registry: fakeRegistry("gemini-x", nativeTools),
+      registry: fakeRegistry("gemini-x", nativeTools, whitelist),
       tools: fakeTools(),
       store,
       session,
@@ -118,6 +135,28 @@ describe("ContextMiddleware", () => {
     expect(reduced!.tools.some((t) => t.name === "create_subsession")).toBe(false);
     // The tool block differs, so the fingerprint must differ too.
     expect(withoutSub.session!.contextHash).not.toBe(withSub.session!.contextHash);
+  });
+
+  test("a per-model whitelist drops non-listed tools from the snapshot", async () => {
+    // Orchestrator whitelist that does NOT include read_file → it must be gone,
+    // while synthetic control tools (added after filtering) remain.
+    const ctx = ctxWith(true, { orchestrator: ["codemcp__search_code"] });
+
+    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
+    expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
+  });
+
+  test("an empty whitelist removes every model tool but keeps synthetic tools", async () => {
+    const ctx = ctxWith(true, { orchestrator: [] });
+
+    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
+    expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
   });
 
   test("throws when session/workspace/store have not been set", async () => {

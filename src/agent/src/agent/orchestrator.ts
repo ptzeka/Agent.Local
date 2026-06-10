@@ -22,8 +22,12 @@ import type { Workspace } from "./workspace-registry.js";
 import {
   DispatchTracker,
   buildSyntheticTools,
+  getExcelToolDescriptors,
+  getSubsessionToolDescriptors,
   type SyntheticToolContext,
-} from "./synthetic-tools/index.js";
+} from "./synthetic-mcp/index.js";
+import { createExcelMcpServer } from "./synthetic-mcp/excel-server.js";
+import { createSubsessionsMcpServer } from "./synthetic-mcp/subsessions-server.js";
 
 /**
  * Orchestrator.
@@ -150,8 +154,17 @@ export class Orchestrator {
     const orchestratorProvider = this.registry.getProviderForRole("orchestrator");
     const executorProvider = this.registry.getProviderForRole("executor");
 
-    const orchestratorTools = this.tools.listToolsForOrchestrator();
-    const executorTools = this.tools.listToolsForExecutor();
+    // Role split first (read-only vs. read+mutate), then the per-model tool
+    // whitelist from models.json. Synthetic control tools added below are
+    // deliberately exempt — they're orchestration plumbing, not model tools.
+    const orchestratorTools = this.registry.filterMcpToolsForRole(
+      "orchestrator",
+      this.tools.listToolsForOrchestrator()
+    );
+    const executorTools = this.registry.filterMcpToolsForRole(
+      "executor",
+      this.tools.listToolsForExecutor()
+    );
 
     const coordinator = options.coordinator;
     // Synthetic tools look like real MCP tools to the LLM (descriptor + a
@@ -161,9 +174,15 @@ export class Orchestrator {
     // sub-session runs get none, enforcing the one-level-deep guard at source.
     const synthetic = buildSyntheticTools({
       executorTools,
-      includeSubSessions: Boolean(coordinator),
     });
-    const visibleTools: ToolDescriptor[] = [...orchestratorTools, ...synthetic.listDescriptors()];
+    const excelToolDescriptors = getExcelToolDescriptors();
+    const subsessionToolDescriptors = coordinator ? getSubsessionToolDescriptors() : [];
+    const visibleTools: ToolDescriptor[] = [
+      ...orchestratorTools,
+      ...synthetic.listDescriptors(),
+      ...excelToolDescriptors,
+      ...subsessionToolDescriptors,
+    ];
 
     // Bind every tool call this turn to the session's workspace segment. The
     // executor's mutations and the orchestrator's own read calls both go through
@@ -217,6 +236,20 @@ export class Orchestrator {
       executorMaxIterations: maxExecutorIterations,
       executorTemperature: this.registry.orchestration.executorTemperature,
     };
+
+    // Create a fresh Excel MCP server for this turn with the current context.
+    // It's registered as an in-process connection so Excel tools are routed
+    // through McpToolClient.callTool alongside fsmcp and other MCP servers.
+    const excelServer = createExcelMcpServer(syntheticContext);
+    await this.tools.registerRuntimeConnection(excelServer.serverName, excelServer.client);
+
+    // Create a subsessions server only if a coordinator is wired in. Like Excel,
+    // it needs per-turn context. Subsessions are one level deep so detached runs
+    // don't have a coordinator and therefore no subsession tools.
+    if (coordinator) {
+      const subsessionsServer = createSubsessionsMcpServer(syntheticContext);
+      await this.tools.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
+    }
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       // Fold in any externally-injected prompts before asking the model. The

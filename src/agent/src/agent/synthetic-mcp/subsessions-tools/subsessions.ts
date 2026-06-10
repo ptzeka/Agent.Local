@@ -1,7 +1,7 @@
-import type { ToolExecutionResult } from "../mcp-client.js";
-import type { ToolDescriptor } from "../providers/provider.js";
-import type { SubSessionCoordinator, SubSessionSnapshot } from "../subsession.js";
-import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "./types.js";
+import type { ToolExecutionResult } from "../../mcp-client.js";
+import type { ToolDescriptor } from "../../providers/provider.js";
+import type { SubSessionCoordinator, SubSessionSnapshot } from "../../subsession.js";
+import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "../types.js";
 
 export const CREATE_SUBSESSION_TOOL = "create_subsession";
 export const SUBSESSION_STATUS_TOOL = "get_subsession_status";
@@ -17,6 +17,19 @@ export const FINALIZE_SUBSESSION_TOOL = "finalize_subsession";
  * in any schema. These tools are only built (and therefore only advertised) when
  * a coordinator is wired in, which enforces the one-level-deep guard at source.
  */
+
+/**
+ * Build subsession tool descriptors for advertisement (without creating handlers).
+ * Used to include subsession tools in the visible tools list at turn setup.
+ */
+export function getSubsessionToolDescriptors(): ToolDescriptor[] {
+  return createSubSessionTools().map((tool) => ({
+    name: tool.name,
+    description: tool.descriptor.description,
+    inputSchema: tool.descriptor.inputSchema,
+  }));
+}
+
 export function createSubSessionTools(): SyntheticTool[] {
   return [
     {

@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { buildContextSnapshot, saveContextSnapshot } from "../../context-loader.js";
 import { ORCHESTRATOR_SYSTEM_PROMPT } from "../../system-prompt.js";
-import { buildSyntheticTools } from "../../synthetic-tools/registry.js";
+import { buildSyntheticTools } from "../../synthetic-mcp/registry.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
@@ -52,12 +52,21 @@ export class ContextMiddleware implements IMiddleware {
     // Mirror exactly what the orchestrator advertises each turn — its read tools
     // plus the synthetic tools (dispatch_executor, excel, sub-sessions) — so the
     // snapshot faithfully records the tool block the model receives.
-    const executorTools = ctx.tools.listToolsForExecutor();
+    // Apply the same role split + per-model whitelist the orchestrator uses at
+    // runtime, so the snapshot's tool block faithfully mirrors what each model
+    // is actually advertised.
+    const executorTools = ctx.registry.filterMcpToolsForRole(
+      "executor",
+      ctx.tools.listToolsForExecutor()
+    );
+    const orchestratorTools = ctx.registry.filterMcpToolsForRole(
+      "orchestrator",
+      ctx.tools.listToolsForOrchestrator()
+    );
     const synthetic = buildSyntheticTools({
       executorTools,
-      includeSubSessions: this.params.includeSubSessions ?? true,
     });
-    const tools = [...ctx.tools.listToolsForOrchestrator(), ...synthetic.listDescriptors()];
+    const tools = [...orchestratorTools, ...synthetic.listDescriptors()];
 
     const snapshot = buildContextSnapshot({
       model: orchestrator.modelId,
