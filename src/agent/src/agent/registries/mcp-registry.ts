@@ -6,7 +6,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 import type { InProcessMcpServer } from "../synthetic-mcp/fs-server.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import { McpClient, type ToolExecutionResult } from "../mcp-client.js";
+import { McpClient, ToolInvoker, type ToolExecutionResult } from "../mcp-client.js";
 
 interface McpServerConfig {
   command: string;
@@ -34,7 +34,7 @@ interface McpConfigFile {
  *   1. Constructor + registerInProcessServer() — collect servers
  *   2. connectAll() — connect everything at once (stdio + in-process)
  */
-export class McpClientRegistry {
+export class McpClientRegistry implements ToolInvoker {
   private clients = new Map<string, McpClient>();
   private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();
   private workspaceRootValue: string;
@@ -247,10 +247,10 @@ const READ_ONLY_TAILS = new Set([
   "get_file_context",
   "list_commits",
   "search_code",
-  "excel__list_sheets",
-  "excel__get_excel_columns",
-  "excel__read_excel_sheet",
-  "excel__query_excel_rows"
+  "read_excel_sheet",
+  "get_excel_columns",
+  "query_excel_rows",
+  "list_sheets"
 ]);
 
 function tail(toolName: string): string {

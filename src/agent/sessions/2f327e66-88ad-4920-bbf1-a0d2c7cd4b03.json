@@ -1,0 +1,15 @@
+{
+  "sessionId": "2f327e66-88ad-4920-bbf1-a0d2c7cd4b03",
+  "workspaceId": "e538eda0-d6bd-402a-a489-4a4a91896925",
+  "conversation": [],
+  "status": "idle",
+  "counters": {
+    "turns": 0,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781079950116,
+  "updatedAt": 1781079950116
+}

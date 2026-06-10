@@ -1,0 +1,31 @@
+{
+  "sessionId": "c97e6397-1523-45a2-837e-fcc4bb2744da",
+  "workspaceId": "fcd760bf-6c9a-48e6-a6c1-c8673ee375fd",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "hello pls list me your tools"
+    },
+    {
+      "role": "assistant",
+      "content": "I have access to the following tools:\n- `fsmcp__read_file`: Read a UTF-8 text file from the workspace.\n- `fsmcp__list_dir`: List the contents of a directory inside the workspace.\n- `fsmcp__glob`: Find files in the workspace by glob pattern.\n- `fsmcp__grep`: Search file contents in the workspace using a JavaScript regular expression.\n- `excel__list_sheets`: List the sheet (tab) names in an Excel workbook.\n- `excel__get_excel_columns`: Return the column headers (first row) of a sheet.\n- `excel__read_excel_sheet`: Read an entire sheet as rows.\n- `excel__query_excel_rows`: Return only the rows of a sheet that satisfy ALL of the given filter conditions.\n- `codemcp__search_code`: Semantic vector search over the indexed repository.\n- `codemcp__find_symbol`: Exact-match symbol lookup across the indexed repository.\n- `codemcp__get_file_context`: Return all chunks for a given file plus the governing CLAUDE.md files.\n- `codemcp__list_commits`: Enumerate indexed commit snapshots.\n- `dispatch_executor`: Execute a tool in a separate sandboxed environment. This is the only way to perform actions that modify state."
+    }
+  ],
+  "status": "awaiting-input",
+  "counters": {
+    "turns": 1,
+    "inputTokens": 4838,
+    "outputTokens": 295,
+    "cacheReadInputTokens": 4831,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781079917051,
+  "updatedAt": 1781079927296,
+  "user": {
+    "sub": "anonymous",
+    "isAuthenticated": false,
+    "claims": {},
+    "scopes": []
+  },
+  "contextHash": "caef7194d4bc3967"
+}
