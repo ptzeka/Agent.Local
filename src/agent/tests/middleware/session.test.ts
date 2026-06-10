@@ -8,7 +8,7 @@ import type { McpClient } from "../../src/agent/mcp-client.js";
 import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
 import { createSession } from "../../src/agent/session.js";
 import { SessionStore } from "../../src/agent/session-store.js";
-import { WorkspaceRegistry } from "../../src/agent/workspace-registry.js";
+import { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
 /**

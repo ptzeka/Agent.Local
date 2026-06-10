@@ -1,4 +1,4 @@
-import { WorkspaceRegistry } from "../../workspace-registry.js";
+import { WorkspaceRegistry } from "../../registries/workspace-registry.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 /**

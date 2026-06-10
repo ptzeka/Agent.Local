@@ -2,7 +2,7 @@ import path from "node:path";
 
 import { buildContextSnapshot, saveContextSnapshot } from "../../context-loader.js";
 import { ORCHESTRATOR_SYSTEM_PROMPT } from "../../system-prompt.js";
-import { buildExecutorRegistry } from "../../synthetic-mcp/executor-registry.js";
+import { buildExecutorRegistry } from "../../registries/executor-registry.js";
 import {
   getExcelToolDescriptors,
   getSubsessionToolDescriptors,
@@ -67,7 +67,7 @@ export class ContextMiddleware implements IMiddleware {
                !t.name.startsWith("subsessions__") &&
                t.name !== "dispatch_executor"
       );
-      const filteredMcpTools = ctx.registry.filterToolsByServerWhitelist("orchestrator", mcpTools);
+      const filteredMcpTools = ctx.registry.filterMcpByServerWhitelist("orchestrator", mcpTools);
       const excelTools = ctx.toolDescriptors.filter((t) => t.name.startsWith("excel__"));
       const dispatchExecutor = ctx.toolDescriptors.filter((t) => t.name === "dispatch_executor");
       const subsessionTools = shouldIncludeSubSessions
@@ -76,13 +76,13 @@ export class ContextMiddleware implements IMiddleware {
       tools = [...filteredMcpTools, ...excelTools, ...dispatchExecutor, ...subsessionTools];
     } else {
       // Fallback: rebuild from MCP client registry (used in tests that skip OrchestratorMiddleware).
-      const executorTools = ctx.registry.filterToolsByServerWhitelist(
+      const executorTools = ctx.registry.filterMcpByServerWhitelist(
         "executor",
-        ctx.tools.listToolsForExecutor()
+        ctx.mcpRegistry.listToolsForExecutor()
       );
-      const orchestratorTools = ctx.registry.filterToolsByServerWhitelist(
+      const orchestratorTools = ctx.registry.filterMcpByServerWhitelist(
         "orchestrator",
-        ctx.tools.listToolsForOrchestrator()
+        ctx.mcpRegistry.listToolsForOrchestrator()
       );
       const executorRegistry = buildExecutorRegistry(executorTools);
       const excelTools = getExcelToolDescriptors();

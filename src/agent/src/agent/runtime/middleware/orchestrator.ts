@@ -1,5 +1,5 @@
 import { Orchestrator } from "../../orchestrator.js";
-import { buildExecutorRegistry } from "../../synthetic-mcp/executor-registry.js";
+import { buildExecutorRegistry } from "../../registries/executor-registry.js";
 import {
   getExcelToolDescriptors,
   getSubsessionToolDescriptors,
@@ -25,7 +25,7 @@ export class OrchestratorMiddleware implements IMiddleware {
   constructor(private readonly params: OrchestratorMiddlewareParams = {}) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    if (!ctx.tools) {
+    if (!ctx.mcpRegistry) {
       throw new Error(
         "OrchestratorMiddleware: requires ctx.tools (McpClientRegistry). " +
           "Ensure the registry is set up before this middleware."
@@ -34,8 +34,8 @@ export class OrchestratorMiddleware implements IMiddleware {
 
     const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
 
-    const orchestratorTools = ctx.tools.listToolsForOrchestrator();
-    const executorTools = ctx.tools.listToolsForExecutor();
+    const orchestratorTools = ctx.mcpRegistry.listToolsForOrchestrator();
+    const executorTools = ctx.mcpRegistry.listToolsForExecutor();
 
     const executorRegistry = buildExecutorRegistry(executorTools);
 

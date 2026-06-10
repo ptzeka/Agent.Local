@@ -1,8 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-import { createProvider, type LLMProvider } from "./providers/index.js";
-import type { ToolDescriptor } from "./providers/provider.js";
+import { createProvider, type LLMProvider } from "../providers/index.js";
+import type { ToolDescriptor } from "../providers/provider.js";
 
 /**
  * Model registry.
@@ -30,7 +30,7 @@ export interface ModelDefinition {
    *
    * Omitted key  → no restriction (every role-appropriate tool is advertised).
    * Empty array  → zero tools.
-   * Resolved per role via `filterToolsByServerWhitelist`.
+   * Resolved per role via `filterMcpByServerWhitelist`.
    */
   mcp?: string[];
 }
@@ -234,7 +234,7 @@ export class ModelRegistry {
    * array → no tools. Under AGENT_FORCE_MODEL the role resolves to the forced
    * model, so its whitelist (if any) governs every role.
    */
-  public filterToolsByServerWhitelist(role: RoleName, tools: ToolDescriptor[]): ToolDescriptor[] {
+  public filterMcpByServerWhitelist(role: RoleName, tools: ToolDescriptor[]): ToolDescriptor[] {
     const modelId = this.roleAssignments.get(role);
     const allowedServers = modelId ? this.definitions[modelId]?.mcp : undefined;
     if (!allowedServers) return tools;

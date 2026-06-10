@@ -3,11 +3,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { ModelRegistry } from "../src/agent/model-registry.js";
+import { ModelRegistry } from "../src/agent/registries/model-registry.js";
 import type { ToolDescriptor } from "../src/agent/providers/provider.js";
 
 /**
- * ModelRegistry.filterToolsByServerWhitelist: the per-model MCP server whitelist from
+ * ModelRegistry.filterMcpByServerWhitelist: the per-model MCP server whitelist from
  * models.json, layered on top of the (already applied) role split. MCP server
  * names are matched on the tool name prefix (before `__`).
  */
@@ -20,7 +20,7 @@ const TOOLS: ToolDescriptor[] = [
 
 const base = { provider: "ollama", model: "x", supportsTools: true };
 
-describe("ModelRegistry.filterToolsByServerWhitelist", () => {
+describe("ModelRegistry.filterMcpByServerWhitelist", () => {
   let cleanup: (() => Promise<void>) | undefined;
 
   afterEach(async () => {
@@ -43,7 +43,7 @@ describe("ModelRegistry.filterToolsByServerWhitelist", () => {
 
   test("no whitelist returns the input list unchanged", async () => {
     const registry = await loadRegistry({ "m-orch": { ...base }, "m-exec": { ...base } });
-    expect(registry.filterToolsByServerWhitelist("orchestrator", TOOLS)).toEqual(TOOLS);
+    expect(registry.filterMcpByServerWhitelist("orchestrator", TOOLS)).toEqual(TOOLS);
   });
 
   test("a subset whitelist keeps only tools from whitelisted servers", async () => {
@@ -51,7 +51,7 @@ describe("ModelRegistry.filterToolsByServerWhitelist", () => {
       "m-orch": { ...base, mcp: ["fsmcp"] },
       "m-exec": { ...base },
     });
-    const kept = registry.filterToolsByServerWhitelist("orchestrator", TOOLS).map((t) => t.name);
+    const kept = registry.filterMcpByServerWhitelist("orchestrator", TOOLS).map((t) => t.name);
     expect(kept).toEqual(["fsmcp__read_file", "fsmcp__write_file"]);
   });
 
@@ -60,7 +60,7 @@ describe("ModelRegistry.filterToolsByServerWhitelist", () => {
       "m-orch": { ...base, mcp: [] },
       "m-exec": { ...base },
     });
-    expect(registry.filterToolsByServerWhitelist("orchestrator", TOOLS)).toEqual([]);
+    expect(registry.filterMcpByServerWhitelist("orchestrator", TOOLS)).toEqual([]);
   });
 
   test("the mcp list is resolved per role from that role's model", async () => {
@@ -68,11 +68,11 @@ describe("ModelRegistry.filterToolsByServerWhitelist", () => {
       "m-orch": { ...base, mcp: ["fsmcp"] },
       "m-exec": { ...base, mcp: ["codemcp"] },
     });
-    expect(registry.filterToolsByServerWhitelist("orchestrator", TOOLS).map((t) => t.name)).toEqual([
+    expect(registry.filterMcpByServerWhitelist("orchestrator", TOOLS).map((t) => t.name)).toEqual([
       "fsmcp__read_file",
       "fsmcp__write_file",
     ]);
-    expect(registry.filterToolsByServerWhitelist("executor", TOOLS).map((t) => t.name)).toEqual([
+    expect(registry.filterMcpByServerWhitelist("executor", TOOLS).map((t) => t.name)).toEqual([
       "codemcp__search_code",
     ]);
   });

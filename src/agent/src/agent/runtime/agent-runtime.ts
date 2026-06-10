@@ -7,11 +7,11 @@ import { SessionManager } from "../session-manager.js";
 import { SessionStore, type SessionSummary } from "../session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../summarizer.js";
 import type { SubSessionNotificationListener } from "../subsession.js";
-import type { Workspace } from "../workspace-registry.js";
-import { WorkspaceRegistry } from "../workspace-registry.js";
+import type { Workspace } from "../registries/workspace-registry.js";
+import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
-import type { ModelRegistry } from "../model-registry.js";
-import type { McpClientRegistry } from "../mcp-client.js";
+import type { ModelRegistry } from "../registries/model-registry.js";
+import type { McpClientRegistry } from "../registries/mcp-registry.js";
 
 export interface ResetResult {
   context: ProjectContext | null;
@@ -95,9 +95,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   async build(): Promise<this> {
     const ctx: RuntimeContext = {
       registry: this.deps.registry,
-      tools: this.deps.tools,
+      mcpRegistry: this.deps.mcpRegistry,
       sessionsDir: this.deps.sessionsDir,
       workspaceRoot: this.deps.workspaceRoot,
+      mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
       store: undefined,
       workspaces: undefined,
@@ -132,7 +133,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
 
     this.registry = ctx.registry;
-    this.mcpClientRegistry = ctx.tools;
+    this.mcpClientRegistry = ctx.mcpRegistry;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;

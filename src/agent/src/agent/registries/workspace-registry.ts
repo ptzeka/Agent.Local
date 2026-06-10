@@ -1,4 +1,4 @@
-import { loadProjectContext, type ProjectContext } from "./context-loader.js";
+import { loadProjectContext, type ProjectContext } from "../context-loader.js";
 
 /**
  * WorkspaceRegistry — Repository layer.

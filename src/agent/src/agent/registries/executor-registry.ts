@@ -1,7 +1,7 @@
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import { DispatchExecutorTool } from "./dispatch-executor.js";
-import { toolError, type SyntheticMcp, type SyntheticMcpContext } from "./types.js";
+import { DispatchExecutorTool } from "../synthetic-mcp/dispatch-executor.js";
+import { toolError, type SyntheticMcp, type SyntheticMcpContext } from "../synthetic-mcp/types.js";
 
 /**
  * ExecutorRegistry — intercepts the `dispatch_executor` tool call.

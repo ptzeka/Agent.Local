@@ -4,7 +4,7 @@ import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Session } from "../session.js";
 import type { SubSessionCoordinator } from "../subsession.js";
-import type { Workspace } from "../workspace-registry.js";
+import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
 
 /**

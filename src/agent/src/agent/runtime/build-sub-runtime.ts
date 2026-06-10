@@ -1,5 +1,7 @@
 import type { SubRuntimeRefs } from "../subsession.js";
 import { AgentRuntime } from "./agent-runtime.js";
+import { AddMcpServersMiddleware } from "./middleware/add-mcp-servers.js";
+import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { InheritedUserMiddleware } from "./middleware/inherited-user.js";
@@ -39,6 +41,8 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
         standingContext: refs.standingContext,
       })
     )
+    .add(new AddMcpServersMiddleware())
+    .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: false }))
     .add(new ContextMiddleware({ includeSubSessions: false }))
     .add(new InputInboxMiddleware())

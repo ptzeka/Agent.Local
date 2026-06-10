@@ -1,13 +1,13 @@
 import type { IdentityContext, Principal } from "../identity/types.js";
 import type { InputInbox } from "../input-inbox.js";
-import type { McpClientRegistry } from "../mcp-client.js";
-import type { ModelRegistry } from "../model-registry.js";
+import type { McpClientRegistry } from "../registries/mcp-registry.js";
+import type { ModelRegistry } from "../registries/model-registry.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { Session } from "../session.js";
 import type { SessionManager } from "../session-manager.js";
 import type { SessionStore } from "../session-store.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import type { Workspace, WorkspaceRegistry } from "../workspace-registry.js";
+import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
@@ -19,17 +19,19 @@ export interface AgentRuntimeQueryable {
 
 export interface AgentRuntimeDeps {
   registry: ModelRegistry;
-  tools: McpClientRegistry;
+  mcpRegistry: McpClientRegistry;
   sessionsDir: string;
   workspaceRoot: string;
+  mcpConfigPath: string;
   credentials?: IdentityContext;
 }
 
 export interface RuntimeContext {
   readonly registry: ModelRegistry;
-  readonly tools: McpClientRegistry;
+  readonly mcpRegistry: McpClientRegistry;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
+  readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
 
   store: SessionStore | undefined;

@@ -23,9 +23,8 @@ import url from "node:url";
 import chalk from "chalk";
 import dotenv from "dotenv";
 
-import { McpClientRegistry } from "../agent/mcp-client.js";
-import { createFsMcpServer } from "../agent/synthetic-mcp/fs-server.js";
-import { ModelRegistry } from "../agent/model-registry.js";
+import { McpClientRegistry } from "../agent/registries/mcp-registry.js";
+import { ModelRegistry } from "../agent/registries/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { buildSubRuntime } from "../agent/runtime/build-sub-runtime.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
@@ -38,6 +37,8 @@ import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-ma
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
 import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
 import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
+import { AddMcpServersMiddleware } from "../agent/runtime/middleware/add-mcp-servers.js";
+import { ConnectMcpServersMiddleware } from "../agent/runtime/middleware/connect-mcp-servers.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
 import { renderEvent, renderSubSessionNotification } from "./render.js";
@@ -55,7 +56,8 @@ interface Bootstrap {
   sandboxRoot: string;
   sessionsDir: string;
   registry: ModelRegistry;
-  tools: McpClientRegistry;
+  mcpRegistry: McpClientRegistry;
+  mcpConfigPath: string;
   shutdown: () => Promise<void>;
 }
 
@@ -99,12 +101,11 @@ async function bootstrap(): Promise<Bootstrap> {
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const modelsConfigPath = path.join(projectRoot, "models.json");
 
-  const fsmcp = await createFsMcpServer(sandboxRoot);
-  const tools = await McpClientRegistry.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
+  const mcpRegistry = new McpClientRegistry(sandboxRoot);
   const registry = await ModelRegistry.load(modelsConfigPath);
 
   const shutdown = async (): Promise<void> => {
-    await tools.shutdown();
+    await mcpRegistry.shutdown();
   };
 
   process.on("SIGINT", () => {
@@ -114,7 +115,7 @@ async function bootstrap(): Promise<Bootstrap> {
     void shutdown().finally(() => process.exit(EXIT_ERROR));
   });
 
-  return { projectRoot, sandboxRoot, sessionsDir, registry, tools, shutdown };
+  return { projectRoot, sandboxRoot, sessionsDir, registry, mcpRegistry, mcpConfigPath, shutdown };
 }
 
 /**
@@ -134,11 +135,12 @@ function buildRuntime(
   boot: Bootstrap,
   sessionId?: string
 ): AgentRuntime {
-  const { projectRoot, sessionsDir, registry, tools } = boot;
+  const { projectRoot, sessionsDir, registry, mcpRegistry, mcpConfigPath } = boot;
   const token = process.env.AGENT_API_TOKEN;
   const deps: AgentRuntimeDeps = {
     registry,
-    tools,
+    mcpRegistry,
+    mcpConfigPath,
     sessionsDir,
     workspaceRoot: projectRoot,
     credentials: token ? { token } : {},
@@ -149,6 +151,8 @@ function buildRuntime(
   .add(new IdentityMiddleware())
   .add(new AnonymousMiddleware())
   .add(new SessionMiddleware({ sessionId }))
+  .add(new AddMcpServersMiddleware())
+  .add(new ConnectMcpServersMiddleware())
   .add(new OrchestratorMiddleware({ includeSubSessions: true }))
   .add(new ContextMiddleware())
   .add(new InputInboxMiddleware())
@@ -161,7 +165,7 @@ function buildRuntime(
  * the REPL.
  */
 async function runInteractive(boot: Bootstrap): Promise<void> {
-  const { projectRoot, sandboxRoot, sessionsDir, registry, tools } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, registry, mcpRegistry } = boot;
 
   const saved = await AgentRuntime.listSavedSessions(sessionsDir);
   const choice = await pickSession(saved);
@@ -175,7 +179,7 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
       workspaceRoot: projectRoot,
       sandboxRoot,
       registry,
-      tools,
+      mcpRegistry,
       runtime,
       resumed: choice.kind === "resume",
     });

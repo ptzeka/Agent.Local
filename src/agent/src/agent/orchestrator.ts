@@ -17,18 +17,17 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "./scoped-tool-client.js";
 import type { SessionCounters } from "./session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
-import type { Workspace } from "./workspace-registry.js";
+import type { Workspace } from "./registries/workspace-registry.js";
 import {
   DispatchTracker,
   buildExecutorRegistry,
   type SyntheticMcpContext,
   type ToolContext,
 } from "./synthetic-mcp/index.js";
-import { createExcelMcpServer } from "./synthetic-mcp/excel-server.js";
 import { createSubsessionsMcpServer } from "./synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "./runtime/types.js";
 import type { OrchestratorListener } from "./orchestrator-events.js";
-import type { McpClientRegistry } from "./mcp-client.js";
+import type { McpClientRegistry } from "./registries/mcp-registry.js";
 
 // Re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./orchestrator-events.js";
@@ -138,14 +137,14 @@ export class Orchestrator {
     const orchestratorProvider = registry.getProviderForRole("orchestrator");
     const executorProvider = registry.getProviderForRole("executor");
 
-    const executorTools = registry.filterToolsByServerWhitelist(
+    const executorTools = registry.filterMcpByServerWhitelist(
       "executor",
       mcpRegistry.listTools()
     );
 
     const executorRegistry = buildExecutorRegistry(executorTools);
 
-    const modelFilteredTools = registry.filterToolsByServerWhitelist("orchestrator", visibleTools);
+    const modelFilteredTools = registry.filterMcpByServerWhitelist("orchestrator", visibleTools);
 
     const scopedTools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
 
@@ -199,13 +198,11 @@ export class Orchestrator {
       signal: options.signal,
     };
 
-    const excelServer = createExcelMcpServer(toolCtx);
-    const turnServers = [{ name: excelServer.serverName, client: excelServer.client }];
+    // Refresh per-turn servers (subsessions only; Excel is now pre-registered)
     if (coordinator) {
       const subsessionsServer = createSubsessionsMcpServer(toolCtx);
-      turnServers.push({ name: subsessionsServer.serverName, client: subsessionsServer.client });
+      await mcpRegistry.refreshTurnServers([{ name: subsessionsServer.serverName, client: subsessionsServer.client }]);
     }
-    await mcpRegistry.refreshTurnServers(turnServers);
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       // Fold in any externally-injected prompts before asking the model. The

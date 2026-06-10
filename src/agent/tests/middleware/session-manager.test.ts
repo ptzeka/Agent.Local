@@ -1,7 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { SessionManagerMiddleware } from "../../src/agent/runtime/middleware/session-manager.js";
-import type { Workspace } from "../../src/agent/workspace-registry.js";
+import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
 /**

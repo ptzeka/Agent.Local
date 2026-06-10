@@ -1,8 +1,8 @@
 import readline from "node:readline/promises";
 import chalk from "chalk";
 
-import type { McpClientRegistry } from "../agent/mcp-client.js";
-import type { ModelRegistry } from "../agent/model-registry.js";
+import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
+import type { ModelRegistry } from "../agent/registries/model-registry.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 
 import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification } from "./render.js";
@@ -19,13 +19,13 @@ export interface ReplOptions {
   workspaceRoot: string;
   sandboxRoot: string;
   registry: ModelRegistry;
-  tools: McpClientRegistry;
+  mcpRegistry: McpClientRegistry;
   runtime: AgentRuntime;
   resumed: boolean;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, sandboxRoot, registry, tools, runtime, resumed } = options;
+  const { workspaceRoot, sandboxRoot, registry, mcpRegistry, runtime, resumed } = options;
 
   const session = runtime.getSession();
   const firstUser = session.conversation.find((m) => m.role === "user");
@@ -66,7 +66,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     if (input.startsWith("/")) {
       const command = input.slice(1).trim();
-      const exitRequested = await handleSlashCommand(command, { runtime, registry, tools });
+      const exitRequested = await handleSlashCommand(command, { runtime, registry, mcpRegistry });
       if (exitRequested) break;
       continue;
     }
@@ -89,7 +89,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 interface SlashContext {
   runtime: AgentRuntime;
   registry: ModelRegistry;
-  tools: McpClientRegistry;
+  mcpRegistry: McpClientRegistry;
 }
 
 async function handleSlashCommand(command: string, ctx: SlashContext): Promise<boolean> {
@@ -196,7 +196,7 @@ function handleModelAssignmentCommand(args: string, ctx: SlashContext): void {
 }
 
 function handleToolsCommand(ctx: SlashContext): void {
-  const tools = ctx.tools.listTools();
+  const tools = ctx.mcpRegistry.listTools();
   if (tools.length === 0) {
     process.stdout.write(chalk.yellow("(no tools connected)\n"));
     return;

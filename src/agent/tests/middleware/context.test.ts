@@ -5,13 +5,13 @@ import path from "node:path";
 
 import { getContextSnapshot } from "../../src/agent/context-loader.js";
 import type { McpClient } from "../../src/agent/mcp-client.js";
-import type { ModelRegistry } from "../../src/agent/model-registry.js";
+import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
 import { getSubsessionToolDescriptors } from "../../src/agent/synthetic-mcp/index.js";
 import { createSession } from "../../src/agent/session.js";
 import { SessionStore } from "../../src/agent/session-store.js";
-import type { Workspace } from "../../src/agent/workspace-registry.js";
+import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -29,7 +29,7 @@ const READ_TOOL: ToolDescriptor = {
 
 /**
  * registry whose orchestrator provider reports the given model + tool mode.
- * `whitelist` mimics ModelRegistry.filterToolsByServerWhitelist: a missing entry for a
+ * `whitelist` mimics ModelRegistry.filterMcpByServerWhitelist: a missing entry for a
  * role means "unrestricted", otherwise only tools from whitelisted MCP servers survive.
  */
 function fakeRegistry(
@@ -39,7 +39,7 @@ function fakeRegistry(
 ): ModelRegistry {
   return {
     getProviderForRole: () => ({ modelId, supportsNativeTools: nativeTools }),
-    filterToolsByServerWhitelist: (role: string, tools: ToolDescriptor[]) => {
+    filterMcpByServerWhitelist: (role: string, tools: ToolDescriptor[]) => {
       const list = whitelist?.[role];
       if (!list) return tools;
       const allow = new Set(list);
@@ -82,7 +82,7 @@ describe("ContextMiddleware", () => {
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1" });
     return makeContext({
       registry: fakeRegistry("gemini-x", nativeTools, whitelist),
-      tools: fakeTools(),
+      mcpRegistry: fakeTools() as any,
       store,
       session,
       workspace: fakeWorkspace(),

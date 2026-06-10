@@ -1,5 +1,5 @@
-import type { McpClientRegistry } from "../../src/agent/mcp-client.js";
-import type { ModelRegistry } from "../../src/agent/model-registry.js";
+import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
+import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 
 /**
@@ -14,16 +14,18 @@ import type { RuntimeContext } from "../../src/agent/runtime/types.js";
  */
 export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
   const mockRegistry = {} as unknown as ModelRegistry;
-  const mockTools = {
+  const mockMcpRegistry = {
     listToolsForOrchestrator: () => [],
     listToolsForExecutor: () => [],
+    sandboxRoot: "/tmp/agent-mw-test-sandbox",
   } as unknown as McpClientRegistry;
 
   return {
     registry: mockRegistry,
-    tools: mockTools,
+    mcpRegistry: mockMcpRegistry,
     sessionsDir: "/tmp/agent-mw-test-sessions",
     workspaceRoot: "/tmp/agent-mw-test-workspace",
+    mcpConfigPath: "/tmp/mcp.json",
     credentials: {},
     store: undefined,
     workspaces: undefined,

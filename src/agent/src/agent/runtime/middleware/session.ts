@@ -57,7 +57,7 @@ export class SessionMiddleware implements IMiddleware {
     // confines tool I/O to {sandboxRoot}/{workspaceId}; without the directory
     // the first list_dir/glob fails with ENOENT (scandir). recursive: true is
     // idempotent, so a resumed session with an existing segment is a no-op.
-    const segmentDir = path.join(ctx.tools.sandboxRoot, ctx.session!.workspaceId);
+    const segmentDir = path.join(ctx.mcpRegistry.sandboxRoot, ctx.session!.workspaceId);
     await mkdir(segmentDir, { recursive: true });
 
     await next();
