@@ -1,4 +1,4 @@
-import type { ChatMessage, LLMProvider } from "./providers/provider.js";
+import type { ChatMessage, LLMProvider } from "../providers/provider.js";
 
 /**
  * Evaluator.

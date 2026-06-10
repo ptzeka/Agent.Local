@@ -1,9 +1,9 @@
-import type { Executor } from "../executor.js";
-import type { OrchestratorEvent, OrchestratorListener } from "../orchestrator-events.js";
+import type { Executor } from "../runners/executor.js";
+import type { OrchestratorEvent, OrchestratorListener } from "../runners/runner-events.js";
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import type { Session } from "../session.js";
-import type { SubSessionCoordinator } from "../subsession.js";
+import type { Session } from "../session/session.js";
+import type { SubSessionCoordinator } from "../runners/subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
 

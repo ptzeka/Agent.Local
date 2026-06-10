@@ -1,4 +1,5 @@
-import type { ExecutorAsk, ExecutorEvent, ExecutorFeedback } from "../executor.js";
+import type { ExecutorAsk, ExecutorFeedback } from "../runners/executor.js";
+import type { ExecutorEvent } from "../runners/runner-events.js";
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { dispatchSignature } from "./dispatch-tracker.js";
@@ -68,7 +69,7 @@ export class DispatchExecutorTool implements SyntheticMcp {
       signal: ctx.signal,
       maxIterations: ctx.executorMaxIterations,
       temperature: ctx.executorTemperature,
-      onEvent: (event: ExecutorEvent) =>
+      onEvent: (event: any) =>
         ctx.emit({ type: "executor-event", data: { ...event.data, kind: event.type } }),
     });
 
@@ -96,7 +97,7 @@ export class DispatchExecutorTool implements SyntheticMcp {
 // ---------------------------------------------------------------------------
 
 function buildDispatchToolDescriptor(executorTools: ToolDescriptor[]): ToolDescriptor {
-  const executorToolNames = executorTools.map((t) => t.name).sort();
+  const executorToolNames = executorTools.map((t) => t.name).sort();  
   const description = [
     "Spawn the EXECUTOR sub-agent to perform exactly one mutation.",
     "This is the ONLY way the orchestrator can change state — write_file,",
@@ -123,8 +124,10 @@ function buildDispatchToolDescriptor(executorTools: ToolDescriptor[]): ToolDescr
           enum: executorToolNames,
         },
         args: {
-          type: "object",
-          description: "Argument object passed verbatim to the executor's tool call.",
+          oneOf: executorTools.map((tool) => ({
+            title: tool.name,
+            ...tool.inputSchema,
+          })),
         },
         intent: {
           type: "string",

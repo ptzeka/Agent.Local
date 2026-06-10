@@ -57,6 +57,7 @@ export class GeminiProvider implements LLMProvider {
     const startedAt = Date.now();
 
     const cachedContent = await this.ensureCache(systemInstruction, tools);
+    console.log(systemInstruction, tools, cachedContent);
 
     // When a cache is active it already contains system + tools, so they must
     // be omitted from the per-request config to avoid an API conflict.

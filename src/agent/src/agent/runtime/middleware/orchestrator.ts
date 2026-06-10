@@ -1,4 +1,4 @@
-import { Orchestrator } from "../../orchestrator.js";
+import { Orchestrator } from "../../runners/orchestrator.js";
 import { buildExecutorRegistry } from "../../registries/executor-registry.js";
 import {
   getExcelToolDescriptors,

@@ -1,8 +1,9 @@
 import path from "node:path";
 
-import { buildContextSnapshot, saveContextSnapshot } from "../../context-loader.js";
-import { ORCHESTRATOR_SYSTEM_PROMPT } from "../../system-prompt.js";
+import { buildContextSnapshot, saveContextSnapshot } from "../../context/context-loader.js";
+import { fillToolsList } from "../../context/system-prompt.js";
 import { buildExecutorRegistry } from "../../registries/executor-registry.js";
+import type { ToolDescriptor } from "../../providers/provider.js";
 import {
   getExcelToolDescriptors,
   getSubsessionToolDescriptors,
@@ -10,6 +11,10 @@ import {
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
+  /**
+   * Role for which to build context ("orchestrator", "executor", etc).
+   */
+  roleName: string;
   /**
    * Directory for content-addressed context snapshots. Defaults to a `contexts`
    * folder beside the sessions dir (so `…/sessions` and `…/contexts` sit together).
@@ -41,7 +46,7 @@ export interface ContextMiddlewareParams {
  * after SessionMiddleware in the pipeline.
  */
 export class ContextMiddleware implements IMiddleware {
-  constructor(private readonly params: ContextMiddlewareParams = {}) {}
+  constructor(private readonly params: ContextMiddlewareParams) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     if (!ctx.session || !ctx.workspace || !ctx.store) {
@@ -51,17 +56,23 @@ export class ContextMiddleware implements IMiddleware {
       );
     }
 
-    const orchestrator = ctx.registry.getProviderForRole("orchestrator");
+    const role = this.params.roleName;
+    const provider = ctx.registry.getProviderForRole(role);
 
-    // Build tool list with proper filtering.
-    // Synthetic tools (excel, subsessions, dispatch_executor) are NOT subject to
-    // per-model whitelists — they're always included for orchestration.
     const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
-    let tools: typeof ctx.toolDescriptors;
+    let tools: ToolDescriptor[];
 
-    if (ctx.toolDescriptors) {
-      // OrchestratorMiddleware has already assembled tools. Extract and re-assemble with
-      // proper filtering: MCP tools go through the whitelist, synthetic tools don't.
+    if (role === "executor") {
+      // Executor only sees real MCP tools filtered by its whitelist.
+      // No synthetic tools (excel, dispatch_executor, subsession).
+      tools = ctx.registry.filterMcpByServerWhitelist(
+        "executor",
+        ctx.mcpRegistry.listTools()
+      );
+    } else if (ctx.toolDescriptors) {
+      // Orchestrator path: OrchestratorMiddleware has already assembled tools.
+      // Synthetic tools (excel, subsessions, dispatch_executor) bypass the per-model
+      // whitelist — they're always included for orchestration.
       const mcpTools = ctx.toolDescriptors.filter(
         (t) => !t.name.startsWith("excel__") &&
                !t.name.startsWith("subsessions__") &&
@@ -75,16 +86,14 @@ export class ContextMiddleware implements IMiddleware {
         : [];
       tools = [...filteredMcpTools, ...excelTools, ...dispatchExecutor, ...subsessionTools];
     } else {
-      // Fallback: rebuild from MCP client registry (used in tests that skip OrchestratorMiddleware).
-      const executorTools = ctx.registry.filterMcpByServerWhitelist(
-        "executor",
-        ctx.mcpRegistry.listToolsForExecutor()
-      );
+      // Fallback for orchestrator when OrchestratorMiddleware was skipped (tests).
       const orchestratorTools = ctx.registry.filterMcpByServerWhitelist(
         "orchestrator",
         ctx.mcpRegistry.listToolsForOrchestrator()
       );
-      const executorRegistry = buildExecutorRegistry(executorTools);
+      const executorRegistry = buildExecutorRegistry(
+        ctx.registry.filterMcpByServerWhitelist("executor", ctx.mcpRegistry.listToolsForExecutor())
+      );
       const excelTools = getExcelToolDescriptors();
       const subsessionTools = shouldIncludeSubSessions ? getSubsessionToolDescriptors() : [];
       tools = [
@@ -95,10 +104,13 @@ export class ContextMiddleware implements IMiddleware {
       ];
     }
 
+    const template = ctx.registry.getPromptTemplate(role);
+    const systemPrompt = fillToolsList(template, tools);
+
     const snapshot = buildContextSnapshot({
-      model: orchestrator.modelId,
-      systemPrompt: ORCHESTRATOR_SYSTEM_PROMPT,
-      nativeTools: orchestrator.supportsNativeTools,
+      model: provider.modelId,
+      systemPrompt,
+      nativeTools: provider.supportsNativeTools,
       projectContext: ctx.workspace.projectContext,
       tools,
     });
@@ -107,11 +119,13 @@ export class ContextMiddleware implements IMiddleware {
       this.params.contextsDir ?? path.resolve(ctx.sessionsDir, "..", "contexts");
     const hash = await saveContextSnapshot(contextsDir, snapshot);
 
-    // Stamp the pointer and persist now so the hash is durable from init, even
+    // Stamp the pointer by role and persist now so the hash is durable from init, even
     // if the first turn never reaches finalize().
-    ctx.session.contextHash = hash;
+    ctx.session.contextHashes ??= {};
+    ctx.session.contextHashes[role] = hash;
     await ctx.store.save(ctx.session);
 
     await next();
   }
+
 }

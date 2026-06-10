@@ -1,4 +1,4 @@
-import type { SubRuntimeRefs } from "../subsession.js";
+import type { SubRuntimeRefs } from "../runners/subsession.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AddMcpServersMiddleware } from "./middleware/add-mcp-servers.js";
 import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
@@ -44,7 +44,8 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     .add(new AddMcpServersMiddleware())
     .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: false }))
-    .add(new ContextMiddleware({ includeSubSessions: false }))
+    .add(new ContextMiddleware({ roleName: "orchestrator", includeSubSessions: false }))
+    .add(new ContextMiddleware({ roleName: "executor", includeSubSessions: false }))
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }));
 }

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { createSession } from "../../session.js";
+import { createSession } from "../../session/session.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface SessionMiddlewareParams {

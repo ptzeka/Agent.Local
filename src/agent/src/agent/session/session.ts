@@ -1,5 +1,5 @@
-import type { Principal } from "./identity/types.js";
-import type { ChatMessage } from "./providers/provider.js";
+import type { Principal } from "../identity/types.js";
+import type { ChatMessage } from "../providers/provider.js";
 
 /**
  * Session — the unit of conversational state.
@@ -57,12 +57,13 @@ export interface Session {
    */
   user?: Principal;
   /**
-   * Pointer into the content-addressed context store
-   * (`<contextsDir>/<contextHash>.json`) recording the system prompt + project
-   * direction + tool block this session ran on. Stamped by ContextMiddleware at
-   * init. Absent on sessions persisted before context snapshots were added.
+   * Content-addressed context snapshots by role name (e.g., "orchestrator", "executor").
+   * Each maps to a hash pointing to `<contextsDir>/<hash>.json` recording the
+   * system prompt + project direction + tool block that role ran on.
+   * Stamped by ContextMiddleware at init for each role. Absent on sessions
+   * persisted before context snapshots were added.
    */
-  contextHash?: string;
+  contextHashes?: Record<string, string>;
 }
 
 export interface CreateSessionParams {

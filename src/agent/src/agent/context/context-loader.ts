@@ -2,7 +2,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 
-import type { ToolDescriptor } from "./providers/provider.js";
+import type { ToolDescriptor } from "../providers/provider.js";
 
 /**
  * Project context loader.

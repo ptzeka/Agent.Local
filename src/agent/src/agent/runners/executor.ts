@@ -1,16 +1,21 @@
-import type { ToolExecutionResult, ToolInvoker } from "./mcp-client.js";
+import type { ToolExecutionResult, } from "../mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
   LLMProvider,
   ToolCall,
   ToolDescriptor,
-} from "./providers/provider.js";
+} from "../providers/provider.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
-} from "./tool-adapter.js";
-import { EXECUTOR_SYSTEM_PROMPT } from "./system-prompt.js";
+} from "../tool-adapter.js";
+import { EXECUTOR_SYSTEM_PROMPT, fillToolsList } from "../context/system-prompt.js";
+import type { AgentRuntimeQueryable } from "../runtime/types.js";
+import { ScopedToolClient } from "../scoped-tool-client.js";
+import { ExecutorEventTypes, type ExecutorEvent, type RunnerListener } from "./runner-events.js";
+
+export type { ExecutorEvent };
 
 /**
  * Executor sub-agent.
@@ -36,21 +41,6 @@ export interface ExecutorAsk {
   intent: string;
 }
 
-export interface ExecutorEvent {
-  type:
-    | "executor-start"
-    | "executor-ack"
-    | "executor-tool-call"
-    | "executor-tool-result"
-    | "executor-validate"
-    | "executor-report"
-    | "executor-deterministic-verdict"
-    | "executor-warning";
-  data: Record<string, unknown>;
-}
-
-export type ExecutorListener = (event: ExecutorEvent) => void;
-
 export interface ExecutorFeedback {
   ok: boolean;
   ack: string | null;
@@ -65,7 +55,7 @@ export interface ExecutorFeedback {
 
 export interface ExecutorRunOptions {
   signal?: AbortSignal;
-  onEvent?: ExecutorListener;
+  onEvent?: RunnerListener;
   /** Hard cap on executor LLM iterations. Defaults to 6. */
   maxIterations?: number;
   /** Sampling temperature for the executor LLM. Defaults to 0.1. */
@@ -76,19 +66,30 @@ const DEFAULT_MAX_ITERATIONS = 6;
 const DEFAULT_TEMPERATURE = 0.1;
 
 export class Executor {
+  private provider?: LLMProvider;
+  private tools?: ScopedToolClient;
+  private availableTools?: ToolDescriptor[];
   constructor(
-    private readonly provider: LLMProvider,
-    private readonly tools: ToolInvoker,
-    private readonly availableTools: ToolDescriptor[]
+    private readonly runtime: AgentRuntimeQueryable
   ) {}
 
   public async run(ask: ExecutorAsk, options: ExecutorRunOptions = {}): Promise<ExecutorFeedback> {
     const emit = options.onEvent ?? (() => {});
     const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const temperature = options.temperature ?? DEFAULT_TEMPERATURE;
+    const registry = this.runtime.getRegistry();
+    const workspace = this.runtime.getWorkspace();
+    const mcpRegistry = this.runtime.getMcpClientRegistry();
+
+    this.provider = registry.getProviderForRole("executor");
+    this.tools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
+    this.availableTools = registry.filterMcpByServerWhitelist(
+      "executor",
+      mcpRegistry.listTools()
+    );
 
     emit({
-      type: "executor-start",
+      type: ExecutorEventTypes.START,
       data: {
         model: this.provider.modelId,
         provider: this.provider.providerName,
@@ -102,7 +103,7 @@ export class Executor {
     const allowedNames = new Set(this.availableTools.map((t) => t.name));
     if (!allowedNames.has(ask.tool)) {
       const evidence = `requested tool "${ask.tool}" is not in the executor's tool list`;
-      emit({ type: "executor-warning", data: { reason: evidence } });
+      emit({ type: ExecutorEventTypes.WARNING, data: { reason: evidence } });
       return {
         ok: false,
         ack: null,
@@ -129,13 +130,11 @@ export class Executor {
 
     for (let i = 1; i <= maxIterations; i += 1) {
       iterations = i;
-
       const response = await this.provider.chat(workingMessages, {
         tools: this.provider.supportsNativeTools ? this.availableTools : [],
         temperature,
         signal: options.signal,
       });
-
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(response);
       workingMessages.push(assistantMessage);
 
@@ -144,7 +143,7 @@ export class Executor {
         const parsedAck = parseAckLine(assistantMessage.content);
         if (parsedAck) {
           ack = parsedAck;
-          emit({ type: "executor-ack", data: { ack: parsedAck } });
+          emit({ type: ExecutorEventTypes.ACK, data: { ack: parsedAck } });
         }
       }
 
@@ -156,14 +155,14 @@ export class Executor {
         const isMainAsk = call.name === ask.tool && argsRoughlyMatch(call.arguments, ask.args);
 
         emit({
-          type: isMainAsk ? "executor-tool-call" : "executor-validate",
+          type: isMainAsk ? ExecutorEventTypes.TOOL_CALL : ExecutorEventTypes.VALIDATE,
           data: { id: call.id, name: call.name, arguments: call.arguments },
         });
 
         const execution = await this.tools.callTool(call.name, call.arguments);
 
         emit({
-          type: "executor-tool-result",
+          type: ExecutorEventTypes.TOOL_RESULT,
           data: {
             id: call.id,
             name: call.name,
@@ -200,7 +199,7 @@ export class Executor {
               `RESULT OK is only valid after the tool has actually run.`,
           });
           emit({
-            type: "executor-warning",
+            type: ExecutorEventTypes.WARNING,
             data: { reason: `RESULT OK before "${ask.tool}" ran — forcing a real call`, iteration: i },
           });
           continue;
@@ -210,7 +209,7 @@ export class Executor {
         // (e.g. the model judged the args malformed and declined to execute).
         llmReport = assistantMessage.content;
         emit({
-          type: "executor-report",
+          type: ExecutorEventTypes.REPORT,
           data: { verdict: parsedReport.verdict, message: parsedReport.message },
         });
         break;
@@ -226,7 +225,7 @@ export class Executor {
             "`EXECUTOR: RESULT OK ...` / `EXECUTOR: RESULT FAIL ...` line.",
         });
         emit({
-          type: "executor-warning",
+          type: ExecutorEventTypes.WARNING,
           data: { reason: "no tool call and no RESULT line", iteration: i },
         });
         continue;
@@ -237,7 +236,7 @@ export class Executor {
     const verification = await this.verify(ask, mainToolResult);
 
     emit({
-      type: "executor-deterministic-verdict",
+      type: ExecutorEventTypes.DETERMINISTIC_VERDICT,
       data: { verdict: verification.verdict, evidence: verification.evidence },
     });
 
@@ -258,12 +257,14 @@ export class Executor {
   // --------------------------------------------------------------------------
 
   private buildSystemMessages(): ChatMessage[] {
-    const messages: ChatMessage[] = [{ role: "system", content: EXECUTOR_SYSTEM_PROMPT }];
+    const template = this.runtime?.getRegistry().getPromptTemplate("executor") ?? EXECUTOR_SYSTEM_PROMPT;
+    const basePrompt = fillToolsList(template, this.availableTools!);
+    const messages: ChatMessage[] = [{ role: "system", content: basePrompt }];
 
-    if (!this.provider.supportsNativeTools) {
+    if (!this.provider?.supportsNativeTools) {
       messages.push({
         role: "system",
-        content: buildPromptedToolInstructions(this.availableTools),
+        content: buildPromptedToolInstructions(this.availableTools!),
       });
     }
 
@@ -286,7 +287,7 @@ export class Executor {
     assistantMessage: ChatMessage;
     toolCalls: ToolCall[];
   } {
-    if (this.provider.supportsNativeTools) {
+    if (this.provider?.supportsNativeTools) {
       const native = response.message.toolCalls ?? [];
       if (native.length > 0) {
         return { assistantMessage: response.message, toolCalls: native };
@@ -395,14 +396,14 @@ export class Executor {
   }
 
   private async readFileForVerification(path: string): Promise<string | null> {
-    const readToolName = this.availableTools
+    const readToolName = this.availableTools!
       .map((t) => t.name)
       .find((name) => name.endsWith("__read_file"));
     if (!readToolName) return null;
 
-    const result = await this.tools.callTool(readToolName, { path });
-    if (result.isError) return null;
-    return extractFileContent(result.content);
+    const result = await this.tools?.callTool(readToolName, { path });
+    if (result!.isError) return null;
+    return extractFileContent(result!.content);
   }
 }
 

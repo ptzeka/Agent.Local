@@ -1,3 +1,13 @@
+import type { ToolDescriptor } from "../providers/provider.js";
+
+/**
+ * Substitute the {TOOLS_LIST} placeholder in a role prompt template.
+ */
+export function fillToolsList(template: string, tools: ToolDescriptor[]): string {
+  const list = tools.map((t) => `  - ${t.name}`).join("\n");
+  return template.replace("{TOOLS_LIST}", list);
+}
+
 /**
  * System prompts for the two roles.
  *
@@ -27,15 +37,14 @@ scoped ask. The EXECUTOR runs the action, validates that it actually
 happened, and reports back. You then recalculate.
 
 Tools available to you:
-  - Read-only context tools: read_file, list_dir, glob, grep, and any
-    codemcp.* helpers. Use these to build context — locate files,
-    inspect contents, find references — before dispatching.
-  - dispatch_executor({ tool, args, intent }) — the ONLY way to mutate
-    state. \`tool\` is the namespaced tool name the executor should call
-    (e.g. "fsmcp__write_file"). \`args\` is the exact argument object for
-    that tool. \`intent\` is a one-line plain-English description of what
-    this dispatch is meant to accomplish; the executor uses it to
-    interpret the action and to phrase its evidence.
+{TOOLS_LIST}
+
+dispatch_executor({ tool, args, intent }) — the ONLY way to mutate
+state. \`tool\` is the namespaced tool name the executor should call
+(e.g. "fsmcp__write_file"). \`args\` is the exact argument object for
+that tool. \`intent\` is a one-line plain-English description of what
+this dispatch is meant to accomplish; the executor uses it to
+interpret the action and to phrase its evidence.
 
 Loop:
   1. Read the user's request.
@@ -143,7 +152,7 @@ You MUST follow this exact four-step shape, with no deviation:
      You MUST verify the action actually landed, using a separate read
      tool call. Do not trust the executing tool's own success signal.
        - For write_file / edit_file: call read_file on the same path
-         and confirm the new content is present.
+         and confirm the new content is present.yes
        - For powershell / exec / any shell call: confirm the exit code
          is 0 and capture stdout/stderr from the tool result.
        - For other mutations: pick the smallest read that proves the
@@ -163,10 +172,7 @@ You MUST follow this exact four-step shape, with no deviation:
      "validation read returned old content — write did not land").
 
 Tools available to you:
-  - The mutating tools: write_file, edit_file, powershell/exec (per
-    namespacing of your MCP servers).
-  - The read tools: read_file, list_dir, glob, grep. Use these ONLY
-    for the validation step in (3). Do not browse, do not explore.
+{TOOLS_LIST}
 
 Hard rules:
   - Every line you emit is prefixed \`EXECUTOR:\`.

@@ -1,6 +1,7 @@
 import path from "node:path";
 
-import type { OrchestratorListener } from "./orchestrator-events.js";
+import type { RunnerListener } from "./runners/runner-events.js";
+import { OrchestratorEventTypes } from "./runners/runner-events.js";
 import type { ToolExecutionResult, ToolInvoker } from "./mcp-client.js";
 
 /**
@@ -66,7 +67,7 @@ export class ScopedToolClient implements ToolInvoker {
   constructor(
     private readonly inner: ToolInvoker,
     private readonly workspaceId: string,
-    private readonly emit?: OrchestratorListener
+    private readonly emit?: RunnerListener
   ) {}
 
   public async callTool(
@@ -75,10 +76,10 @@ export class ScopedToolClient implements ToolInvoker {
   ): Promise<ToolExecutionResult> {
     // Only fsmcp tools are segmented; everything else passes through verbatim.
     if (!name.startsWith(FS_SERVER_PREFIX)) {
-      this.emit?.({ type: "tool-call", data: { id: "", name, arguments: args } });
+      this.emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
       const result = await this.inner.callTool(name, args);
       this.emit?.({
-        type: "tool-result",
+        type: OrchestratorEventTypes.TOOL_RESULT,
         data: { id: "", name, isError: result.isError, contentPreview: result.content.slice(0, 400) },
       });
       return result;
@@ -103,11 +104,11 @@ export class ScopedToolClient implements ToolInvoker {
       throw err;
     }
 
-    this.emit?.({ type: "tool-call", data: { id: "", name, arguments: args } });
+    this.emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
     const result = await this.inner.callTool(name, scopedArgs);
     const stripped = this.stripResult(toolTail, result);
     this.emit?.({
-      type: "tool-result",
+      type: OrchestratorEventTypes.TOOL_RESULT,
       data: { id: "", name, isError: stripped.isError, contentPreview: stripped.content.slice(0, 400) },
     });
     return stripped;

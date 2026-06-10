@@ -37,7 +37,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     {
       sessionId: session.sessionId,
       workspaceId: session.workspaceId,
-      contextHash: session.contextHash,
+      contextHashes: session.contextHashes || {} as Record<string, string>,
       resumed,
       turns: session.counters.turns,
       preview,

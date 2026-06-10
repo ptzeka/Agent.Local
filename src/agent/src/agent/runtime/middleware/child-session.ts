@@ -1,4 +1,4 @@
-import { createSession } from "../../session.js";
+import { createSession } from "../../session/session.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ChildSessionParams {

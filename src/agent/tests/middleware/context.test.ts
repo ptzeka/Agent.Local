@@ -93,20 +93,20 @@ describe("ContextMiddleware", () => {
     const ctx = ctxWith();
     const next = jest.fn(async () => {});
 
-    await new ContextMiddleware({ contextsDir }).initialize(ctx, next);
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next);
 
-    expect(ctx.session!.contextHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(ctx.session!.contextHashes?.["orchestrator"]).toMatch(/^[0-9a-f]{16}$/);
     const persisted = await store.load("s1");
-    expect(persisted?.contextHash).toBe(ctx.session!.contextHash);
+    expect(persisted?.contextHashes?.["orchestrator"]).toBe(ctx.session!.contextHashes?.["orchestrator"]);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   test("writes a content-addressed snapshot reflecting the orchestrator provider", async () => {
     const ctx = ctxWith(true);
 
-    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot).not.toBeNull();
     expect(snapshot!.model).toBe("gemini-x");
     expect(snapshot!.nativeTools).toBe(true);
@@ -118,7 +118,7 @@ describe("ContextMiddleware", () => {
 
     await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
   });
 
@@ -145,7 +145,7 @@ describe("ContextMiddleware", () => {
 
     await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
     expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
   });
@@ -155,7 +155,7 @@ describe("ContextMiddleware", () => {
 
     await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHash!);
+    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
     expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
   });

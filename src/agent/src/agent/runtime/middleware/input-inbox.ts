@@ -1,4 +1,4 @@
-import { InputInbox } from "../../input-inbox.js";
+import { InputInbox } from "../../runners/input-inbox.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 /**

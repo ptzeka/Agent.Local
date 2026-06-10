@@ -1,5 +1,5 @@
 import type { ToolDescriptor } from "../../providers/provider.js";
-import type { SubSessionCoordinator, SubSessionSnapshot } from "../../subsession.js";
+import type { SubSessionCoordinator, SubSessionSnapshot } from "../../runners/subsession.js";
 import { toolError, toolOk, type RichToolResult, type SyntheticMcp, type ToolContext } from "../types.js";
 
 export const CREATE_SUBSESSION_TOOL = "create_subsession";

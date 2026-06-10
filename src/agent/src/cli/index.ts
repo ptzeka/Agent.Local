@@ -154,7 +154,8 @@ function buildRuntime(
   .add(new AddMcpServersMiddleware())
   .add(new ConnectMcpServersMiddleware())
   .add(new OrchestratorMiddleware({ includeSubSessions: true }))
-  .add(new ContextMiddleware())
+  .add(new ContextMiddleware({ roleName: "orchestrator" }))
+  .add(new ContextMiddleware({ roleName: "executor" }))
   .add(new InputInboxMiddleware())
   .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
 }

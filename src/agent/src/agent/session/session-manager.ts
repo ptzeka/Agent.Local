@@ -13,7 +13,7 @@ import {
   type SubSessionNotificationListener,
   type SubSessionSnapshot,
   type SubSessionStatus,
-} from "./subsession.js";
+} from "../runners/subsession.js";
 
 /** Default ceiling on concurrently-active children per parent. Configurable via
  *  the constructor; intentionally small while sub-sessions are new. */

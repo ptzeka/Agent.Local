@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { createProvider, type LLMProvider } from "../providers/index.js";
 import type { ToolDescriptor } from "../providers/provider.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 
 /**
  * Model registry.
@@ -219,6 +220,17 @@ export class ModelRegistry {
       throw new Error(`Internal error: role "${role}" maps to missing model "${modelId}".`);
     }
     return provider;
+  }
+
+  public getPromptTemplate(role: RoleName): string {
+    switch (role) {
+      case "orchestrator":
+        return ORCHESTRATOR_SYSTEM_PROMPT;
+      case "executor":
+        return EXECUTOR_SYSTEM_PROMPT;
+      default:
+        throw new Error(`No prompt template for role "${role}".`);
+    }
   }
 
   /**

@@ -1,7 +1,7 @@
-import type { Principal } from "./identity/types.js";
+import type { Principal } from "../identity/types.js";
 import type { RunResult } from "./orchestrator.js";
-import type { Session } from "./session.js";
-import type { Workspace } from "./registries/workspace-registry.js";
+import type { Session } from "../session/session.js";
+import type { Workspace } from "../registries/workspace-registry.js";
 
 /**
  * Sub-session — an autonomous child run spawned by the orchestrator.

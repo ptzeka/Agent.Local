@@ -1,4 +1,4 @@
-import { SessionStore } from "../../session-store.js";
+import { SessionStore } from "../../session/session-store.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 /**

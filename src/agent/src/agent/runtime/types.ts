@@ -1,11 +1,11 @@
 import type { IdentityContext, Principal } from "../identity/types.js";
-import type { InputInbox } from "../input-inbox.js";
+import type { InputInbox } from "../runners/input-inbox.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { ModelRegistry } from "../registries/model-registry.js";
-import type { Orchestrator } from "../orchestrator.js";
-import type { Session } from "../session.js";
-import type { SessionManager } from "../session-manager.js";
-import type { SessionStore } from "../session-store.js";
+import type { Orchestrator } from "../runners/orchestrator.js";
+import type { Session } from "../session/session.js";
+import type { SessionManager } from "../session/session-manager.js";
+import type { SessionStore } from "../session/session-store.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
 

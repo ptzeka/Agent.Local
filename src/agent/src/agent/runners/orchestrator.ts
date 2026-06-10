@@ -1,36 +1,37 @@
 import { Executor } from "./executor.js";
-import type { ToolExecutionResult } from "./mcp-client.js";
+import type { ToolExecutionResult } from "../mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
   LLMProvider,
   ToolCall,
   ToolDescriptor,
-} from "./providers/provider.js";
-import { ORCHESTRATOR_SYSTEM_PROMPT } from "./system-prompt.js";
+} from "../providers/provider.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
-} from "./tool-adapter.js";
+} from "../tool-adapter.js";
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
-import { ScopedToolClient } from "./scoped-tool-client.js";
-import type { SessionCounters } from "./session.js";
+import { ScopedToolClient } from "../scoped-tool-client.js";
+import type { SessionCounters } from "../session/session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
-import type { Workspace } from "./registries/workspace-registry.js";
+import type { Workspace } from "../registries/workspace-registry.js";
 import {
   DispatchTracker,
   buildExecutorRegistry,
   type SyntheticMcpContext,
   type ToolContext,
-} from "./synthetic-mcp/index.js";
-import { createSubsessionsMcpServer } from "./synthetic-mcp/subsessions-server.js";
-import type { AgentRuntimeQueryable } from "./runtime/types.js";
-import type { OrchestratorListener } from "./orchestrator-events.js";
-import type { McpClientRegistry } from "./registries/mcp-registry.js";
+} from "../synthetic-mcp/index.js";
+import { createSubsessionsMcpServer } from "../synthetic-mcp/subsessions-server.js";
+import type { AgentRuntimeQueryable } from "../runtime/types.js";
+import type { McpClientRegistry } from "../registries/mcp-registry.js";
+import { OrchestratorEventTypes } from "./runner-events.js";
+import type { OrchestratorListener, RunnerListener } from "./runner-events.js";
 
 // Re-export for backwards compatibility
-export type { OrchestratorEvent, OrchestratorListener } from "./orchestrator-events.js";
+export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
 
 /**
  * Orchestrator.
@@ -55,7 +56,7 @@ export type { OrchestratorEvent, OrchestratorListener } from "./orchestrator-eve
 
 export interface RunOptions {
   signal?: AbortSignal;
-  onEvent?: OrchestratorListener;
+  onEvent?: RunnerListener;
   /**
    * Coordinator that lets this run spawn and manage sub-sessions. When present,
    * the orchestrator exposes the synthetic create/status/finalize sub-session
@@ -148,12 +149,12 @@ export class Orchestrator {
 
     const scopedTools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
 
-    const executor = new Executor(executorProvider, scopedTools, executorTools);
+    const executor = new Executor(this.runtime);
 
     const readToolCount = modelFilteredTools.filter((t) => !executorRegistry.has(t.name)).length;
 
     emit({
-      type: "orchestrator-start",
+      type: OrchestratorEventTypes.START,
       data: {
         orchestratorModel: orchestratorProvider.modelId,
         executorModel: executorProvider.modelId,
@@ -214,10 +215,10 @@ export class Orchestrator {
         const injected: ChatMessage = { role: "user", content: text };
         conversation.push(injected);
         workingMessages.push(injected);
-        emit({ type: "injected-input", data: { iteration, content: text } });
+        emit({ type: OrchestratorEventTypes.INJECTED_INPUT, data: { iteration, content: text } });
       }
 
-      emit({ type: "orchestrator-iteration", data: { iteration, max: maxIterations } });
+      emit({ type: OrchestratorEventTypes.ITERATION, data: { iteration, max: maxIterations } });
 
       const response = await orchestratorProvider.chat(workingMessages, {
         tools: orchestratorProvider.supportsNativeTools ? modelFilteredTools : [],
@@ -230,7 +231,7 @@ export class Orchestrator {
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(orchestratorProvider, response, emit);
 
       emit({
-        type: "orchestrator-message",
+        type: OrchestratorEventTypes.MESSAGE,
         data: {
           iteration,
           content: assistantMessage.content,
@@ -340,7 +341,7 @@ export class Orchestrator {
     };
     conversation.push(truncationNotice);
     emit({
-      type: "warning",
+      type: OrchestratorEventTypes.WARNING,
       data: { message: "orchestrator hit iteration cap", iterations: maxIterations },
     });
     return {
@@ -366,7 +367,7 @@ export class Orchestrator {
    */
   private async maybeSummarize(
     conversation: ChatMessage[],
-    emit: OrchestratorListener,
+    emit: RunnerListener,
     signal?: AbortSignal
   ): Promise<void> {
     const threshold = this.runtime.getRegistry().orchestration.summarizeAtMessages;
@@ -385,7 +386,7 @@ export class Orchestrator {
       summaryText = await summarizer.summarize(prefix, { signal });
     } catch (err) {
       emit({
-        type: "warning",
+        type: OrchestratorEventTypes.WARNING,
         data: { message: `summarization failed: ${(err as Error).message}` },
       });
       return;
@@ -397,7 +398,7 @@ export class Orchestrator {
     conversation.push(summaryMessage, ...tail);
 
     emit({
-      type: "summarization",
+      type: OrchestratorEventTypes.SUMMARIZATION,
       data: {
         summarizedCount: prefix.length,
         keptCount: tail.length,
@@ -419,7 +420,7 @@ export class Orchestrator {
     emit: OrchestratorListener,
     signal?: AbortSignal
   ): Promise<EvaluationVerdict> {
-    emit({ type: "evaluation-start", data: {} });
+    emit({ type: OrchestratorEventTypes.EVALUATION_START, data: {} });
 
     try {
       const evaluator = new Evaluator(this.runtime.getRegistry().getEvaluatorProvider());
@@ -428,14 +429,14 @@ export class Orchestrator {
         { signal, temperature: this.runtime.getRegistry().orchestration.evaluatorTemperature }
       );
       emit({
-        type: "evaluation-verdict",
+        type: OrchestratorEventTypes.EVALUATION_VERDICT,
         data: { state: verdict.state, reason: verdict.reason },
       });
       return verdict;
     } catch (err) {
       // Fail open — never trap the user because the judge errored.
       emit({
-        type: "warning",
+        type: OrchestratorEventTypes.WARNING,
         data: { message: `evaluation failed, treating as satisfied: ${(err as Error).message}` },
       });
       return { state: "satisfied", reason: "evaluator error; defaulting to satisfied" };
@@ -487,7 +488,7 @@ export class Orchestrator {
       const { toolCalls: recoveredCalls, cleanedContent } = extractPromptedToolCalls(response.message);
       if (recoveredCalls.length > 0) {
         emit({
-          type: "warning",
+          type: OrchestratorEventTypes.WARNING,
           data: {
             message:
               "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",

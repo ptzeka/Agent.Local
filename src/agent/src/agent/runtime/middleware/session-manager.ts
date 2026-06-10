@@ -1,5 +1,5 @@
-import { SessionManager } from "../../session-manager.js";
-import type { SubRuntimeFactory } from "../../subsession.js";
+import { SessionManager } from "../../session/session-manager.js";
+import type { SubRuntimeFactory } from "../../runners/subsession.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface SessionManagerMiddlewareParams {

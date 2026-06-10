@@ -1,7 +1,7 @@
 import chalk from "chalk";
 
-import type { OrchestratorEvent } from "../agent/orchestrator.js";
-import type { SubSessionNotification } from "../agent/subsession.js";
+import type { RunnerEvent } from "../agent/runners/runner-events.js";
+import type { SubSessionNotification } from "../agent/runners/subsession.js";
 
 /**
  * REPL renderer.
@@ -15,7 +15,7 @@ import type { SubSessionNotification } from "../agent/subsession.js";
  *   EXECUTOR     — magenta, ack/execute/validate/report inside one dispatch.
  */
 
-export function renderEvent(event: OrchestratorEvent): void {
+export function renderEvent(event: RunnerEvent): void {
   switch (event.type) {
     case "orchestrator-start": {
       const orch = String(event.data.orchestratorModel ?? "");
@@ -233,7 +233,7 @@ export interface BannerSession {
   /** Workspace the session is bound to. */
   workspaceId: string;
   /** Content-addressed pointer to the captured context, when one was stamped. */
-  contextHash?: string;
+  contextHashes: Record<string, string>;
   /** True when resumed from disk, false for a freshly bootstrapped session. */
   resumed: boolean;
   /** Completed user turns (0 for a new session). */
@@ -270,7 +270,7 @@ export function renderBanner(
  */
 function sessionLine(session: BannerSession): string {
   const id = `id=${short(session.sessionId)}`;
-  const ctx = `ctx=${session.contextHash ? short(session.contextHash) : "none"}`;
+  const ctx = `ctx=${session.contextHashes["orchestrator"] ? short(session.contextHashes["orchestrator"]) : "none"}`;
   const ws = `ws=${short(session.workspaceId)}`;
 
   let origin: string = session.resumed ? "resumed" : "new";

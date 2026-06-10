@@ -2,7 +2,7 @@ import readline from "node:readline";
 import process from "node:process";
 import chalk from "chalk";
 
-import type { SessionSummary } from "../agent/session-store.js";
+import type { SessionSummary } from "../agent/session/session-store.js";
 
 /**
  * Startup session picker (UI layer).
