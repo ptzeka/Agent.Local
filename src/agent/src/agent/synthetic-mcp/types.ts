@@ -1,11 +1,33 @@
 import type { Executor } from "../executor.js";
+import type { OrchestratorEvent, OrchestratorListener } from "../orchestrator-events.js";
 import type { ToolExecutionResult } from "../mcp-client.js";
-import type { OrchestratorListener } from "../orchestrator.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Session } from "../session.js";
 import type { SubSessionCoordinator } from "../subsession.js";
 import type { Workspace } from "../workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
+
+/**
+ * Slim context for MCP server tool handlers — only the fields tools actually need.
+ * No executor, tracker, or emit: tools are pure functions that return results,
+ * and the server layer handles post-call side effects.
+ */
+export interface ToolContext {
+  readonly session: Session;
+  readonly workspace: Workspace;
+  readonly sandboxRoot: string;
+  readonly coordinator?: SubSessionCoordinator;
+  readonly signal?: AbortSignal;
+}
+
+/**
+ * Tool result with optional post-call event. The tool returns this instead of
+ * calling emit directly. The server layer checks for the event and fires it
+ * after the MCP response is sent.
+ */
+export interface RichToolResult extends ToolExecutionResult {
+  readonly event?: OrchestratorEvent;
+}
 
 /**
  * Synthetic tools.
@@ -60,18 +82,15 @@ export interface SyntheticMcpContext {
 export interface SyntheticMcp {
   readonly name: string;
   readonly descriptor: ToolDescriptor;
-  callTool(
-    args: Record<string, unknown>,
-    context: SyntheticMcpContext
-  ): Promise<ToolExecutionResult>;
+  callTool(args: Record<string, unknown>, context: ToolContext): Promise<RichToolResult>;
 }
 
 /** Shape a non-success synthetic result the same way MCP errors are shaped. */
-export function toolError(content: string): ToolExecutionResult {
+export function toolError(content: string): RichToolResult {
   return { isError: true, content };
 }
 
 /** Shape a successful synthetic result. */
-export function toolOk(content: string): ToolExecutionResult {
+export function toolOk(content: string): RichToolResult {
   return { isError: false, content };
 }

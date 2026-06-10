@@ -24,7 +24,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
-import type { SyntheticMcp, SyntheticMcpContext } from "./types.js";
+import type { SyntheticMcp, ToolContext } from "./types.js";
 
 /** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
@@ -35,17 +35,16 @@ export interface InProcessMcpServer {
 /**
  * Build a subsessions MCP server+client pair for a specific turn's context.
  *
- * Each turn, the orchestrator calls this with that turn's `SyntheticMcpContext`,
- * which includes the coordinator. The returned client is already connected and
- * ready for McpClient to mount.
+ * Each turn, the orchestrator calls this with that turn's `ToolContext` and an
+ * emit callback. The returned client is already connected and ready for McpClient
+ * to mount.
  *
  * This is an in-process server that needs per-turn recreation because subsession
  * tool handlers need access to that turn's coordinator and context.
  */
-export function createSubsessionsMcpServer(context: SyntheticMcpContext): InProcessMcpServer {
+export function createSubsessionsMcpServer(toolCtx: ToolContext): InProcessMcpServer {
   const subsessionTools = createSubSessionTools();
 
-  // Map bare tool names to their handlers, binding context.
   const toolsByName = new Map<string, SyntheticMcp>(
     subsessionTools.map((tool) => [tool.name, tool])
   );
@@ -77,7 +76,7 @@ export function createSubsessionsMcpServer(context: SyntheticMcpContext): InProc
     }
 
     try {
-      const result = await tool.callTool(request.params.arguments ?? {}, context);
+      const result = await tool.callTool(request.params.arguments ?? {}, toolCtx);
       return {
         content: [{ type: "text" as const, text: result.content }],
         isError: result.isError,
@@ -97,7 +96,6 @@ export function createSubsessionsMcpServer(context: SyntheticMcpContext): InProc
     { capabilities: {} }
   );
 
-  // Connect both synchronously (we're in-process).
   void Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
   return { serverName: "subsessions", client };

@@ -1,4 +1,4 @@
-import type { McpClient } from "../../src/agent/mcp-client.js";
+import type { McpClientRegistry } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/model-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 
@@ -13,9 +13,15 @@ import type { RuntimeContext } from "../../src/agent/runtime/types.js";
  * identity is all that matters.
  */
 export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
+  const mockRegistry = {} as unknown as ModelRegistry;
+  const mockTools = {
+    listToolsForOrchestrator: () => [],
+    listToolsForExecutor: () => [],
+  } as unknown as McpClientRegistry;
+
   return {
-    registry: {} as unknown as ModelRegistry,
-    tools: {} as unknown as McpClient,
+    registry: mockRegistry,
+    tools: mockTools,
     sessionsDir: "/tmp/agent-mw-test-sessions",
     workspaceRoot: "/tmp/agent-mw-test-workspace",
     credentials: {},
@@ -24,6 +30,7 @@ export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeCon
     user: undefined,
     session: undefined,
     workspace: undefined,
+    toolDescriptors: undefined,
     orchestrator: undefined,
     inbox: undefined,
     sessionManager: undefined,

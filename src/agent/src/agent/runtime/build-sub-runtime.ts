@@ -7,7 +7,6 @@ import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
 import { StoreMiddleware } from "./middleware/store.js";
-import { ToolsMiddleware } from "./middleware/tools.js";
 import { WorkspaceRegistryMiddleware } from "./middleware/workspace-registry.js";
 import type { AgentRuntimeDeps } from "./types.js";
 
@@ -40,9 +39,8 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
         standingContext: refs.standingContext,
       })
     )
-    .add(new ToolsMiddleware({ includeSubSessions: false }))
+    .add(new OrchestratorMiddleware({ includeSubSessions: false }))
     .add(new ContextMiddleware({ includeSubSessions: false }))
-    .add(new OrchestratorMiddleware())
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }));
 }

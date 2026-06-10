@@ -22,10 +22,16 @@ import {
   DispatchTracker,
   buildExecutorRegistry,
   type SyntheticMcpContext,
+  type ToolContext,
 } from "./synthetic-mcp/index.js";
 import { createExcelMcpServer } from "./synthetic-mcp/excel-server.js";
 import { createSubsessionsMcpServer } from "./synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "./runtime/types.js";
+import type { OrchestratorListener } from "./orchestrator-events.js";
+import type { McpClientRegistry } from "./mcp-client.js";
+
+// Re-export for backwards compatibility
+export type { OrchestratorEvent, OrchestratorListener } from "./orchestrator-events.js";
 
 /**
  * Orchestrator.
@@ -47,30 +53,6 @@ import type { AgentRuntimeQueryable } from "./runtime/types.js";
  * via the `Session` and `Workspace` it is handed. The Initializer owns
  * those objects, their lifecycle, and their persistence.
  */
-
-export interface OrchestratorEvent {
-  type:
-    | "orchestrator-start"
-    | "orchestrator-iteration"
-    | "orchestrator-message"
-    | "tool-call"
-    | "tool-result"
-    | "dispatch-start"
-    | "dispatch-feedback"
-    | "executor-event"
-    | "final-message"
-    | "summarization"
-    | "evaluation-start"
-    | "evaluation-verdict"
-    | "injected-input"
-    | "subsession-start"
-    | "subsession-status"
-    | "subsession-finalize"
-    | "warning";
-  data: Record<string, unknown>;
-}
-
-export type OrchestratorListener = (event: OrchestratorEvent) => void;
 
 export interface RunOptions {
   signal?: AbortSignal;
@@ -144,7 +126,7 @@ export class Orchestrator {
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();
     const registry = this.runtime.getRegistry();
-    const mcpClient = this.runtime.getMcpClient();
+    const mcpRegistry = this.runtime.getMcpClientRegistry();
     const visibleTools = this.runtime.getToolDescriptors();
 
     const conversation = session.conversation;
@@ -156,26 +138,19 @@ export class Orchestrator {
     const orchestratorProvider = registry.getProviderForRole("orchestrator");
     const executorProvider = registry.getProviderForRole("executor");
 
-    // Get executor tools for the executor to use (not for display)
     const executorTools = registry.filterToolsByServerWhitelist(
       "executor",
-      mcpClient.listTools()
+      mcpRegistry.listTools()
     );
 
-    // Build executor registry for routing dispatch_executor calls
     const executorRegistry = buildExecutorRegistry(executorTools);
 
-    // Filter visible tools by orchestrator model's whitelist
     const modelFilteredTools = registry.filterToolsByServerWhitelist("orchestrator", visibleTools);
 
-    // Bind every tool call this turn to the session's workspace segment. The
-    // executor's mutations and the orchestrator's own read calls both go through
-    // this clamp; fsmcp stays workspace-agnostic, the limiting lives here.
-    const scopedTools = new ScopedToolClient(mcpClient, workspace.workspaceId);
+    const scopedTools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
 
     const executor = new Executor(executorProvider, scopedTools, executorTools);
 
-    // Count read-only tools (all visible tools minus dispatch_executor and synthetic tools)
     const readToolCount = modelFilteredTools.filter((t) => !executorRegistry.has(t.name)).length;
 
     emit({
@@ -191,31 +166,22 @@ export class Orchestrator {
     const systemMessages = this.buildSystemMessages(orchestratorProvider, modelFilteredTools, workspace);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
-    // The evaluator judges only THIS turn — the current user request and the
-    // work done in response to it — not the whole session. `userInput` was just
-    // pushed onto `conversation`, so it is the last element of workingMessages;
-    // everything from here on is appended, so this index bounds the turn for the
-    // rest of the loop. (Summarization runs only at the top of a turn, before
-    // the user push, so it can never shift this index mid-loop.)
     const turnStartIndex = workingMessages.length - 1;
 
     const maxIterations = registry.orchestration.maxOrchestratorIterations;
     const maxExecutorIterations = registry.orchestration.maxExecutorIterationsPerAsk;
     const checkInterval = registry.orchestration.validatorCheckIntervalDispatches;
 
-    // Per-turn dispatch accounting (cap, duplicate guard, periodic-check gate),
-    // owned by the tracker and queried by the dispatch tool and the loop.
     const tracker = new DispatchTracker(
       registry.orchestration.maxExecutorDispatchesPerTurn,
       checkInterval
     );
 
-    // Context every synthetic-tool handler receives for this turn.
     const coordinator = options.coordinator;
     const syntheticContext: SyntheticMcpContext = {
       session,
       workspace,
-      sandboxRoot: mcpClient.sandboxRoot,
+      sandboxRoot: mcpRegistry.sandboxRoot,
       executor,
       coordinator,
       tracker,
@@ -225,19 +191,21 @@ export class Orchestrator {
       executorTemperature: registry.orchestration.executorTemperature,
     };
 
-    // Create a fresh Excel MCP server for this turn with the current context.
-    // It's registered as an in-process connection so Excel tools are routed
-    // through McpClient.callTool alongside fsmcp and other MCP servers.
-    const excelServer = createExcelMcpServer(syntheticContext);
-    await mcpClient.registerRuntimeConnection(excelServer.serverName, excelServer.client);
+    const toolCtx: ToolContext = {
+      session,
+      workspace,
+      sandboxRoot: mcpRegistry.sandboxRoot,
+      coordinator,
+      signal: options.signal,
+    };
 
-    // Create a subsessions server only if a coordinator is wired in. Like Excel,
-    // it needs per-turn context. Subsessions are one level deep so detached runs
-    // don't have a coordinator and therefore no subsession tools.
+    const excelServer = createExcelMcpServer(toolCtx);
+    const turnServers = [{ name: excelServer.serverName, client: excelServer.client }];
     if (coordinator) {
-      const subsessionsServer = createSubsessionsMcpServer(syntheticContext);
-      await mcpClient.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
+      const subsessionsServer = createSubsessionsMcpServer(toolCtx);
+      turnServers.push({ name: subsessionsServer.serverName, client: subsessionsServer.client });
     }
+    await mcpRegistry.refreshTurnServers(turnServers);
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       // Fold in any externally-injected prompts before asking the model. The
@@ -329,23 +297,8 @@ export class Orchestrator {
           continue;
         }
 
-        // Read-only MCP tool. Dispatch directly.
-        emit({
-          type: "tool-call",
-          data: { id: call.id, name: call.name, arguments: call.arguments },
-        });
-
+        // Read-only MCP tool. Dispatch directly (ScopedToolClient emits tool-call/tool-result).
         const execution: ToolExecutionResult = await scopedTools.callTool(call.name, call.arguments);
-
-        emit({
-          type: "tool-result",
-          data: {
-            id: call.id,
-            name: call.name,
-            isError: execution.isError,
-            contentPreview: execution.content.slice(0, 400),
-          },
-        });
 
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)

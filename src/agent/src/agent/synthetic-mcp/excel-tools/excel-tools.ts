@@ -3,9 +3,8 @@ import path from "node:path";
 
 import * as XLSX from "xlsx";
 
-import type { ToolExecutionResult } from "../../mcp-client.js";
 import type { ToolDescriptor } from "../../providers/provider.js";
-import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "../types.js";
+import { toolError, toolOk, type RichToolResult, type SyntheticMcp, type ToolContext } from "../types.js";
 
 export const READ_EXCEL_SHEET_TOOL = "read_excel_sheet";
 export const GET_EXCEL_COLUMNS_TOOL = "get_excel_columns";
@@ -80,8 +79,8 @@ const FILTER_OPS: readonly FilterOp[] = ["eq", "ne", "gt", "gte", "lt", "lte", "
 
 async function handleListSheets(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
 
@@ -93,8 +92,8 @@ async function handleListSheets(
 
 async function handleGetColumns(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
 
@@ -113,8 +112,8 @@ async function handleGetColumns(
 
 async function handleReadSheet(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
   const sheetName = requireString(args.sheet_name, "sheet_name");
@@ -138,8 +137,8 @@ async function handleReadSheet(
 
 async function handleQueryRows(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
 
@@ -173,8 +172,8 @@ async function handleQueryRows(
 
 async function handleAppendRows(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const parsed = parseAppendArgs(args);
   if (!parsed.ok) return toolError(`[excel-error] ${parsed.reason}`);
 
@@ -184,8 +183,8 @@ async function handleAppendRows(
 
 async function handleAppendAfterRows(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const parsed = parseAppendArgs(args);
   if (!parsed.ok) return toolError(`[excel-error] ${parsed.reason}`);
 
@@ -211,12 +210,12 @@ async function handleAppendAfterRows(
  * introduce a new column don't silently lose data.
  */
 async function writeRows(
-  ctx: SyntheticMcpContext,
+  ctx: ToolContext,
   filePath: string,
   sheetName: string,
   newRows: Row[],
   insertAt: number | null
-): Promise<ToolExecutionResult> {
+): Promise<RichToolResult> {
   const resolved = resolveWorkspacePath(ctx, filePath);
   if (!resolved.ok) return toolError(`[excel-error] ${resolved.reason}`);
 
@@ -267,30 +266,28 @@ async function writeRows(
   await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
   await fs.writeFile(resolved.absolutePath, buffer);
 
-  ctx.emit({
-    type: "tool-result",
-    data: {
-      tool: insertAt === null ? APPEND_EXCEL_ROWS_TOOL : APPEND_AFTER_EXCEL_ROWS_TOOL,
-      file_path: filePath,
-      sheet_name: sheetName,
-      appended: newRows.length,
-    },
-  });
+  const resultData = {
+    file_path: filePath,
+    sheet_name: sheetName,
+    created: !fileExists,
+    appended_count: newRows.length,
+    total_count: combined.length,
+    columns: headers,
+  };
 
-  return toolOk(
-    JSON.stringify(
-      {
+  return {
+    isError: false,
+    content: JSON.stringify(resultData, null, 2),
+    event: {
+      type: "tool-result",
+      data: {
+        tool: insertAt === null ? APPEND_EXCEL_ROWS_TOOL : APPEND_AFTER_EXCEL_ROWS_TOOL,
         file_path: filePath,
         sheet_name: sheetName,
-        created: !fileExists,
-        appended_count: newRows.length,
-        total_count: combined.length,
-        columns: headers,
+        appended: newRows.length,
       },
-      null,
-      2
-    )
-  );
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +300,7 @@ async function writeRows(
  * we never hand a raw path to SheetJS.
  */
 async function loadWorkbook(
-  ctx: SyntheticMcpContext,
+  ctx: ToolContext,
   filePath: string
 ): Promise<{ ok: true; value: XLSX.WorkBook } | { ok: false; reason: string }> {
   const resolved = resolveWorkspacePath(ctx, filePath);
@@ -497,7 +494,7 @@ function optionalString(value: unknown): string | undefined {
 // ---------------------------------------------------------------------------
 
 function resolveWorkspacePath(
-  ctx: SyntheticMcpContext,
+  ctx: ToolContext,
   filePath: string
 ): { ok: true; absolutePath: string } | { ok: false; reason: string } {
   if (isAbsoluteLike(filePath)) {

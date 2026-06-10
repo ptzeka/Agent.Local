@@ -1,7 +1,6 @@
-import type { ToolExecutionResult } from "../../mcp-client.js";
 import type { ToolDescriptor } from "../../providers/provider.js";
 import type { SubSessionCoordinator, SubSessionSnapshot } from "../../subsession.js";
-import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "../types.js";
+import { toolError, toolOk, type RichToolResult, type SyntheticMcp, type ToolContext } from "../types.js";
 
 export const CREATE_SUBSESSION_TOOL = "create_subsession";
 export const SUBSESSION_STATUS_TOOL = "get_subsession_status";
@@ -61,8 +60,8 @@ export function createSubSessionTools(): SyntheticMcp[] {
 
 async function handleCreate(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
 
@@ -85,24 +84,30 @@ async function handleCreate(
   // Rejected by the per-parent cap — surface as an error so the model waits on
   // or finalizes an existing child instead of retrying blindly.
   if (result.outcome === "rejected" || !result.snapshot) {
-    ctx.emit({ type: "subsession-start", data: { intent, outcome: "rejected", reason: result.reason } });
-    return toolError(`[subsession-error] ${result.reason ?? "sub-session creation rejected"}`);
+    return {
+      isError: true,
+      content: `[subsession-error] ${result.reason ?? "sub-session creation rejected"}`,
+      event: { type: "subsession-start", data: { intent, outcome: "rejected", reason: result.reason } },
+    };
   }
 
   // created or reused — both return the live child's snapshot. The reused note
   // tells the model it already has this work in flight.
-  ctx.emit({
-    type: "subsession-start",
-    data: { subSessionId: result.snapshot.subSessionId, intent, outcome: result.outcome },
-  });
   const prefix = result.outcome === "reused" ? `[subsession-reused] ${result.reason}\n` : "";
-  return toolOk(prefix + snapshotJson(result.snapshot));
+  return {
+    isError: false,
+    content: prefix + snapshotJson(result.snapshot),
+    event: {
+      type: "subsession-start",
+      data: { subSessionId: result.snapshot.subSessionId, intent, outcome: result.outcome },
+    },
+  };
 }
 
 async function handleStatus(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
 
@@ -114,11 +119,6 @@ async function handleStatus(
     return toolError(`[subsession-error] unknown subSessionId "${subSessionId.value}" for this session`);
   }
 
-  ctx.emit({
-    type: "subsession-status",
-    data: { subSessionId: subSessionId.value, status: result.snapshot.status, backoffMs: result.backoffMs },
-  });
-
   // When a backoff was applied the status hasn't changed since last poll — tell
   // the model to stop hammering and do other work before re-checking.
   const note =
@@ -126,25 +126,37 @@ async function handleStatus(
       ? `[backoff ${result.backoffMs}ms — status unchanged ("${result.snapshot.status}") since your last check; ` +
         `do other useful work or finalize it instead of polling again immediately]\n`
       : "";
-  return toolOk(note + snapshotJson(result.snapshot));
+
+  return {
+    isError: false,
+    content: note + snapshotJson(result.snapshot),
+    event: {
+      type: "subsession-status",
+      data: { subSessionId: subSessionId.value, status: result.snapshot.status, backoffMs: result.backoffMs },
+    },
+  };
 }
 
 async function handleList(
   _args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
 
   const snapshots = coordinator.list(ctx.session.sessionId);
-  ctx.emit({ type: "subsession-status", data: { count: snapshots.length } });
-  return toolOk(JSON.stringify({ count: snapshots.length, subSessions: snapshots }, null, 2));
+  const resultContent = JSON.stringify({ count: snapshots.length, subSessions: snapshots }, null, 2);
+  return {
+    isError: false,
+    content: resultContent,
+    event: { type: "subsession-status", data: { count: snapshots.length } },
+  };
 }
 
 async function handleFinalize(
   args: Record<string, unknown>,
-  ctx: SyntheticMcpContext
-): Promise<ToolExecutionResult> {
+  ctx: ToolContext
+): Promise<RichToolResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
 
@@ -157,13 +169,16 @@ async function handleFinalize(
   if (!snapshot) {
     return toolError(`[subsession-error] unknown subSessionId "${subSessionId.value}" for this session`);
   }
-  ctx.emit({ type: "subsession-finalize", data: { subSessionId: subSessionId.value, status: snapshot.status } });
-  return toolOk(snapshotJson(snapshot));
+  return {
+    isError: false,
+    content: snapshotJson(snapshot),
+    event: { type: "subsession-finalize", data: { subSessionId: subSessionId.value, status: snapshot.status } },
+  };
 }
 
 // ---------------------------------------------------------------------------
 
-function requireCoordinator(ctx: SyntheticMcpContext): SubSessionCoordinator | undefined {
+function requireCoordinator(ctx: ToolContext): SubSessionCoordinator | undefined {
   return ctx.coordinator;
 }
 

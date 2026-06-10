@@ -1,6 +1,6 @@
 import type { IdentityContext, Principal } from "../identity/types.js";
 import type { InputInbox } from "../input-inbox.js";
-import type { McpClient } from "../mcp-client.js";
+import type { McpClientRegistry } from "../mcp-client.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { Session } from "../session.js";
@@ -9,58 +9,29 @@ import type { SessionStore } from "../session-store.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Workspace, WorkspaceRegistry } from "../workspace-registry.js";
 
-// Forward declaration for circular dependency
 export interface AgentRuntimeQueryable {
   getSession(): Session;
   getWorkspace(): Workspace;
   getRegistry(): ModelRegistry;
-  getMcpClient(): McpClient;
+  getMcpClientRegistry(): McpClientRegistry;
   getToolDescriptors(): ToolDescriptor[];
 }
 
-/**
- * Fixed infrastructure handed to AgentRuntime at construction time.
- * These don't change between sessions.
- */
 export interface AgentRuntimeDeps {
   registry: ModelRegistry;
-  tools: McpClient;
-  /** Directory where session JSON files are persisted. */
+  tools: McpClientRegistry;
   sessionsDir: string;
-  /** Filesystem root the agent reads/writes. Used to load project context. */
   workspaceRoot: string;
-  /** Optional credentials forwarded into the identity pipeline. */
   credentials?: IdentityContext;
 }
 
-/**
- * Mutable context that flows through the initialize pipeline.
- *
- * AgentRuntime seeds ONLY the infrastructure fields (the raw deps) before
- * running the pipeline. Every subsystem the runtime ends up owning is built by
- * a middleware step that reads what earlier steps wrote and writes its own
- * output. build() then reads the owned fields back out of the context.
- *
- * Pipeline convention (each step reads earlier steps' output from ctx):
- *   StoreMiddleware             reads  sessionsDir         → writes store
- *   WorkspaceRegistryMiddleware                            → writes workspaces
- *   IdentityMiddleware          reads  credentials         → writes user
- *   AnonymousMiddleware         reads  user                → writes user (fallback)
- *   SessionMiddleware           reads  store/workspaces/user → writes session + workspace
- *   ToolsMiddleware             reads  registry/tools/session/workspace → writes toolDescriptors
- *   OrchestratorMiddleware      reads  registry/tools/toolDescriptors → writes orchestrator
- *   InputInboxMiddleware                                   → writes inbox
- *   SessionManagerMiddleware    reads  orchestrator/inbox/store → writes sessionManager
- */
 export interface RuntimeContext {
-  // Infrastructure — the raw deps, seeded by AgentRuntime, read-only for middleware
   readonly registry: ModelRegistry;
-  readonly tools: McpClient;
+  readonly tools: McpClientRegistry;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
   readonly credentials: IdentityContext;
 
-  // Populated by middleware during build()
   store: SessionStore | undefined;
   workspaces: WorkspaceRegistry | undefined;
   user: Principal | undefined;

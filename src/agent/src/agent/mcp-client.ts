@@ -7,15 +7,6 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import type { InProcessMcpServer } from "./synthetic-mcp/fs-server.js";
 import type { ToolDescriptor } from "./providers/provider.js";
 
-/**
- * MCP server manager and tool aggregator.
- *
- * Reads mcp.json, spawns each declared MCP server as a child process over
- * stdio, discovers and indexes all tools they expose. Tools are namespaced
- * by server (`<server>__<tool>`) to avoid collisions. The client filters
- * tools by role: orchestrator gets read-only tools, executor gets all tools.
- */
-
 interface McpServerConfig {
   command: string;
   args?: string[];
@@ -24,12 +15,6 @@ interface McpServerConfig {
 
 interface McpConfigFile {
   mcpServers: Record<string, McpServerConfig>;
-}
-
-interface ServerConnection {
-  serverName: string;
-  client: Client;
-  tools: ToolDescriptor[];
 }
 
 export interface ToolExecutionResult {
@@ -47,134 +32,59 @@ export interface ToolInvoker {
   callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
 }
 
+/**
+ * Single-server MCP client.
+ *
+ * Wraps one MCP server connection. Manages tool discovery and invocation
+ * for that server only. Stateless — returns POCO results to the caller,
+ * which decides what to do (emit, log, etc.).
+ */
 export class McpClient {
-  private connections: ServerConnection[] = [];
-  private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();
-  /**
-   * The file-sandbox container root every server was launched against
-   * (AGENT_WORKSPACE). Captured at connect so in-process consumers — e.g. the
-   * synthetic Excel tools — resolve files to the SAME root fsmcp writes to,
-   * rather than re-deriving it from the environment.
-   */
-  private workspaceRootValue = "";
+  private tools: ToolDescriptor[];
+  private readonly toolIndex = new Map<string, string>();
+  private workspaceRootValue: string;
 
-  /**
-   * Static factory: reads mcp.json, launches every server, and waits for
-   * each to advertise its tool list. Throws if any server fails to start.
-   *
-   * `inProcessServers` are already-connected in-process MCP servers (e.g. the
-   * filesystem `fsmcp` server) linked over an in-memory transport. They are
-   * registered through the SAME path as spawned servers, so an in-process MCP
-   * server is indistinguishable from one launched over stdio.
-   */
-  public static async connect(
-    configPath: string,
-    workspaceRoot: string,
-    inProcessServers: InProcessMcpServer[] = []
-  ): Promise<McpClient> {
-    const absolutePath = path.resolve(configPath);
-    const raw = await fs.readFile(absolutePath, "utf8");
-    const parsed = JSON.parse(raw) as McpConfigFile;
+  constructor(
+    private readonly serverName: string,
+    private readonly client: Client,
+    tools: ToolDescriptor[],
+    workspaceRoot: string
+  ) {
+    this.tools = tools;
+    this.workspaceRootValue = workspaceRoot;
 
-    if (!parsed.mcpServers || Object.keys(parsed.mcpServers).length === 0) {
-      throw new Error(`${absolutePath} declares no mcpServers.`);
+    for (const tool of tools) {
+      this.toolIndex.set(tool.name, tool.name);
     }
-
-    const client = new McpClient();
-    client.workspaceRootValue = workspaceRoot;
-
-    // Register pre-connected in-process servers first so their namespaced names
-    // are resolvable the moment any server-backed tool runs.
-    for (const inProcess of inProcessServers) {
-      await client.registerConnection(inProcess.serverName, inProcess.client);
-    }
-
-    for (const [serverName, serverConfig] of Object.entries(parsed.mcpServers)) {
-      const connectedClient = await client.spawnServer(serverName, serverConfig, workspaceRoot);
-      await client.registerConnection(serverName, connectedClient);
-    }
-
-    return client;
   }
 
-  /** The file-sandbox container root all servers were launched against. */
+  public get name(): string {
+    return this.serverName;
+  }
+
   public get sandboxRoot(): string {
     return this.workspaceRootValue;
   }
 
-  /**
-   * Flat list of every tool from every connected server, with their names
-   * already namespaced. This is what the provider sees as `tools`.
-   */
   public listTools(): ToolDescriptor[] {
-    const flattened: ToolDescriptor[] = [];
-
-    for (const connection of this.connections) {
-      for (const tool of connection.tools) {
-        flattened.push({
-          name: `${connection.serverName}__${tool.name}`,
-          description: tool.description,
-          inputSchema: tool.inputSchema,
-        });
-      }
-    }
-
-    return flattened;
+    return this.tools.map((tool) => ({
+      name: `${this.serverName}__${tool.name}`,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+    }));
   }
 
-  /**
-   * Read-only context tools the ORCHESTRATOR is allowed to call directly.
-   * The split is by tool-name suffix so it works regardless of which MCP
-   * server provides the tool. Mutating tools are off-limits — the only
-   * way the orchestrator can mutate is through `dispatch_executor`.
-   */
-  public listToolsForOrchestrator(): ToolDescriptor[] {
-    return this.listTools().filter((tool) => isOrchestratorTool(tool.name));
-  }
-
-  /**
-   * Full tool surface the EXECUTOR is allowed to call: mutators plus the
-   * read tools it needs for the validation step.
-   */
-  public listToolsForExecutor(): ToolDescriptor[] {
-    return this.listTools();
-  }
-
-  /**
-   * Register an additional connection at runtime (e.g. per-turn in-process server).
-   * Idempotent: registering the same serverName twice replaces the prior connection.
-   * Used by the orchestrator to mount a fresh Excel server each turn with
-   * that turn's context.
-   */
-  public async registerRuntimeConnection(serverName: string, client: Client): Promise<void> {
-    await this.registerConnection(serverName, client);
-  }
-
-  /**
-   * Dispatch a tool call. `name` is the namespaced form returned by `listTools`.
-   * The result is shaped for re-injection as a `role: "tool"` message.
-   */
-  public async callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
-    const lookup = this.toolIndex.get(name);
-    if (!lookup) {
-      const known = [...this.toolIndex.keys()].join(", ");
+  public async callTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    if (!this.toolIndex.has(toolName)) {
       return {
         isError: true,
-        content: `Unknown tool "${name}". Available tools: ${known}`,
-      };
-    }
-
-    const connection = this.connections.find((c) => c.serverName === lookup.serverName);
-    if (!connection) {
-      return {
-        isError: true,
-        content: `Server "${lookup.serverName}" is no longer connected.`,
+        content: `Unknown tool "${toolName}" on server "${this.serverName}".`,
       };
     }
 
     try {
-      const response = await connection.client.callTool({
-        name: lookup.toolName,
+      const response = await this.client.callTool({
+        name: toolName,
         arguments: args,
       });
 
@@ -186,88 +96,204 @@ export class McpClient {
     } catch (err) {
       return {
         isError: true,
-        content: `Tool "${name}" threw: ${(err as Error).message}`,
+        content: `Tool "${toolName}" threw: ${(err as Error).message}`,
       };
     }
   }
 
   public async shutdown(): Promise<void> {
-    for (const connection of this.connections) {
-      try {
-        await connection.client.close();
-      } catch {
-        // Best-effort. The process is exiting anyway.
-      }
+    try {
+      await this.client.close();
+    } catch {
+      // Best-effort
     }
-    this.connections = [];
-    this.toolIndex.clear();
   }
 
-  /**
-   * Spawn a server declared in mcp.json over stdio and return its connected
-   * Client. Tool discovery and indexing happen in `registerConnection`, which
-   * an in-process server reaches through the same path.
-   */
-  private async spawnServer(
+  public static async createFromConnection(
     serverName: string,
-    config: McpServerConfig,
+    client: Client,
     workspaceRoot: string
-  ): Promise<Client> {
-    // Merge the workspace root into the server's environment so the tools
-    // process picks up the same scope the agent is configured with.
-    // We filter out undefined values because StdioClientTransport's env type
-    // requires Record<string, string>, but process.env may contain undefineds.
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (typeof value === "string") env[key] = value;
-    }
-    for (const [key, value] of Object.entries(config.env ?? {})) {
-      env[key] = value;
-    }
-    env.AGENT_WORKSPACE = workspaceRoot;
-
-    const transport = new StdioClientTransport({
-      command: config.command,
-      args: config.args ?? [],
-      env,
-    });
-
-    const client = new Client(
-      {
-        name: `agent-local-client-${serverName}`,
-        version: "0.1.0",
-      },
-      {
-        capabilities: {},
-      }
-    );
-
-    await client.connect(transport);
-    return client;
-  }
-
-  /**
-   * Index a connected Client under `serverName`: ask it for its tool list and
-   * register each tool under the `<server>__<tool>` namespace. Used identically
-   * for spawned (stdio) and in-process (in-memory) servers — once a Client is
-   * connected, McpClient can't tell them apart.
-   */
-  private async registerConnection(serverName: string, client: Client): Promise<void> {
+  ): Promise<McpClient> {
     const toolsResponse = await client.listTools();
-
     const tools: ToolDescriptor[] = toolsResponse.tools.map((tool) => ({
       name: tool.name,
       description: tool.description ?? "",
       inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
     }));
 
-    this.connections.push({ serverName, client, tools });
+    return new McpClient(serverName, client, tools, workspaceRoot);
+  }
+}
 
-    for (const tool of tools) {
-      const exposedName = `${serverName}__${tool.name}`;
-      this.toolIndex.set(exposedName, { serverName, toolName: tool.name });
+/**
+ * Aggregates multiple single-server McpClient instances.
+ *
+ * Provides the same public interface as the old monolithic McpClient
+ * but delegates to individual clients. Routes tool calls to the correct
+ * server based on the namespaced tool name (`<server>__<tool>`).
+ *
+ * Handles:
+ * - Tool discovery and filtering (by role)
+ * - Per-turn server refresh (Excel, subsessions)
+ * - Tool dispatch to the correct client
+ */
+export class McpClientRegistry {
+  private clients = new Map<string, McpClient>();
+  private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();
+  private workspaceRootValue: string;
+
+  constructor(workspaceRoot: string) {
+    this.workspaceRootValue = workspaceRoot;
+  }
+
+  public get sandboxRoot(): string {
+    return this.workspaceRootValue;
+  }
+
+  public registerClient(client: McpClient): void {
+    this.clients.set(client.name, client);
+    for (const tool of client.listTools()) {
+      const match = tool.name.match(/^([^_]+)__(.+)$/);
+      if (match) {
+        const [, serverName, toolName] = match;
+        this.toolIndex.set(tool.name, { serverName, toolName });
+      }
     }
   }
+
+  public listTools(): ToolDescriptor[] {
+    const flattened: ToolDescriptor[] = [];
+    for (const client of this.clients.values()) {
+      flattened.push(...client.listTools());
+    }
+    return flattened;
+  }
+
+  public listToolsForOrchestrator(): ToolDescriptor[] {
+    return this.listTools().filter((tool) => isOrchestratorTool(tool.name));
+  }
+
+  public listToolsForExecutor(): ToolDescriptor[] {
+    return this.listTools();
+  }
+
+  public async callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+    const lookup = this.toolIndex.get(name);
+    if (!lookup) {
+      const known = [...this.toolIndex.keys()].join(", ");
+      return {
+        isError: true,
+        content: `Unknown tool "${name}". Available tools: ${known}`,
+      };
+    }
+
+    const client = this.clients.get(lookup.serverName);
+    if (!client) {
+      return {
+        isError: true,
+        content: `Server "${lookup.serverName}" is no longer connected.`,
+      };
+    }
+
+    return client.callTool(lookup.toolName, args);
+  }
+
+  public async refreshTurnServers(servers: { name: string; client: Client }[]): Promise<void> {
+    const runtimeNames = new Set(servers.map((s) => s.name));
+
+    for (const [key, val] of this.toolIndex) {
+      if (runtimeNames.has(val.serverName)) {
+        this.toolIndex.delete(key);
+      }
+    }
+
+    for (const [serverName, client] of this.clients) {
+      if (runtimeNames.has(serverName)) {
+        this.clients.delete(serverName);
+        await client.shutdown();
+      }
+    }
+
+    for (const server of servers) {
+      const client = await McpClient.createFromConnection(server.name, server.client, this.workspaceRootValue);
+      this.registerClient(client);
+    }
+  }
+
+  public async shutdown(): Promise<void> {
+    for (const client of this.clients.values()) {
+      await client.shutdown();
+    }
+    this.clients.clear();
+    this.toolIndex.clear();
+  }
+
+  public static async connect(
+    configPath: string,
+    workspaceRoot: string,
+    inProcessServers: InProcessMcpServer[] = []
+  ): Promise<McpClientRegistry> {
+    const absolutePath = path.resolve(configPath);
+    const raw = await fs.readFile(absolutePath, "utf8");
+    const parsed = JSON.parse(raw) as McpConfigFile;
+
+    if (!parsed.mcpServers || Object.keys(parsed.mcpServers).length === 0) {
+      throw new Error(`${absolutePath} declares no mcpServers.`);
+    }
+
+    const registry = new McpClientRegistry(workspaceRoot);
+
+    for (const inProcess of inProcessServers) {
+      const client = await McpClient.createFromConnection(
+        inProcess.serverName,
+        inProcess.client,
+        workspaceRoot
+      );
+      registry.registerClient(client);
+    }
+
+    for (const [serverName, serverConfig] of Object.entries(parsed.mcpServers)) {
+      const connectedClient = await spawnServer(serverName, serverConfig, workspaceRoot);
+      const client = await McpClient.createFromConnection(serverName, connectedClient, workspaceRoot);
+      registry.registerClient(client);
+    }
+
+    return registry;
+  }
+}
+
+async function spawnServer(
+  serverName: string,
+  config: McpServerConfig,
+  workspaceRoot: string
+): Promise<Client> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === "string") env[key] = value;
+  }
+  for (const [key, value] of Object.entries(config.env ?? {})) {
+    env[key] = value;
+  }
+  env.AGENT_WORKSPACE = workspaceRoot;
+
+  const transport = new StdioClientTransport({
+    command: config.command,
+    args: config.args ?? [],
+    env,
+  });
+
+  const client = new Client(
+    {
+      name: `agent-local-client-${serverName}`,
+      version: "0.1.0",
+    },
+    {
+      capabilities: {},
+    }
+  );
+
+  await client.connect(transport);
+  return client;
 }
 
 /**

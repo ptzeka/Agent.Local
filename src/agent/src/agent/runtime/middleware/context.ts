@@ -3,6 +3,10 @@ import path from "node:path";
 import { buildContextSnapshot, saveContextSnapshot } from "../../context-loader.js";
 import { ORCHESTRATOR_SYSTEM_PROMPT } from "../../system-prompt.js";
 import { buildExecutorRegistry } from "../../synthetic-mcp/executor-registry.js";
+import {
+  getExcelToolDescriptors,
+  getSubsessionToolDescriptors,
+} from "../../synthetic-mcp/index.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
@@ -49,22 +53,47 @@ export class ContextMiddleware implements IMiddleware {
 
     const orchestrator = ctx.registry.getProviderForRole("orchestrator");
 
-    // Mirror exactly what the orchestrator advertises each turn — its read tools
-    // plus the synthetic tools (dispatch_executor, excel, sub-sessions) — so the
-    // snapshot faithfully records the tool block the model receives.
-    // Apply the same role split + per-model whitelist the orchestrator uses at
-    // runtime, so the snapshot's tool block faithfully mirrors what each model
-    // is actually advertised.
-    const executorTools = ctx.registry.filterToolsByServerWhitelist(
-      "executor",
-      ctx.tools.listToolsForExecutor()
-    );
-    const orchestratorTools = ctx.registry.filterToolsByServerWhitelist(
-      "orchestrator",
-      ctx.tools.listToolsForOrchestrator()
-    );
-    const executorRegistry = buildExecutorRegistry(executorTools);
-    const tools = [...orchestratorTools, ...executorRegistry.listDescriptors()];
+    // Build tool list with proper filtering.
+    // Synthetic tools (excel, subsessions, dispatch_executor) are NOT subject to
+    // per-model whitelists — they're always included for orchestration.
+    const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
+    let tools: typeof ctx.toolDescriptors;
+
+    if (ctx.toolDescriptors) {
+      // OrchestratorMiddleware has already assembled tools. Extract and re-assemble with
+      // proper filtering: MCP tools go through the whitelist, synthetic tools don't.
+      const mcpTools = ctx.toolDescriptors.filter(
+        (t) => !t.name.startsWith("excel__") &&
+               !t.name.startsWith("subsessions__") &&
+               t.name !== "dispatch_executor"
+      );
+      const filteredMcpTools = ctx.registry.filterToolsByServerWhitelist("orchestrator", mcpTools);
+      const excelTools = ctx.toolDescriptors.filter((t) => t.name.startsWith("excel__"));
+      const dispatchExecutor = ctx.toolDescriptors.filter((t) => t.name === "dispatch_executor");
+      const subsessionTools = shouldIncludeSubSessions
+        ? ctx.toolDescriptors.filter((t) => t.name.startsWith("subsessions__"))
+        : [];
+      tools = [...filteredMcpTools, ...excelTools, ...dispatchExecutor, ...subsessionTools];
+    } else {
+      // Fallback: rebuild from MCP client registry (used in tests that skip OrchestratorMiddleware).
+      const executorTools = ctx.registry.filterToolsByServerWhitelist(
+        "executor",
+        ctx.tools.listToolsForExecutor()
+      );
+      const orchestratorTools = ctx.registry.filterToolsByServerWhitelist(
+        "orchestrator",
+        ctx.tools.listToolsForOrchestrator()
+      );
+      const executorRegistry = buildExecutorRegistry(executorTools);
+      const excelTools = getExcelToolDescriptors();
+      const subsessionTools = shouldIncludeSubSessions ? getSubsessionToolDescriptors() : [];
+      tools = [
+        ...orchestratorTools,
+        ...executorRegistry.listDescriptors(),
+        ...excelTools,
+        ...subsessionTools,
+      ];
+    }
 
     const snapshot = buildContextSnapshot({
       model: orchestrator.modelId,

@@ -11,7 +11,7 @@ import type { Workspace } from "../workspace-registry.js";
 import { WorkspaceRegistry } from "../workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
 import type { ModelRegistry } from "../model-registry.js";
-import type { McpClient } from "../mcp-client.js";
+import type { McpClientRegistry } from "../mcp-client.js";
 
 export interface ResetResult {
   context: ProjectContext | null;
@@ -37,8 +37,7 @@ export interface CompactResult {
  *     .add(new StoreMiddleware())
  *     .add(new WorkspaceRegistryMiddleware())
  *     .add(new SessionMiddleware({ sessionId }))
- *     .add(new ToolsMiddleware({ includeSubSessions: true }))
- *     .add(new OrchestratorMiddleware())
+ *     .add(new OrchestratorMiddleware({ includeSubSessions: true }))
  *     .add(new InputInboxMiddleware())
  *     .add(new SessionManagerMiddleware())
  *     .build();
@@ -67,7 +66,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private session!: Session;
   private workspace!: Workspace;
   private registry!: ModelRegistry;
-  private mcpClient!: McpClient;
+  private mcpClientRegistry!: McpClientRegistry;
   private toolDescriptors!: ToolDescriptor[];
   private orchestrator!: Orchestrator;
   private inbox!: InputInbox;
@@ -120,7 +119,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
       !ctx.session && "session (SessionMiddleware)",
       !ctx.workspace && "workspace (SessionMiddleware)",
-      !ctx.toolDescriptors && "toolDescriptors (ToolsMiddleware)",
+      !ctx.toolDescriptors && "toolDescriptors (OrchestratorMiddleware)",
       !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
       !ctx.inbox && "inbox (InputInboxMiddleware)",
       !ctx.sessionManager && "sessionManager (SessionManagerMiddleware)",
@@ -133,7 +132,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
 
     this.registry = ctx.registry;
-    this.mcpClient = ctx.tools;
+    this.mcpClientRegistry = ctx.tools;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;
@@ -302,8 +301,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.registry;
   }
 
-  getMcpClient(): McpClient {
-    return this.mcpClient;
+  getMcpClientRegistry(): McpClientRegistry {
+    return this.mcpClientRegistry;
   }
 
   getToolDescriptors(): ToolDescriptor[] {

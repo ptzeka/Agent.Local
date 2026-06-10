@@ -8,4 +8,4 @@ export {
   createSubSessionTools,
   getSubsessionToolDescriptors,
 } from "./subsessions-tools/subsessions.js";
-export type { SyntheticMcp, SyntheticMcpContext } from "./types.js";
+export type { RichToolResult, SyntheticMcp, SyntheticMcpContext, ToolContext } from "./types.js";

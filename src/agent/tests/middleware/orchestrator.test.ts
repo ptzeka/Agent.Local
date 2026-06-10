@@ -10,7 +10,7 @@ import { makeContext } from "./context.js";
  */
 describe("OrchestratorMiddleware", () => {
   test("seeds ctx.orchestrator with an Orchestrator and advances", async () => {
-    const ctx = makeContext();
+    const ctx = makeContext({ toolDescriptors: [] });
     const next = jest.fn(async () => {});
 
     await new OrchestratorMiddleware().initialize(ctx, next);
@@ -23,7 +23,7 @@ describe("OrchestratorMiddleware", () => {
   // infra (registry/tools), so it must build even when identity/session steps
   // have not run — i.e. it can sit anywhere in the pipeline.
   test("builds from a bare context with no identity/session populated", async () => {
-    const ctx = makeContext(); // user, session, workspace all undefined
+    const ctx = makeContext({ toolDescriptors: [] }); // user, session, workspace all undefined
 
     await new OrchestratorMiddleware().initialize(ctx, jest.fn(async () => {}));
 

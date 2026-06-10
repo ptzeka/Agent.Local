@@ -23,7 +23,7 @@ import url from "node:url";
 import chalk from "chalk";
 import dotenv from "dotenv";
 
-import { McpClient } from "../agent/mcp-client.js";
+import { McpClientRegistry } from "../agent/mcp-client.js";
 import { createFsMcpServer } from "../agent/synthetic-mcp/fs-server.js";
 import { ModelRegistry } from "../agent/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
@@ -37,7 +37,6 @@ import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator
 import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-manager.js";
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
 import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
-import { ToolsMiddleware } from "../agent/runtime/middleware/tools.js";
 import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
@@ -56,7 +55,7 @@ interface Bootstrap {
   sandboxRoot: string;
   sessionsDir: string;
   registry: ModelRegistry;
-  tools: McpClient;
+  tools: McpClientRegistry;
   shutdown: () => Promise<void>;
 }
 
@@ -100,11 +99,8 @@ async function bootstrap(): Promise<Bootstrap> {
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const modelsConfigPath = path.join(projectRoot, "models.json");
 
-  // The filesystem/search tools run in-process (the former fsmcp server),
-  // linked over an in-memory transport and mounted alongside whatever servers
-  // mcp.json still spawns.
   const fsmcp = await createFsMcpServer(sandboxRoot);
-  const tools = await McpClient.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
+  const tools = await McpClientRegistry.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
   const registry = await ModelRegistry.load(modelsConfigPath);
 
   const shutdown = async (): Promise<void> => {
@@ -129,8 +125,8 @@ async function bootstrap(): Promise<Bootstrap> {
  *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
  *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
  *   SessionMiddleware           — open or resume the session, stamp session.user
+ *   OrchestratorMiddleware      — assemble tool descriptors and build the orchestrator
  *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
- *   OrchestratorMiddleware      — build the stateless turn orchestrator
  *   InputInboxMiddleware        — create the external input injection seam
  *   SessionManagerMiddleware    — build the sub-session manager
  */
@@ -153,12 +149,9 @@ function buildRuntime(
   .add(new IdentityMiddleware())
   .add(new AnonymousMiddleware())
   .add(new SessionMiddleware({ sessionId }))
-  .add(new ToolsMiddleware({ includeSubSessions: true }))
+  .add(new OrchestratorMiddleware({ includeSubSessions: true }))
   .add(new ContextMiddleware())
-  .add(new OrchestratorMiddleware())
   .add(new InputInboxMiddleware())
-  // The manager provisions each child by building a fresh sub-runtime from the
-  // same deps — a one-shot pipeline run with parent-fed steps (see buildSubRuntime).
   .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
 }
 

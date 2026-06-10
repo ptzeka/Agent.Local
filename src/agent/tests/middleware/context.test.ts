@@ -8,6 +8,7 @@ import type { McpClient } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/model-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
+import { getSubsessionToolDescriptors } from "../../src/agent/synthetic-mcp/index.js";
 import { createSession } from "../../src/agent/session.js";
 import { SessionStore } from "../../src/agent/session-store.js";
 import type { Workspace } from "../../src/agent/workspace-registry.js";
