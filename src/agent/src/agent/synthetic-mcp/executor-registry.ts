@@ -1,7 +1,7 @@
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { DispatchExecutorTool } from "./dispatch-executor.js";
-import { toolError, type SyntheticTool, type SyntheticToolContext } from "./types.js";
+import { toolError, type SyntheticMcp, type SyntheticMcpContext } from "./types.js";
 
 /**
  * ExecutorRegistry — intercepts the `dispatch_executor` tool call.
@@ -33,7 +33,7 @@ export class ExecutorRegistry {
   public async dispatch(
     name: string,
     args: Record<string, unknown>,
-    context: SyntheticToolContext
+    context: SyntheticMcpContext
   ): Promise<ToolExecutionResult> {
     if (!this.has(name)) {
       return toolError(`Unknown executor tool "${name}".`);

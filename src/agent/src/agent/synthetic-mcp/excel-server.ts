@@ -26,7 +26,7 @@ import {
 
 import type { ToolDescriptor } from "../providers/provider.js";
 import { createExcelTools } from "./excel-tools/excel-tools.js";
-import type { SyntheticTool, SyntheticToolContext } from "./types.js";
+import type { SyntheticMcp, SyntheticMcpContext } from "./types.js";
 
 /** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
@@ -37,18 +37,18 @@ export interface InProcessMcpServer {
 /**
  * Build an Excel MCP server+client pair for a specific turn's context.
  *
- * Each turn, the orchestrator calls this with that turn's `SyntheticToolContext`,
+ * Each turn, the orchestrator calls this with that turn's `SyntheticMcpContext`,
  * which includes the workspace, session, executor, etc. The returned client is
  * already connected and ready for McpClient to mount.
  *
  * This is the only in-process server that needs per-turn recreation, because
  * Excel tool handlers need access to that turn's workspace + session state.
  */
-export function createExcelMcpServer(context: SyntheticToolContext): InProcessMcpServer {
+export function createExcelMcpServer(context: SyntheticMcpContext): InProcessMcpServer {
   const excelTools = createExcelTools();
 
   // Map bare tool names to their handlers, binding context.
-  const toolsByName = new Map<string, SyntheticTool>(
+  const toolsByName = new Map<string, SyntheticMcp>(
     excelTools.map((tool) => [tool.name, tool])
   );
 

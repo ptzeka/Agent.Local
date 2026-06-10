@@ -21,11 +21,11 @@ import type { DispatchTracker } from "./dispatch-tracker.js";
  */
 
 /**
- * Everything a synthetic tool's handler may need that the orchestrator owns for
+ * Everything a synthetic MCP server handler may need that the orchestrator owns for
  * the current turn. Assembled once per `Orchestrator.run` and passed verbatim to
  * every synthetic dispatch, so handlers stay free of orchestrator internals.
  */
-export interface SyntheticToolContext {
+export interface SyntheticMcpContext {
   /** The session this turn runs against; source of the (un-spoofable) parent id. */
   readonly session: Session;
   /** Workspace sandbox shared with any spawned executor or child session. */
@@ -53,16 +53,16 @@ export interface SyntheticToolContext {
 }
 
 /**
- * A single synthetic tool. `descriptor` is what the LLM sees; `callTool` is the
+ * A single synthetic MCP server. `descriptor` is what the LLM sees; `callTool` is the
  * intercepted invocation. The shape deliberately mirrors a real MCP tool so the
  * two can be dispatched and wrapped identically.
  */
-export interface SyntheticTool {
+export interface SyntheticMcp {
   readonly name: string;
   readonly descriptor: ToolDescriptor;
   callTool(
     args: Record<string, unknown>,
-    context: SyntheticToolContext
+    context: SyntheticMcpContext
   ): Promise<ToolExecutionResult>;
 }
 

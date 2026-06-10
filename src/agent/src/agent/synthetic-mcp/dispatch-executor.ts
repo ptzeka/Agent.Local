@@ -2,7 +2,7 @@ import type { ExecutorAsk, ExecutorEvent, ExecutorFeedback } from "../executor.j
 import type { ToolExecutionResult } from "../mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { dispatchSignature } from "./dispatch-tracker.js";
-import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "./types.js";
+import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "./types.js";
 
 export const DISPATCH_TOOL_NAME = "dispatch_executor";
 
@@ -17,7 +17,7 @@ export const DISPATCH_TOOL_NAME = "dispatch_executor";
  * executor, and formats the structured feedback (ACK + RESULT + deterministic
  * verdict) back to the orchestrator's LLM.
  */
-export class DispatchExecutorTool implements SyntheticTool {
+export class DispatchExecutorTool implements SyntheticMcp {
   public readonly name = DISPATCH_TOOL_NAME;
   public readonly descriptor: ToolDescriptor;
 
@@ -27,7 +27,7 @@ export class DispatchExecutorTool implements SyntheticTool {
 
   public async callTool(
     args: Record<string, unknown>,
-    ctx: SyntheticToolContext
+    ctx: SyntheticMcpContext
   ): Promise<ToolExecutionResult> {
     // Reserve a slot first; a refused reservation means the cap is spent.
     const reservation = ctx.tracker.reserve();

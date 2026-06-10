@@ -5,7 +5,7 @@ import * as XLSX from "xlsx";
 
 import type { ToolExecutionResult } from "../../mcp-client.js";
 import type { ToolDescriptor } from "../../providers/provider.js";
-import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "../types.js";
+import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "../types.js";
 
 export const READ_EXCEL_SHEET_TOOL = "read_excel_sheet";
 export const GET_EXCEL_COLUMNS_TOOL = "get_excel_columns";
@@ -42,7 +42,7 @@ export function getExcelToolDescriptors(): ToolDescriptor[] {
   }));
 }
 
-export function createExcelTools(): SyntheticTool[] {
+export function createExcelTools(): SyntheticMcp[] {
   return [
     { name: LIST_EXCEL_SHEETS_TOOL, descriptor: listSheetsDescriptor(), callTool: handleListSheets },
     { name: GET_EXCEL_COLUMNS_TOOL, descriptor: getColumnsDescriptor(), callTool: handleGetColumns },
@@ -80,7 +80,7 @@ const FILTER_OPS: readonly FilterOp[] = ["eq", "ne", "gt", "gte", "lt", "lte", "
 
 async function handleListSheets(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
@@ -93,7 +93,7 @@ async function handleListSheets(
 
 async function handleGetColumns(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
@@ -113,7 +113,7 @@ async function handleGetColumns(
 
 async function handleReadSheet(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
@@ -138,7 +138,7 @@ async function handleReadSheet(
 
 async function handleQueryRows(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const filePath = requireString(args.file_path, "file_path");
   if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
@@ -173,7 +173,7 @@ async function handleQueryRows(
 
 async function handleAppendRows(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const parsed = parseAppendArgs(args);
   if (!parsed.ok) return toolError(`[excel-error] ${parsed.reason}`);
@@ -184,7 +184,7 @@ async function handleAppendRows(
 
 async function handleAppendAfterRows(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const parsed = parseAppendArgs(args);
   if (!parsed.ok) return toolError(`[excel-error] ${parsed.reason}`);
@@ -211,7 +211,7 @@ async function handleAppendAfterRows(
  * introduce a new column don't silently lose data.
  */
 async function writeRows(
-  ctx: SyntheticToolContext,
+  ctx: SyntheticMcpContext,
   filePath: string,
   sheetName: string,
   newRows: Row[],
@@ -303,7 +303,7 @@ async function writeRows(
  * we never hand a raw path to SheetJS.
  */
 async function loadWorkbook(
-  ctx: SyntheticToolContext,
+  ctx: SyntheticMcpContext,
   filePath: string
 ): Promise<{ ok: true; value: XLSX.WorkBook } | { ok: false; reason: string }> {
   const resolved = resolveWorkspacePath(ctx, filePath);
@@ -497,7 +497,7 @@ function optionalString(value: unknown): string | undefined {
 // ---------------------------------------------------------------------------
 
 function resolveWorkspacePath(
-  ctx: SyntheticToolContext,
+  ctx: SyntheticMcpContext,
   filePath: string
 ): { ok: true; absolutePath: string } | { ok: false; reason: string } {
   if (isAbsoluteLike(filePath)) {

@@ -37,6 +37,7 @@ import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator
 import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-manager.js";
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
 import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
+import { ToolsMiddleware } from "../agent/runtime/middleware/tools.js";
 import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
@@ -152,6 +153,7 @@ function buildRuntime(
   .add(new IdentityMiddleware())
   .add(new AnonymousMiddleware())
   .add(new SessionMiddleware({ sessionId }))
+  .add(new ToolsMiddleware({ includeSubSessions: true }))
   .add(new ContextMiddleware())
   .add(new OrchestratorMiddleware())
   .add(new InputInboxMiddleware())

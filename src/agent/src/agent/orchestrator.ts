@@ -22,12 +22,11 @@ import type { Workspace } from "./workspace-registry.js";
 import {
   DispatchTracker,
   buildExecutorRegistry,
-  getExcelToolDescriptors,
-  getSubsessionToolDescriptors,
-  type SyntheticToolContext,
+  type SyntheticMcpContext,
 } from "./synthetic-mcp/index.js";
 import { createExcelMcpServer } from "./synthetic-mcp/excel-server.js";
 import { createSubsessionsMcpServer } from "./synthetic-mcp/subsessions-server.js";
+import type { AgentRuntimeQueryable } from "./runtime/types.js";
 
 /**
  * Orchestrator.
@@ -114,22 +113,25 @@ export interface RunResult {
  * keeping the orchestrator ⇄ manager construction acyclic.
  */
 export interface SessionRunner {
-  run(
-    session: Session,
-    workspace: Workspace,
-    userInput: string,
-    options?: RunOptions
-  ): Promise<RunResult>;
+  run(userInput: string, options?: RunOptions): Promise<RunResult>;
 }
 
 export class Orchestrator {
-  constructor(
-    private readonly registry: ModelRegistry,
-    private readonly tools: McpClient // Manages MCP servers; exposes their aggregated tools
-  ) {}
+  private runtime!: AgentRuntimeQueryable;
+
+  constructor(runtime?: AgentRuntimeQueryable) {
+    if (runtime) {
+      this.runtime = runtime;
+    }
+  }
+
+  /** Set the runtime after construction (used by AgentRuntime.build). */
+  setRuntime(runtime: AgentRuntimeQueryable): void {
+    this.runtime = runtime;
+  }
 
   /**
-   * Run one user turn end-to-end against the given session and workspace.
+   * Run one user turn end-to-end for the session in the runtime.
    * Mutates `session.conversation` in place (the turn's work product); holds
    * no reference to it afterward. The orchestrator loop:
    *   - asks its LLM for the next move
@@ -138,68 +140,48 @@ export class Orchestrator {
    *   - feeds structured feedback back to the LLM
    *   - returns when the LLM produces a final tool-free message or caps out
    */
-  public async run(
-    session: Session,
-    workspace: Workspace,
-    userInput: string,
-    options: RunOptions = {}
-  ): Promise<RunResult> {
+  public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
+    const session = this.runtime.getSession();
+    const workspace = this.runtime.getWorkspace();
+    const registry = this.runtime.getRegistry();
+    const tools = this.runtime.getTools();
+    const visibleTools = this.runtime.getToolDescriptors();
+
     const conversation = session.conversation;
 
     await this.maybeSummarize(conversation, emit, options.signal);
 
     conversation.push({ role: "user", content: userInput });
 
-    const orchestratorProvider = this.registry.getProviderForRole("orchestrator");
-    const executorProvider = this.registry.getProviderForRole("executor");
+    const orchestratorProvider = registry.getProviderForRole("orchestrator");
+    const executorProvider = registry.getProviderForRole("executor");
 
-    // Role split first (read-only vs. read+mutate), then the per-model tool
-    // whitelist from models.json. Synthetic control tools added below are
-    // deliberately exempt — they're orchestration plumbing, not model tools.
-    const orchestratorTools = this.registry.filterToolsByServerWhitelist(
-      "orchestrator",
-      this.tools.listToolsForOrchestrator()
-    );
-    const executorTools = this.registry.filterToolsByServerWhitelist(
+    // Get executor tools for the executor to use (not for display)
+    const executorTools = registry.filterToolsByServerWhitelist(
       "executor",
-      this.tools.listToolsForExecutor()
+      tools.listToolsForExecutor()
     );
 
-    const coordinator = options.coordinator;
-    // Synthetic tools look like real MCP tools to the LLM (descriptor + a
-    // callTool that returns a ToolExecutionResult), but the orchestrator
-    // intercepts them and routes to the executor / coordinator. The sub-session
-    // tools are advertised only when a coordinator is wired in — detached
-    // sub-session runs get none, enforcing the one-level-deep guard at source.
+    // Build executor registry for routing dispatch_executor calls
     const executorRegistry = buildExecutorRegistry(executorTools);
-    const excelToolDescriptors = this.registry.filterToolsByServerWhitelist(
-      "orchestrator",
-      getExcelToolDescriptors()
-    );
-    const subsessionToolDescriptors = coordinator
-      ? this.registry.filterToolsByServerWhitelist("orchestrator", getSubsessionToolDescriptors())
-      : [];
-    const visibleTools: ToolDescriptor[] = [
-      ...orchestratorTools,
-      ...executorRegistry.listDescriptors(),
-      ...excelToolDescriptors,
-      ...subsessionToolDescriptors,
-    ];
 
     // Bind every tool call this turn to the session's workspace segment. The
     // executor's mutations and the orchestrator's own read calls both go through
     // this clamp; fsmcp stays workspace-agnostic, the limiting lives here.
-    const scopedTools = new ScopedToolClient(this.tools, workspace.workspaceId);
+    const scopedTools = new ScopedToolClient(tools, workspace.workspaceId);
 
     const executor = new Executor(executorProvider, scopedTools, executorTools);
+
+    // Count read-only tools (all visible tools minus dispatch_executor and synthetic tools)
+    const readToolCount = visibleTools.filter((t) => !executorRegistry.has(t.name)).length;
 
     emit({
       type: "orchestrator-start",
       data: {
         orchestratorModel: orchestratorProvider.modelId,
         executorModel: executorProvider.modelId,
-        readToolCount: orchestratorTools.length,
+        readToolCount,
         executorToolCount: executorTools.length,
       },
     });
@@ -215,43 +197,44 @@ export class Orchestrator {
     // the user push, so it can never shift this index mid-loop.)
     const turnStartIndex = workingMessages.length - 1;
 
-    const maxIterations = this.registry.orchestration.maxOrchestratorIterations;
-    const maxExecutorIterations = this.registry.orchestration.maxExecutorIterationsPerAsk;
-    const checkInterval = this.registry.orchestration.validatorCheckIntervalDispatches;
+    const maxIterations = registry.orchestration.maxOrchestratorIterations;
+    const maxExecutorIterations = registry.orchestration.maxExecutorIterationsPerAsk;
+    const checkInterval = registry.orchestration.validatorCheckIntervalDispatches;
 
     // Per-turn dispatch accounting (cap, duplicate guard, periodic-check gate),
     // owned by the tracker and queried by the dispatch tool and the loop.
     const tracker = new DispatchTracker(
-      this.registry.orchestration.maxExecutorDispatchesPerTurn,
+      registry.orchestration.maxExecutorDispatchesPerTurn,
       checkInterval
     );
 
     // Context every synthetic-tool handler receives for this turn.
-    const syntheticContext: SyntheticToolContext = {
+    const coordinator = options.coordinator;
+    const syntheticContext: SyntheticMcpContext = {
       session,
       workspace,
-      sandboxRoot: this.tools.sandboxRoot,
+      sandboxRoot: tools.sandboxRoot,
       executor,
       coordinator,
       tracker,
       emit,
       signal: options.signal,
       executorMaxIterations: maxExecutorIterations,
-      executorTemperature: this.registry.orchestration.executorTemperature,
+      executorTemperature: registry.orchestration.executorTemperature,
     };
 
     // Create a fresh Excel MCP server for this turn with the current context.
     // It's registered as an in-process connection so Excel tools are routed
     // through McpClient.callTool alongside fsmcp and other MCP servers.
     const excelServer = createExcelMcpServer(syntheticContext);
-    await this.tools.registerRuntimeConnection(excelServer.serverName, excelServer.client);
+    await tools.registerRuntimeConnection(excelServer.serverName, excelServer.client);
 
     // Create a subsessions server only if a coordinator is wired in. Like Excel,
     // it needs per-turn context. Subsessions are one level deep so detached runs
     // don't have a coordinator and therefore no subsession tools.
     if (coordinator) {
       const subsessionsServer = createSubsessionsMcpServer(syntheticContext);
-      await this.tools.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
+      await tools.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
     }
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
@@ -271,7 +254,7 @@ export class Orchestrator {
 
       const response = await orchestratorProvider.chat(workingMessages, {
         tools: orchestratorProvider.supportsNativeTools ? visibleTools : [],
-        temperature: this.registry.orchestration.orchestratorTemperature,
+        temperature: registry.orchestration.orchestratorTemperature,
         signal: options.signal,
       });
 
@@ -434,10 +417,10 @@ export class Orchestrator {
     emit: OrchestratorListener,
     signal?: AbortSignal
   ): Promise<void> {
-    const threshold = this.registry.orchestration.summarizeAtMessages;
+    const threshold = this.runtime.getRegistry().orchestration.summarizeAtMessages;
     if (conversation.length <= threshold) return;
 
-    const desiredKeep = this.registry.orchestration.summarizerKeepLastN;
+    const desiredKeep = this.runtime.getRegistry().orchestration.summarizerKeepLastN;
     const tailStart = findCleanTailStart(conversation, desiredKeep);
     if (tailStart === 0) return;
 
@@ -446,7 +429,7 @@ export class Orchestrator {
 
     let summaryText: string;
     try {
-      const summarizer = new Summarizer(this.registry.getSummarizerProvider());
+      const summarizer = new Summarizer(this.runtime.getRegistry().getSummarizerProvider());
       summaryText = await summarizer.summarize(prefix, { signal });
     } catch (err) {
       emit({
@@ -487,10 +470,10 @@ export class Orchestrator {
     emit({ type: "evaluation-start", data: {} });
 
     try {
-      const evaluator = new Evaluator(this.registry.getEvaluatorProvider());
+      const evaluator = new Evaluator(this.runtime.getRegistry().getEvaluatorProvider());
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
-        { signal, temperature: this.registry.orchestration.evaluatorTemperature }
+        { signal, temperature: this.runtime.getRegistry().orchestration.evaluatorTemperature }
       );
       emit({
         type: "evaluation-verdict",

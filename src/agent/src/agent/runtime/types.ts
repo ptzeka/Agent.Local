@@ -6,7 +6,17 @@ import type { Orchestrator } from "../orchestrator.js";
 import type { Session } from "../session.js";
 import type { SessionManager } from "../session-manager.js";
 import type { SessionStore } from "../session-store.js";
+import type { ToolDescriptor } from "../providers/provider.js";
 import type { Workspace, WorkspaceRegistry } from "../workspace-registry.js";
+
+// Forward declaration for circular dependency
+export interface AgentRuntimeQueryable {
+  getSession(): Session;
+  getWorkspace(): Workspace;
+  getRegistry(): ModelRegistry;
+  getTools(): McpClient;
+  getToolDescriptors(): ToolDescriptor[];
+}
 
 /**
  * Fixed infrastructure handed to AgentRuntime at construction time.
@@ -37,7 +47,8 @@ export interface AgentRuntimeDeps {
  *   IdentityMiddleware          reads  credentials         → writes user
  *   AnonymousMiddleware         reads  user                → writes user (fallback)
  *   SessionMiddleware           reads  store/workspaces/user → writes session + workspace
- *   OrchestratorMiddleware      reads  registry/tools      → writes orchestrator
+ *   ToolsMiddleware             reads  registry/tools/session/workspace → writes toolDescriptors
+ *   OrchestratorMiddleware      reads  registry/tools/toolDescriptors → writes orchestrator
  *   InputInboxMiddleware                                   → writes inbox
  *   SessionManagerMiddleware    reads  orchestrator/inbox/store → writes sessionManager
  */
@@ -55,6 +66,7 @@ export interface RuntimeContext {
   user: Principal | undefined;
   session: Session | undefined;
   workspace: Workspace | undefined;
+  toolDescriptors: ToolDescriptor[] | undefined;
   orchestrator: Orchestrator | undefined;
   inbox: InputInbox | undefined;
   sessionManager: SessionManager | undefined;

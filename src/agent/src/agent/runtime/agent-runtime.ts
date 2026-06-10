@@ -1,7 +1,7 @@
 import { InputInbox } from "../input-inbox.js";
 import { Orchestrator, type RunOptions, type RunResult } from "../orchestrator.js";
 import type { ProjectContext } from "../context-loader.js";
-import type { ChatMessage } from "../providers/provider.js";
+import type { ChatMessage, ToolDescriptor } from "../providers/provider.js";
 import type { Session } from "../session.js";
 import { SessionManager } from "../session-manager.js";
 import { SessionStore, type SessionSummary } from "../session-store.js";
@@ -9,7 +9,9 @@ import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../summarizer
 import type { SubSessionNotificationListener } from "../subsession.js";
 import type { Workspace } from "../workspace-registry.js";
 import { WorkspaceRegistry } from "../workspace-registry.js";
-import type { AgentRuntimeDeps, IMiddleware, RuntimeContext } from "./types.js";
+import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
+import type { ModelRegistry } from "../model-registry.js";
+import type { McpClient } from "../mcp-client.js";
 
 export interface ResetResult {
   context: ProjectContext | null;
@@ -35,6 +37,7 @@ export interface CompactResult {
  *     .add(new StoreMiddleware())
  *     .add(new WorkspaceRegistryMiddleware())
  *     .add(new SessionMiddleware({ sessionId }))
+ *     .add(new ToolsMiddleware({ includeSubSessions: true }))
  *     .add(new OrchestratorMiddleware())
  *     .add(new InputInboxMiddleware())
  *     .add(new SessionManagerMiddleware())
@@ -57,12 +60,15 @@ export interface CompactResult {
  *   ├─ WorkspaceRegistry       workspace → root/context map
  *   └─ SessionManager          owns sub-sessions spawned within this session
  */
-export class AgentRuntime {
+export class AgentRuntime implements AgentRuntimeQueryable {
   private readonly middlewares: IMiddleware[] = [];
 
   // Populated by build() — all required after construction
   private session!: Session;
   private workspace!: Workspace;
+  private registry!: ModelRegistry;
+  private tools!: McpClient;
+  private toolDescriptors!: ToolDescriptor[];
   private orchestrator!: Orchestrator;
   private inbox!: InputInbox;
   private sessionManager!: SessionManager;
@@ -99,6 +105,7 @@ export class AgentRuntime {
       user: undefined,
       session: undefined,
       workspace: undefined,
+      toolDescriptors: undefined,
       orchestrator: undefined,
       inbox: undefined,
       sessionManager: undefined,
@@ -113,6 +120,7 @@ export class AgentRuntime {
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
       !ctx.session && "session (SessionMiddleware)",
       !ctx.workspace && "workspace (SessionMiddleware)",
+      !ctx.toolDescriptors && "toolDescriptors (ToolsMiddleware)",
       !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
       !ctx.inbox && "inbox (InputInboxMiddleware)",
       !ctx.sessionManager && "sessionManager (SessionManagerMiddleware)",
@@ -124,13 +132,19 @@ export class AgentRuntime {
       );
     }
 
+    this.registry = ctx.registry;
+    this.tools = ctx.tools;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;
     this.workspace = ctx.workspace!;
+    this.toolDescriptors = ctx.toolDescriptors!;
     this.orchestrator = ctx.orchestrator!;
     this.inbox = ctx.inbox!;
     this.sessionManager = ctx.sessionManager!;
+
+    // Wire the runtime into the orchestrator so it can query for dependencies
+    this.orchestrator.setRuntime(this);
 
     return this;
   }
@@ -158,12 +172,7 @@ export class AgentRuntime {
     };
 
     try {
-      const result = await this.orchestrator.run(
-        this.session,
-        this.workspace,
-        input,
-        runOptions
-      );
+      const result = await this.orchestrator.run(input, runOptions);
       this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
       this.session.counters.turns += 1;
       return result;
@@ -277,12 +286,32 @@ export class AgentRuntime {
     return this.session;
   }
 
+  getWorkspace(): Workspace {
+    return this.workspace;
+  }
+
   history(): readonly ChatMessage[] {
     return this.session.conversation;
   }
 
   getWorkspaceContext(): ProjectContext | null {
     return this.workspace.projectContext;
+  }
+
+  getRegistry(): ModelRegistry {
+    return this.registry;
+  }
+
+  getTools(): McpClient {
+    return this.tools;
+  }
+
+  getToolDescriptors(): ToolDescriptor[] {
+    return this.toolDescriptors;
+  }
+
+  getOrchestrator(): Orchestrator {
+    return this.orchestrator;
   }
 
   // --------------------------------------------------------------------------

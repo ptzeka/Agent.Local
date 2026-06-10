@@ -23,9 +23,8 @@ import {
   type ListToolsResult,
 } from "@modelcontextprotocol/sdk/types.js";
 
-import type { ToolDescriptor } from "../providers/provider.js";
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
-import type { SyntheticTool, SyntheticToolContext } from "./types.js";
+import type { SyntheticMcp, SyntheticMcpContext } from "./types.js";
 
 /** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
@@ -36,18 +35,18 @@ export interface InProcessMcpServer {
 /**
  * Build a subsessions MCP server+client pair for a specific turn's context.
  *
- * Each turn, the orchestrator calls this with that turn's `SyntheticToolContext`,
+ * Each turn, the orchestrator calls this with that turn's `SyntheticMcpContext`,
  * which includes the coordinator. The returned client is already connected and
  * ready for McpClient to mount.
  *
  * This is an in-process server that needs per-turn recreation because subsession
  * tool handlers need access to that turn's coordinator and context.
  */
-export function createSubsessionsMcpServer(context: SyntheticToolContext): InProcessMcpServer {
+export function createSubsessionsMcpServer(context: SyntheticMcpContext): InProcessMcpServer {
   const subsessionTools = createSubSessionTools();
 
   // Map bare tool names to their handlers, binding context.
-  const toolsByName = new Map<string, SyntheticTool>(
+  const toolsByName = new Map<string, SyntheticMcp>(
     subsessionTools.map((tool) => [tool.name, tool])
   );
 

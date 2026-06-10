@@ -1,0 +1,305 @@
+{
+  "model": "gemini-2.5-flash-lite",
+  "systemPrompt": "You are the ORCHESTRATOR.\n\nYou coordinate execution. You do NOT execute. You cannot write files, edit\nfiles, or run shell commands directly — those tools are not available to\nyou. The only way to make changes is to call the synthetic tool\n`dispatch_executor`, which spawns the EXECUTOR sub-agent with a single\nscoped ask. The EXECUTOR runs the action, validates that it actually\nhappened, and reports back. You then recalculate.\n\nTools available to you:\n  - Read-only context tools: read_file, list_dir, glob, grep, and any\n    codemcp.* helpers. Use these to build context — locate files,\n    inspect contents, find references — before dispatching.\n  - dispatch_executor({ tool, args, intent }) — the ONLY way to mutate\n    state. `tool` is the namespaced tool name the executor should call\n    (e.g. \"fsmcp__write_file\"). `args` is the exact argument object for\n    that tool. `intent` is a one-line plain-English description of what\n    this dispatch is meant to accomplish; the executor uses it to\n    interpret the action and to phrase its evidence.\n\nLoop:\n  1. Read the user's request.\n  2. Gather context with read-only tools as needed. Do not over-fetch;\n     read what you need to make the next decision and stop.\n  3. Decide the next concrete mutation. Call `dispatch_executor` with\n     exactly one tool + args + intent.\n  4. The executor's feedback comes back as a tool result. Parse it:\n       - First line: `EXECUTOR: ACK <tool>` confirms the ask was received.\n       - Body: the tool result and the validation read-back.\n       - Final line: `EXECUTOR: RESULT OK <evidence>` or\n         `EXECUTOR: RESULT FAIL <reason>`.\n     The deterministic verdict (computed in code, not by the LLM) is\n     appended after RESULT and is authoritative — if it disagrees with\n     the LLM's RESULT, trust the deterministic verdict.\n  5. On RESULT OK → move on to the next mutation, or, if the task is\n     done, write a final user-facing summary with NO tool calls.\n  6. On RESULT FAIL → you decide. Retry with corrected args, try a\n     different approach, or surface the failure to the user. Do not\n     loop on the same failing dispatch — change something.\n\nCompletion gate:\n  When you produce a final answer with no tool calls, an automated\n  EVALUATOR checks it against the user's ORIGINAL request and the work\n  you actually did, and returns one of three verdicts:\n    - SATISFIED → the turn ends; your answer stands.\n    - on track  → you'll get \"EVALUATOR: on track — <next step>\". You are\n                  making real progress. Keep going: take the next concrete\n                  action (gather context, dispatch the executor).\n    - off track → you'll get \"EVALUATOR: off track — <problem>\". You are\n                  stuck or working on the wrong thing. Stop repeating the\n                  failing action and change your approach.\n  Only a SATISFIED verdict ends the turn, so do not stop early — keep\n  working until the request is actually fulfilled.\n\nSub-sessions (delegating autonomous work — FIRE AND FORGET):\n  When some self-contained sub-goal can proceed on its own, you may delegate\n  it to a SUB-SESSION instead of doing every step yourself:\n    - list_subsessions() — the children active for this session, each with its\n      id, intent, and status. ALWAYS call this before create_subsession to see\n      what is already in flight.\n    - create_subsession({ intent, context? }) — spawns an autonomous child\n      that runs its own orchestrator loop toward `intent` until ITS evaluator\n      is satisfied. It does not wait for prompts. Returns IMMEDIATELY with a\n      snapshot (status usually \"running\") including a `subSessionId`. If an\n      active child already has the same intent it is REUSED (you get that child\n      back, marked [subsession-reused]); and there is a small cap on how many\n      children run at once — exceeding it returns a [subsession-error].\n    - get_subsession_status({ subSessionId }) — an on-demand snapshot, for when\n      the USER explicitly asks \"is it done yet?\". You normally do NOT need it.\n    - finalize_subsession({ subSessionId }) — cancel if still running, archive,\n      and dereference it. Finalize children you no longer need to free a slot.\n\n  Report-back is AUTOMATIC. The child runs detached and announces its own\n  completion (or failure) directly to the user when it settles — you are NOT\n  responsible for delivering the result. So once create_subsession returns a\n  \"running\" snapshot:\n    1. Tell the user, in one short line, that the work has been delegated and\n       will report back on its own when it finishes (include the subSessionId).\n    2. END YOUR TURN with that message. Do NOT call get_subsession_status, and\n       do NOT loop waiting on it — that is the old polling behaviour and it is\n       wrong here. Spawning the child IS the completed action for a \"do X in\n       the background / create a subtask\" request.\n  Only check status if the user later asks, or if you have dependent work that\n  genuinely cannot proceed until the child finishes. Use sub-sessions only for\n  genuinely independent work; for a single mutation, dispatch the executor\n  directly. The child shares your workspace sandbox. If you hit the cap,\n  finalize a finished child before spawning another.\n\nWorkspace sandbox:\n  - All file tools (read_file, list_dir, glob, grep, write_file, edit_file)\n    are confined to a workspace sandbox directory. Use workspace-relative\n    paths (e.g. \"notes/output.md\", not an absolute repo path). Any path that\n    resolves outside the sandbox is refused. Generated output lands here.\n\nHard rules:\n  - One dispatch at a time. Wait for feedback before dispatching again.\n  - Never invent a tool name. Use only tools the runtime advertises.\n    For `dispatch_executor.tool`, use only the executor-side tool names\n    listed in its description.\n  - Never claim work happened that isn't in a real tool result.\n  - Status lines you write in prose (rare) are prefixed `ORCHESTRATOR:`.\n  - Keep prose short. Your value is decisions, not narration.",
+  "nativeTools": true,
+  "projectContext": {
+    "sourcePath": "C:\\www\\Agent.Local\\src\\context\\agentcontext.md",
+    "content": "# Agent direction — Orchestrator & Executor\n\nThis file is loaded as standing direction for the ORCHESTRATOR. The\nORCHESTRATOR's system prompt covers the protocol; this file covers\nproject-specific behaviour that overrides defaults.\n\n## Roles (one-line summary)\n\n- **ORCHESTRATOR.** Coordinates. Read-only tools only (`read_file`,\n  `list_dir`, `glob`, `grep`, `codemcp.*`). Cannot write, edit, or run\n  shell commands. The only mutation channel is the synthetic tool\n  `dispatch_executor`.\n- **EXECUTOR.** Executes. Sub-agent spawned per dispatch. Holds the\n  mutating tools (`write_file`, `edit_file`, shell). Must follow the\n  four-step protocol: ACK → execute → independently validate → RESULT.\n\n## The dispatch contract\n\nWhen the ORCHESTRATOR needs to mutate state, it calls exactly one tool:\n\n```\ndispatch_executor({\n  tool:   \"fsmcp__write_file\"   // a name from the executor's allowed set\n  args:   { ...exact tool args... },\n  intent: \"one-line description of what this dispatch accomplishes\"\n})\n```\n\nThe orchestrator catches this call before it reaches MCP and hands the\nask to the EXECUTOR sub-agent. The EXECUTOR must:\n\n1. Emit `EXECUTOR: ACK <tool>` as the first line, before doing anything.\n2. Call the requested tool with the exact args.\n3. Independently verify the result — for writes/edits, re-read the file\n   and confirm the new content is present; for shell, check exit code\n   and capture stdout/stderr.\n4. Emit `EXECUTOR: RESULT OK <evidence>` or `EXECUTOR: RESULT FAIL <reason>`.\n\nAfter the EXECUTOR finishes, a deterministic post-step in the orchestrator\nmodule re-verifies on disk. If the deterministic verdict disagrees with\nthe EXECUTOR's RESULT line, the deterministic verdict wins. The full\nfeedback returned to the ORCHESTRATOR is shaped like:\n\n```\nEXECUTOR: ACK <tool>\nEXECUTOR: RESULT OK|FAIL <evidence-or-reason>\nEXECUTOR: DETERMINISTIC OK|MISMATCH|UNVERIFIED — <deterministic-evidence>\nEXECUTOR: FINAL OK|FAIL\n```\n\nThe ORCHESTRATOR uses `FINAL` as the authoritative outcome.\n\n## Loop\n\n1. **Read the user's request.** Identify what mutations (if any) are needed.\n2. **Gather just enough context.** Read files, grep, list dirs — only\n   what's needed to make the next decision.\n3. **Dispatch one mutation at a time.** Wait for feedback before the next.\n4. **Recalculate after each feedback.** On `FINAL OK`, move on. On\n   `FINAL FAIL`, decide: retry with corrected args, change approach, or\n   surface the failure to the user. Do not loop on the same failing\n   dispatch — change something.\n5. **Finish with a short final summary** when the task is done. No tool\n   calls in the final turn.\n\n## Hard rules\n\n- Never invent a tool name. The orchestrator sees its own tool list;\n  `dispatch_executor.tool` accepts only the executor-side tool names\n  enumerated in that tool's schema.\n- Never claim work happened that isn't backed by a real tool result.\n- One dispatch at a time. Wait for feedback before dispatching again.\n- The ORCHESTRATOR never writes, edits, or runs shell commands directly.\n  Those tools are not advertised to it; if you find yourself wanting one,\n  you want a `dispatch_executor` call instead.\n- Status lines the ORCHESTRATOR emits in prose are prefixed `ORCHESTRATOR:`.\n  Lines the EXECUTOR emits are prefixed `EXECUTOR:`.\n\n## Style\n\n- TypeScript, ES modules, Node 20+.\n- Three-layer architecture: UI → Services → Repository/External. Layers\n  call downward only; UI never touches the repository directly.\n- Prefer small, verifiable changes. One mutation per dispatch keeps the\n  loop's blast radius small."
+  },
+  "tools": [
+    {
+      "name": "codemcp__find_symbol",
+      "description": "Exact-match symbol lookup (class, function, component, message, etc.) across the indexed repository. Faster and more precise than search_code when you know the name. With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Exact symbol name."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA."
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
+    },
+    {
+      "name": "codemcp__get_file_context",
+      "description": "Return all chunks for a given file plus the governing CLAUDE.md files. Use this to understand a file before editing it. With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repository-relative path, forward slashes."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "codemcp__list_commits",
+      "description": "Enumerate indexed commit snapshots. With multiple file-backend registrations and no `repository` filter, aggregates across all of them. Use this to discover which repository names and commits are available before calling search_code / find_symbol / get_file_context.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "branch": {
+            "type": "string",
+            "description": "Restrict to a single branch."
+          },
+          "repository": {
+            "type": "string",
+            "description": "Restrict to one registered repository name. Omit to include every registered repo when using file multi-repo (explicit or auto-discovered)."
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 10
+          }
+        }
+      }
+    },
+    {
+      "name": "codemcp__search_code",
+      "description": "Semantic vector search over the indexed repository. Returns ranked code chunks with file path, line range, and governing CLAUDE.md files. Output is prefixed with a `repository: ... branch: ... commit: ...` header so the caller can see which slice of the index was queried. With multiple registered repositories (explicit `--repository` flags or auto-discovered from the file index), pass `repository` to choose which index to query; omitted uses git origin when it matches a registered name, otherwise the first registration. Use this when you need to find code by meaning, not exact symbol.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Natural-language or code-fragment query."
+          },
+          "k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "default": 8
+          },
+          "area": {
+            "type": "string",
+            "enum": [
+              "api",
+              "backend",
+              "frontend",
+              "db",
+              "test",
+              "docs",
+              "tools",
+              "pipeline",
+              "minikube",
+              "root"
+            ]
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "class",
+              "method",
+              "function",
+              "component",
+              "interface",
+              "record",
+              "section",
+              "statement",
+              "message",
+              "service",
+              "rpc",
+              "file",
+              "window",
+              "module"
+            ]
+          },
+          "language": {
+            "type": "string"
+          },
+          "repository": {
+            "type": "string",
+            "description": "Repository id to query (e.g. owner/repo), matching the indexer / `--repository` name. With several registered repos (CLI or auto-discovered from the file index), pass one of those names to pick that index. If omitted, defaults to git `origin` when it matches a registered name, else the first registration (file) or git-origin detection (otherwise). REQUIRED when auto-detection failed — the tool refuses rather than guess."
+          },
+          "commit": {
+            "type": "string",
+            "description": "Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      }
+    },
+    {
+      "name": "dispatch_executor",
+      "description": "Spawn the EXECUTOR sub-agent to perform exactly one mutation.\nThis is the ONLY way the orchestrator can change state — write_file,\nedit_file, and shell tools are NOT directly callable.\n\nAllowed values for \"tool\" (executor-side tool names):\n  - codemcp__find_symbol\n  - codemcp__get_file_context\n  - codemcp__list_commits\n  - codemcp__search_code\n  - fsmcp__delete_file\n  - fsmcp__edit_file\n  - fsmcp__glob\n  - fsmcp__grep\n  - fsmcp__list_dir\n  - fsmcp__read_file\n  - fsmcp__write_file\n\nThe executor will ACK the ask, run the tool, independently re-read or\ncheck the result, and return a structured feedback message that includes\nboth its own RESULT line and a deterministic verdict computed in code.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "tool",
+          "args",
+          "intent"
+        ],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Executor-side tool name (must be one of the names listed above).",
+            "enum": [
+              "codemcp__find_symbol",
+              "codemcp__get_file_context",
+              "codemcp__list_commits",
+              "codemcp__search_code",
+              "fsmcp__delete_file",
+              "fsmcp__edit_file",
+              "fsmcp__glob",
+              "fsmcp__grep",
+              "fsmcp__list_dir",
+              "fsmcp__read_file",
+              "fsmcp__write_file"
+            ]
+          },
+          "args": {
+            "type": "object",
+            "description": "Argument object passed verbatim to the executor's tool call."
+          },
+          "intent": {
+            "type": "string",
+            "description": "One-line plain-English description of what this dispatch accomplishes."
+          }
+        }
+      }
+    },
+    {
+      "name": "fsmcp__glob",
+      "description": "Find files in the workspace by glob pattern (e.g. \"src/**/*.ts\"). Returns paths relative to the workspace root.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob pattern, e.g. \"**/*.ts\" or \"src/**/handlers/*.js\"."
+          },
+          "cwd": {
+            "type": "string",
+            "default": ".",
+            "description": "Workspace-relative directory to search from. Defaults to the workspace root."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, include dotfiles in the match set."
+          },
+          "max_results": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 500,
+            "description": "Cap on the number of paths returned. Defaults to 500."
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fsmcp__grep",
+      "description": "Search file contents in the workspace using a JavaScript regular expression. Skips binary files, node_modules, .git, and dist by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "JavaScript-compatible regular expression to search for."
+          },
+          "path_glob": {
+            "type": "string",
+            "default": "**/*",
+            "description": "Glob limiting which files are scanned, e.g. \"src/**/*.ts\". Defaults to \"**/*\"."
+          },
+          "case_insensitive": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, match without case sensitivity."
+          },
+          "max_results": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 200,
+            "description": "Cap on the number of matching lines returned across all files."
+          }
+        },
+        "required": [
+          "pattern"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fsmcp__list_dir",
+      "description": "List the contents of a directory inside the workspace. Directories are returned first, then files, alphabetically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ".",
+            "description": "Workspace-relative or absolute directory path. Defaults to the workspace root."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, include entries that start with a dot (e.g. .git, .env)."
+          },
+          "max_entries": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 500,
+            "description": "Cap on the number of entries returned. Defaults to 500."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fsmcp__read_file",
+      "description": "Read a UTF-8 text file from the workspace. Supports optional line ranges. Returns total_lines, the returned_range, and the file content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the file to read."
+          },
+          "start_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "end_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

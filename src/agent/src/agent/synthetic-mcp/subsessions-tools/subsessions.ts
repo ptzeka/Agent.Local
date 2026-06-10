@@ -1,7 +1,7 @@
 import type { ToolExecutionResult } from "../../mcp-client.js";
 import type { ToolDescriptor } from "../../providers/provider.js";
 import type { SubSessionCoordinator, SubSessionSnapshot } from "../../subsession.js";
-import { toolError, toolOk, type SyntheticTool, type SyntheticToolContext } from "../types.js";
+import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "../types.js";
 
 export const CREATE_SUBSESSION_TOOL = "create_subsession";
 export const SUBSESSION_STATUS_TOOL = "get_subsession_status";
@@ -30,7 +30,7 @@ export function getSubsessionToolDescriptors(): ToolDescriptor[] {
   }));
 }
 
-export function createSubSessionTools(): SyntheticTool[] {
+export function createSubSessionTools(): SyntheticMcp[] {
   return [
     {
       name: CREATE_SUBSESSION_TOOL,
@@ -61,7 +61,7 @@ export function createSubSessionTools(): SyntheticTool[] {
 
 async function handleCreate(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
@@ -101,7 +101,7 @@ async function handleCreate(
 
 async function handleStatus(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
@@ -131,7 +131,7 @@ async function handleStatus(
 
 async function handleList(
   _args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
@@ -143,7 +143,7 @@ async function handleList(
 
 async function handleFinalize(
   args: Record<string, unknown>,
-  ctx: SyntheticToolContext
+  ctx: SyntheticMcpContext
 ): Promise<ToolExecutionResult> {
   const coordinator = requireCoordinator(ctx);
   if (!coordinator) return toolError("[subsession-error] sub-sessions are not available in this run");
@@ -163,7 +163,7 @@ async function handleFinalize(
 
 // ---------------------------------------------------------------------------
 
-function requireCoordinator(ctx: SyntheticToolContext): SubSessionCoordinator | undefined {
+function requireCoordinator(ctx: SyntheticMcpContext): SubSessionCoordinator | undefined {
   return ctx.coordinator;
 }
 
