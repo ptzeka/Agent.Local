@@ -30,7 +30,7 @@ export interface ModelDefinition {
    *
    * Omitted key  → no restriction (every role-appropriate tool is advertised).
    * Empty array  → zero tools.
-   * Resolved per role via `filterMcpToolsForRole`.
+   * Resolved per role via `filterToolsByServerWhitelist`.
    */
   mcp?: string[];
 }
@@ -222,7 +222,7 @@ export class ModelRegistry {
   }
 
   /**
-   * Narrow a role's MCP tool list down to the model's MCP server whitelist.
+   * Filter tools by the model's MCP server whitelist.
    *
    * The caller passes the already role-split tools (read-only for the
    * orchestrator, read+mutate for the executor); this applies the per-model
@@ -234,7 +234,7 @@ export class ModelRegistry {
    * array → no tools. Under AGENT_FORCE_MODEL the role resolves to the forced
    * model, so its whitelist (if any) governs every role.
    */
-  public filterMcpToolsForRole(role: RoleName, tools: ToolDescriptor[]): ToolDescriptor[] {
+  public filterToolsByServerWhitelist(role: RoleName, tools: ToolDescriptor[]): ToolDescriptor[] {
     const modelId = this.roleAssignments.get(role);
     const allowedServers = modelId ? this.definitions[modelId]?.mcp : undefined;
     if (!allowedServers) return tools;

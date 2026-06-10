@@ -1,4 +1,4 @@
-import type { McpToolClient } from "../../src/agent/mcp-client.js";
+import type { McpClient } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/model-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 
@@ -15,7 +15,7 @@ import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
   return {
     registry: {} as unknown as ModelRegistry,
-    tools: {} as unknown as McpToolClient,
+    tools: {} as unknown as McpClient,
     sessionsDir: "/tmp/agent-mw-test-sessions",
     workspaceRoot: "/tmp/agent-mw-test-workspace",
     credentials: {},

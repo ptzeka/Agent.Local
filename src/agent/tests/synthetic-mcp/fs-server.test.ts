@@ -9,7 +9,7 @@ import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 /**
  * The in-process fsmcp server that replaced the spawned stdio server. It is a
  * real MCP Server linked to a Client over an in-memory transport, so the tests
- * drive it exactly the way McpToolClient does: list_tools + call_tool over the
+ * drive it exactly the way McpClient does: list_tools + call_tool over the
  * Client. IO must stay confined to the injected sandbox root.
  */
 

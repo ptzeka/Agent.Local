@@ -1,4 +1,4 @@
-export { SyntheticToolRegistry, buildSyntheticTools } from "./registry.js";
+export { ExecutorRegistry, buildExecutorRegistry } from "./executor-registry.js";
 export { DispatchTracker } from "./dispatch-tracker.js";
 export { DISPATCH_TOOL_NAME } from "./dispatch-executor.js";
 export {

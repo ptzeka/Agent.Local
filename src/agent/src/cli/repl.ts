@@ -1,7 +1,7 @@
 import readline from "node:readline/promises";
 import chalk from "chalk";
 
-import type { McpToolClient } from "../agent/mcp-client.js";
+import type { McpClient } from "../agent/mcp-client.js";
 import type { ModelRegistry } from "../agent/model-registry.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 
@@ -19,7 +19,7 @@ export interface ReplOptions {
   workspaceRoot: string;
   sandboxRoot: string;
   registry: ModelRegistry;
-  tools: McpToolClient;
+  tools: McpClient;
   runtime: AgentRuntime;
   resumed: boolean;
 }
@@ -89,7 +89,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 interface SlashContext {
   runtime: AgentRuntime;
   registry: ModelRegistry;
-  tools: McpToolClient;
+  tools: McpClient;
 }
 
 async function handleSlashCommand(command: string, ctx: SlashContext): Promise<boolean> {

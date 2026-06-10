@@ -20,14 +20,14 @@
       "model": "qwen3-coder:30b-a3b-q4_K_M",
       "supportsTools": true,
       "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsmcp", "codemcp", "excel"]
     },
     "qwen-coder-14b": {
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
       "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsmcp", "codemcp", "excel"]
     },
     "deepseek-r1": {
       "provider": "ollama",
@@ -35,14 +35,14 @@
       "supportsTools": false,
       "reasoning": true,
       "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsmcp", "codemcp"]
     },
     "llama-fast": {
       "provider": "ollama",
       "model": "gemma3:4b",
       "supportsTools": true,
       "description": "Small, quick model for summarization and lightweight follow-ups.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": []
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
@@ -68,7 +68,7 @@
   },
 
   "roles": {
-    "orchestrator": "gemini-3.1-flash-lite",
+    "orchestrator": "gemini-2.5-flash-lite",
     "executor": "qwen-coder-14b",
     "summarizer": "llama-fast",
     "evaluator": "qwen-coder-14b"

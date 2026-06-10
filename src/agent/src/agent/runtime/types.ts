@@ -1,6 +1,6 @@
 import type { IdentityContext, Principal } from "../identity/types.js";
 import type { InputInbox } from "../input-inbox.js";
-import type { McpToolClient } from "../mcp-client.js";
+import type { McpClient } from "../mcp-client.js";
 import type { ModelRegistry } from "../model-registry.js";
 import type { Orchestrator } from "../orchestrator.js";
 import type { Session } from "../session.js";
@@ -14,7 +14,7 @@ import type { Workspace, WorkspaceRegistry } from "../workspace-registry.js";
  */
 export interface AgentRuntimeDeps {
   registry: ModelRegistry;
-  tools: McpToolClient;
+  tools: McpClient;
   /** Directory where session JSON files are persisted. */
   sessionsDir: string;
   /** Filesystem root the agent reads/writes. Used to load project context. */
@@ -44,7 +44,7 @@ export interface AgentRuntimeDeps {
 export interface RuntimeContext {
   // Infrastructure — the raw deps, seeded by AgentRuntime, read-only for middleware
   readonly registry: ModelRegistry;
-  readonly tools: McpToolClient;
+  readonly tools: McpClient;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
   readonly credentials: IdentityContext;

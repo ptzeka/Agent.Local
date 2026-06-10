@@ -6,7 +6,7 @@
  * So this returns a factory that creates a fresh Server+Client pair for each turn,
  * with the context baked into the tool handlers.
  *
- * The returned `{ serverName, client }` pair is passed to McpToolClient as an
+ * The returned `{ serverName, client }` pair is passed to McpClient as an
  * in-process server, indistinguishable from fsmcp or any spawned stdio server.
  * Tool names are namespaced as `excel__*` (e.g. `excel__read_sheet`).
  *
@@ -28,7 +28,7 @@ import type { ToolDescriptor } from "../providers/provider.js";
 import { createExcelTools } from "./excel-tools/excel-tools.js";
 import type { SyntheticTool, SyntheticToolContext } from "./types.js";
 
-/** A pre-connected in-process MCP server, ready for McpToolClient to mount. */
+/** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
   serverName: string;
   client: Client;
@@ -39,7 +39,7 @@ export interface InProcessMcpServer {
  *
  * Each turn, the orchestrator calls this with that turn's `SyntheticToolContext`,
  * which includes the workspace, session, executor, etc. The returned client is
- * already connected and ready for McpToolClient to mount.
+ * already connected and ready for McpClient to mount.
  *
  * This is the only in-process server that needs per-turn recreation, because
  * Excel tool handlers need access to that turn's workspace + session state.

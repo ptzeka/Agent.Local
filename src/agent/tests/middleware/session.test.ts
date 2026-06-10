@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ANONYMOUS_PRINCIPAL } from "../../src/agent/identity/types.js";
-import type { McpToolClient } from "../../src/agent/mcp-client.js";
+import type { McpClient } from "../../src/agent/mcp-client.js";
 import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
 import { createSession } from "../../src/agent/session.js";
 import { SessionStore } from "../../src/agent/session-store.js";
@@ -16,8 +16,8 @@ import { makeContext } from "./context.js";
  * create the session's workspace segment dir. Rooted in the test's temp dir so
  * the created segment is cleaned up with everything else in afterEach.
  */
-function fakeTools(root: string): McpToolClient {
-  return { sandboxRoot: path.join(root, "sandbox") } as unknown as McpToolClient;
+function fakeTools(root: string): McpClient {
+  return { sandboxRoot: path.join(root, "sandbox") } as unknown as McpClient;
 }
 
 /**

@@ -23,7 +23,7 @@ import url from "node:url";
 import chalk from "chalk";
 import dotenv from "dotenv";
 
-import { McpToolClient } from "../agent/mcp-client.js";
+import { McpClient } from "../agent/mcp-client.js";
 import { createFsMcpServer } from "../agent/synthetic-mcp/fs-server.js";
 import { ModelRegistry } from "../agent/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
@@ -55,7 +55,7 @@ interface Bootstrap {
   sandboxRoot: string;
   sessionsDir: string;
   registry: ModelRegistry;
-  tools: McpToolClient;
+  tools: McpClient;
   shutdown: () => Promise<void>;
 }
 
@@ -103,7 +103,7 @@ async function bootstrap(): Promise<Bootstrap> {
   // linked over an in-memory transport and mounted alongside whatever servers
   // mcp.json still spawns.
   const fsmcp = await createFsMcpServer(sandboxRoot);
-  const tools = await McpToolClient.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
+  const tools = await McpClient.connect(mcpConfigPath, sandboxRoot, [fsmcp]);
   const registry = await ModelRegistry.load(modelsConfigPath);
 
   const shutdown = async (): Promise<void> => {

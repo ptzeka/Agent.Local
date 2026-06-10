@@ -5,7 +5,7 @@
  * coordinator, workspace, etc. This returns a factory that creates a fresh
  * Server+Client pair for each turn, with the context baked into the tool handlers.
  *
- * The returned `{ serverName, client }` pair is passed to McpToolClient as an
+ * The returned `{ serverName, client }` pair is passed to McpClient as an
  * in-process server, indistinguishable from fsmcp, excel, or any spawned stdio server.
  * Tool names are namespaced as `subsessions__*` (e.g. `subsessions__create_subsession`).
  *
@@ -27,7 +27,7 @@ import type { ToolDescriptor } from "../providers/provider.js";
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
 import type { SyntheticTool, SyntheticToolContext } from "./types.js";
 
-/** A pre-connected in-process MCP server, ready for McpToolClient to mount. */
+/** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
   serverName: string;
   client: Client;
@@ -38,7 +38,7 @@ export interface InProcessMcpServer {
  *
  * Each turn, the orchestrator calls this with that turn's `SyntheticToolContext`,
  * which includes the coordinator. The returned client is already connected and
- * ready for McpToolClient to mount.
+ * ready for McpClient to mount.
  *
  * This is an in-process server that needs per-turn recreation because subsession
  * tool handlers need access to that turn's coordinator and context.

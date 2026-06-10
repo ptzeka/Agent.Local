@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { getContextSnapshot } from "../../src/agent/context-loader.js";
-import type { McpToolClient } from "../../src/agent/mcp-client.js";
+import type { McpClient } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/model-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
@@ -28,7 +28,7 @@ const READ_TOOL: ToolDescriptor = {
 
 /**
  * registry whose orchestrator provider reports the given model + tool mode.
- * `whitelist` mimics ModelRegistry.filterMcpToolsForRole: a missing entry for a
+ * `whitelist` mimics ModelRegistry.filterToolsByServerWhitelist: a missing entry for a
  * role means "unrestricted", otherwise only tools from whitelisted MCP servers survive.
  */
 function fakeRegistry(
@@ -38,7 +38,7 @@ function fakeRegistry(
 ): ModelRegistry {
   return {
     getProviderForRole: () => ({ modelId, supportsNativeTools: nativeTools }),
-    filterMcpToolsForRole: (role: string, tools: ToolDescriptor[]) => {
+    filterToolsByServerWhitelist: (role: string, tools: ToolDescriptor[]) => {
       const list = whitelist?.[role];
       if (!list) return tools;
       const allow = new Set(list);
@@ -51,11 +51,11 @@ function fakeRegistry(
 }
 
 /** tools client exposing the two tool lists the middleware reads. */
-function fakeTools(): McpToolClient {
+function fakeTools(): McpClient {
   return {
     listToolsForOrchestrator: () => [READ_TOOL],
     listToolsForExecutor: () => [],
-  } as unknown as McpToolClient;
+  } as unknown as McpClient;
 }
 
 function fakeWorkspace(): Workspace {

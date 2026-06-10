@@ -1,5 +1,5 @@
 import { Executor } from "./executor.js";
-import type { McpToolClient, ToolExecutionResult } from "./mcp-client.js";
+import type { McpClient, ToolExecutionResult } from "./mcp-client.js";
 import type { ModelRegistry } from "./model-registry.js";
 import type {
   ChatMessage,
@@ -21,7 +21,7 @@ import type { SubSessionCoordinator } from "./subsession.js";
 import type { Workspace } from "./workspace-registry.js";
 import {
   DispatchTracker,
-  buildSyntheticTools,
+  buildExecutorRegistry,
   getExcelToolDescriptors,
   getSubsessionToolDescriptors,
   type SyntheticToolContext,
@@ -125,7 +125,7 @@ export interface SessionRunner {
 export class Orchestrator {
   constructor(
     private readonly registry: ModelRegistry,
-    private readonly tools: McpToolClient
+    private readonly tools: McpClient // Manages MCP servers; exposes their aggregated tools
   ) {}
 
   /**
@@ -157,11 +157,11 @@ export class Orchestrator {
     // Role split first (read-only vs. read+mutate), then the per-model tool
     // whitelist from models.json. Synthetic control tools added below are
     // deliberately exempt — they're orchestration plumbing, not model tools.
-    const orchestratorTools = this.registry.filterMcpToolsForRole(
+    const orchestratorTools = this.registry.filterToolsByServerWhitelist(
       "orchestrator",
       this.tools.listToolsForOrchestrator()
     );
-    const executorTools = this.registry.filterMcpToolsForRole(
+    const executorTools = this.registry.filterToolsByServerWhitelist(
       "executor",
       this.tools.listToolsForExecutor()
     );
@@ -172,14 +172,17 @@ export class Orchestrator {
     // intercepts them and routes to the executor / coordinator. The sub-session
     // tools are advertised only when a coordinator is wired in — detached
     // sub-session runs get none, enforcing the one-level-deep guard at source.
-    const synthetic = buildSyntheticTools({
-      executorTools,
-    });
-    const excelToolDescriptors = getExcelToolDescriptors();
-    const subsessionToolDescriptors = coordinator ? getSubsessionToolDescriptors() : [];
+    const executorRegistry = buildExecutorRegistry(executorTools);
+    const excelToolDescriptors = this.registry.filterToolsByServerWhitelist(
+      "orchestrator",
+      getExcelToolDescriptors()
+    );
+    const subsessionToolDescriptors = coordinator
+      ? this.registry.filterToolsByServerWhitelist("orchestrator", getSubsessionToolDescriptors())
+      : [];
     const visibleTools: ToolDescriptor[] = [
       ...orchestratorTools,
-      ...synthetic.listDescriptors(),
+      ...executorRegistry.listDescriptors(),
       ...excelToolDescriptors,
       ...subsessionToolDescriptors,
     ];
@@ -239,7 +242,7 @@ export class Orchestrator {
 
     // Create a fresh Excel MCP server for this turn with the current context.
     // It's registered as an in-process connection so Excel tools are routed
-    // through McpToolClient.callTool alongside fsmcp and other MCP servers.
+    // through McpClient.callTool alongside fsmcp and other MCP servers.
     const excelServer = createExcelMcpServer(syntheticContext);
     await this.tools.registerRuntimeConnection(excelServer.serverName, excelServer.client);
 
@@ -329,14 +332,14 @@ export class Orchestrator {
       const toolMessages: ChatMessage[] = [];
 
       for (const call of toolCalls) {
-        // Synthetic tool. Intercepted before MCP and routed internally (to the
-        // executor or the sub-session coordinator). It returns the same
-        // ToolExecutionResult shape a real MCP tool would, so it is wrapped into
-        // a role:"tool" message by the identical code path below.
-        if (synthetic.has(call.name)) {
-          // Synthetic handlers self-mark their content (e.g. [dispatch-error],
-          // [subsession-error], EVALUATOR steers), so it is wrapped verbatim.
-          const result = await synthetic.dispatch(call.name, call.arguments, syntheticContext);
+        // Executor dispatch. Intercepted before MCP and routed to the executor
+        // sub-agent. Returns the same ToolExecutionResult shape a real MCP tool
+        // would, so it is wrapped into a role:"tool" message by the identical
+        // code path below.
+        if (executorRegistry.has(call.name)) {
+          // Executor handlers self-mark their content (e.g. [dispatch-error]),
+          // so it is wrapped verbatim.
+          const result = await executorRegistry.dispatch(call.name, call.arguments, syntheticContext);
           toolMessages.push(wrapToolResult(call, result.content));
           continue;
         }

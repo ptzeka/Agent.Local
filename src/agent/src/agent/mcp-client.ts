@@ -8,14 +8,12 @@ import type { InProcessMcpServer } from "./synthetic-mcp/fs-server.js";
 import type { ToolDescriptor } from "./providers/provider.js";
 
 /**
- * MCP client wrapper.
+ * MCP server manager and tool aggregator.
  *
- * Reads mcp.json, spawns each declared server as a child process over
- * stdio, and aggregates every tool exposed by every server into a single
- * flat table that the agent loop can iterate over.
- *
- * Tool names are namespaced by server (`<server>__<tool>`) so two servers
- * can both expose, say, `read_file` without colliding.
+ * Reads mcp.json, spawns each declared MCP server as a child process over
+ * stdio, discovers and indexes all tools they expose. Tools are namespaced
+ * by server (`<server>__<tool>`) to avoid collisions. The client filters
+ * tools by role: orchestrator gets read-only tools, executor gets all tools.
  */
 
 interface McpServerConfig {
@@ -40,7 +38,7 @@ export interface ToolExecutionResult {
 }
 
 /**
- * Minimal tool-dispatch surface. Both the concrete `McpToolClient` and the
+ * Minimal tool-dispatch surface. Both the concrete `McpClient` and the
  * per-workspace `ScopedToolClient` satisfy it, so callers that only need to
  * invoke a tool (the executor, the orchestrator's direct read calls) can depend
  * on the abstraction rather than the concrete client.
@@ -49,7 +47,7 @@ export interface ToolInvoker {
   callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
 }
 
-export class McpToolClient {
+export class McpClient {
   private connections: ServerConnection[] = [];
   private readonly toolIndex = new Map<string, { serverName: string; toolName: string }>();
   /**
@@ -73,7 +71,7 @@ export class McpToolClient {
     configPath: string,
     workspaceRoot: string,
     inProcessServers: InProcessMcpServer[] = []
-  ): Promise<McpToolClient> {
+  ): Promise<McpClient> {
     const absolutePath = path.resolve(configPath);
     const raw = await fs.readFile(absolutePath, "utf8");
     const parsed = JSON.parse(raw) as McpConfigFile;
@@ -82,7 +80,7 @@ export class McpToolClient {
       throw new Error(`${absolutePath} declares no mcpServers.`);
     }
 
-    const client = new McpToolClient();
+    const client = new McpClient();
     client.workspaceRootValue = workspaceRoot;
 
     // Register pre-connected in-process servers first so their namespaced names
@@ -139,7 +137,7 @@ export class McpToolClient {
    * read tools it needs for the validation step.
    */
   public listToolsForExecutor(): ToolDescriptor[] {
-    return this.listTools().filter((tool) => isExecutorTool(tool.name));
+    return this.listTools();
   }
 
   /**
@@ -252,7 +250,7 @@ export class McpToolClient {
    * Index a connected Client under `serverName`: ask it for its tool list and
    * register each tool under the `<server>__<tool>` namespace. Used identically
    * for spawned (stdio) and in-process (in-memory) servers — once a Client is
-   * connected, McpToolClient can't tell them apart.
+   * connected, McpClient can't tell them apart.
    */
   private async registerConnection(serverName: string, client: Client): Promise<void> {
     const toolsResponse = await client.listTools();
@@ -288,16 +286,10 @@ const READ_ONLY_TAILS = new Set([
   "get_file_context",
   "list_commits",
   "search_code",
-]);
-
-const MUTATING_TAILS = new Set([
-  "write_file",
-  "edit_file",
-  "delete_file",
-  "exec",
-  "shell",
-  "powershell",
-  "run_command",
+  "excel__list_sheets",
+  "excel__get_excel_columns",
+  "excel__read_excel_sheet",
+  "excel__query_excel_rows"
 ]);
 
 function tail(toolName: string): string {
@@ -307,11 +299,6 @@ function tail(toolName: string): string {
 
 function isOrchestratorTool(toolName: string): boolean {
   return READ_ONLY_TAILS.has(tail(toolName));
-}
-
-function isExecutorTool(toolName: string): boolean {
-  const t = tail(toolName);
-  return READ_ONLY_TAILS.has(t) || MUTATING_TAILS.has(t);
 }
 
 function extractTextContent(content: unknown): string {

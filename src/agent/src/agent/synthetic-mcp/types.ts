@@ -12,7 +12,7 @@ import type { DispatchTracker } from "./dispatch-tracker.js";
  *
  * A synthetic tool LOOKS like a real MCP tool to the orchestrator's LLM — it is
  * advertised with a `ToolDescriptor` and invoked through a `callTool` that
- * returns a `ToolExecutionResult`, exactly the contract `McpToolClient.callTool`
+ * returns a `ToolExecutionResult`, exactly the contract `McpClient.callTool`
  * satisfies. The difference is invisible to the model: the orchestrator
  * intercepts the call before it reaches MCP and routes it internally (to the
  * Executor sub-agent or the SubSessionCoordinator), and may post-process the

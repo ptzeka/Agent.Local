@@ -5,7 +5,7 @@
  * process. It registers the same seven filesystem/search tools against a real
  * MCP `Server`, but instead of talking stdio to a child process it is linked to
  * a `Client` over an in-memory transport. The returned `{ serverName, client }`
- * pair is handed to `McpToolClient.connect`, which mounts it exactly like a
+ * pair is handed to `McpClient.connect`, which mounts it exactly like a
  * spawned server — an in-process MCP server is indistinguishable from one over
  * stdio.
  *
@@ -39,7 +39,7 @@ import { listDir, listDirSchema } from "./fs-tools/list-dir.js";
 import { glob, globSchema } from "./fs-tools/glob.js";
 import { grep, grepSchema } from "./fs-tools/grep.js";
 
-/** A pre-connected in-process MCP server, ready for McpToolClient to mount. */
+/** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
   serverName: string;
   client: Client;
