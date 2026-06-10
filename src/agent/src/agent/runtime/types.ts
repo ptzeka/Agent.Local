@@ -14,7 +14,7 @@ export interface AgentRuntimeQueryable {
   getSession(): Session;
   getWorkspace(): Workspace;
   getRegistry(): ModelRegistry;
-  getTools(): McpClient;
+  getMcpClient(): McpClient;
   getToolDescriptors(): ToolDescriptor[];
 }
 

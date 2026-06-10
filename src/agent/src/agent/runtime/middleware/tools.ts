@@ -42,27 +42,18 @@ export class ToolsMiddleware implements IMiddleware {
 
     const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
 
-    // Real MCP tools (read + executor)
-    const orchestratorTools = ctx.registry.filterToolsByServerWhitelist(
-      "orchestrator",
-      ctx.tools.listToolsForOrchestrator()
-    );
-    const executorTools = ctx.registry.filterToolsByServerWhitelist(
-      "executor",
-      ctx.tools.listToolsForExecutor()
-    );
+    // Get all available tools
+    const orchestratorTools = ctx.tools.listToolsForOrchestrator();
+    const executorTools = ctx.tools.listToolsForExecutor();
 
-    // Synthetic tools
+    // Build executor registry for routing dispatch_executor calls
     const executorRegistry = buildExecutorRegistry(executorTools);
-    const excelToolDescriptors = ctx.registry.filterToolsByServerWhitelist(
-      "orchestrator",
-      getExcelToolDescriptors()
-    );
-    const subsessionToolDescriptors = shouldIncludeSubSessions
-      ? ctx.registry.filterToolsByServerWhitelist("orchestrator", getSubsessionToolDescriptors())
-      : [];
 
-    // Assemble everything
+    // Get synthetic tool descriptors
+    const excelToolDescriptors = getExcelToolDescriptors();
+    const subsessionToolDescriptors = shouldIncludeSubSessions ? getSubsessionToolDescriptors() : [];
+
+    // Assemble all tools (filtering by model/role happens in Orchestrator)
     const allTools: ToolDescriptor[] = [
       ...orchestratorTools,
       ...executorRegistry.listDescriptors(),

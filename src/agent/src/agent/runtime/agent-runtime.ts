@@ -67,7 +67,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private session!: Session;
   private workspace!: Workspace;
   private registry!: ModelRegistry;
-  private tools!: McpClient;
+  private mcpClient!: McpClient;
   private toolDescriptors!: ToolDescriptor[];
   private orchestrator!: Orchestrator;
   private inbox!: InputInbox;
@@ -133,7 +133,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
 
     this.registry = ctx.registry;
-    this.tools = ctx.tools;
+    this.mcpClient = ctx.tools;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;
@@ -302,8 +302,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.registry;
   }
 
-  getTools(): McpClient {
-    return this.tools;
+  getMcpClient(): McpClient {
+    return this.mcpClient;
   }
 
   getToolDescriptors(): ToolDescriptor[] {

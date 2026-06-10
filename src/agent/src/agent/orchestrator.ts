@@ -1,6 +1,5 @@
 import { Executor } from "./executor.js";
-import type { McpClient, ToolExecutionResult } from "./mcp-client.js";
-import type { ModelRegistry } from "./model-registry.js";
+import type { ToolExecutionResult } from "./mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -16,7 +15,7 @@ import {
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "./scoped-tool-client.js";
-import type { Session, SessionCounters } from "./session.js";
+import type { SessionCounters } from "./session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
 import type { Workspace } from "./workspace-registry.js";
 import {
@@ -145,7 +144,7 @@ export class Orchestrator {
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();
     const registry = this.runtime.getRegistry();
-    const tools = this.runtime.getTools();
+    const mcpClient = this.runtime.getMcpClient();
     const visibleTools = this.runtime.getToolDescriptors();
 
     const conversation = session.conversation;
@@ -160,21 +159,24 @@ export class Orchestrator {
     // Get executor tools for the executor to use (not for display)
     const executorTools = registry.filterToolsByServerWhitelist(
       "executor",
-      tools.listToolsForExecutor()
+      mcpClient.listTools()
     );
 
     // Build executor registry for routing dispatch_executor calls
     const executorRegistry = buildExecutorRegistry(executorTools);
 
+    // Filter visible tools by orchestrator model's whitelist
+    const modelFilteredTools = registry.filterToolsByServerWhitelist("orchestrator", visibleTools);
+
     // Bind every tool call this turn to the session's workspace segment. The
     // executor's mutations and the orchestrator's own read calls both go through
     // this clamp; fsmcp stays workspace-agnostic, the limiting lives here.
-    const scopedTools = new ScopedToolClient(tools, workspace.workspaceId);
+    const scopedTools = new ScopedToolClient(mcpClient, workspace.workspaceId);
 
     const executor = new Executor(executorProvider, scopedTools, executorTools);
 
     // Count read-only tools (all visible tools minus dispatch_executor and synthetic tools)
-    const readToolCount = visibleTools.filter((t) => !executorRegistry.has(t.name)).length;
+    const readToolCount = modelFilteredTools.filter((t) => !executorRegistry.has(t.name)).length;
 
     emit({
       type: "orchestrator-start",
@@ -186,7 +188,7 @@ export class Orchestrator {
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, visibleTools, workspace);
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, modelFilteredTools, workspace);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     // The evaluator judges only THIS turn — the current user request and the
@@ -213,7 +215,7 @@ export class Orchestrator {
     const syntheticContext: SyntheticMcpContext = {
       session,
       workspace,
-      sandboxRoot: tools.sandboxRoot,
+      sandboxRoot: mcpClient.sandboxRoot,
       executor,
       coordinator,
       tracker,
@@ -227,14 +229,14 @@ export class Orchestrator {
     // It's registered as an in-process connection so Excel tools are routed
     // through McpClient.callTool alongside fsmcp and other MCP servers.
     const excelServer = createExcelMcpServer(syntheticContext);
-    await tools.registerRuntimeConnection(excelServer.serverName, excelServer.client);
+    await mcpClient.registerRuntimeConnection(excelServer.serverName, excelServer.client);
 
     // Create a subsessions server only if a coordinator is wired in. Like Excel,
     // it needs per-turn context. Subsessions are one level deep so detached runs
     // don't have a coordinator and therefore no subsession tools.
     if (coordinator) {
       const subsessionsServer = createSubsessionsMcpServer(syntheticContext);
-      await tools.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
+      await mcpClient.registerRuntimeConnection(subsessionsServer.serverName, subsessionsServer.client);
     }
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
@@ -253,7 +255,7 @@ export class Orchestrator {
       emit({ type: "orchestrator-iteration", data: { iteration, max: maxIterations } });
 
       const response = await orchestratorProvider.chat(workingMessages, {
-        tools: orchestratorProvider.supportsNativeTools ? visibleTools : [],
+        tools: orchestratorProvider.supportsNativeTools ? modelFilteredTools : [],
         temperature: registry.orchestration.orchestratorTemperature,
         signal: options.signal,
       });
