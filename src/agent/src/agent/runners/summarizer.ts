@@ -50,7 +50,7 @@ export class Summarizer {
     prefix: ChatMessage[],
     options: SummarizeOptions = {}
   ): Promise<string> {
-    const provider = this.runtime.getRegistry().getSummarizerProvider();
+    const provider = this.runtime.getProvidersRegistry().getProvider("");
     const transcript = prefix.map(formatMessageForSummary).join("\n\n");
 
     let response;

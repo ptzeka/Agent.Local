@@ -18,14 +18,13 @@ import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification } f
 export interface ReplOptions {
   workspaceRoot: string;
   sandboxRoot: string;
-  registry: ModelRegistry;
-  mcpRegistry: McpClientRegistry;
+  configPath: string;
   runtime: AgentRuntime;
   resumed: boolean;
 }
 
 export async function runRepl(options: ReplOptions): Promise<void> {
-  const { workspaceRoot, sandboxRoot, registry, mcpRegistry, runtime, resumed } = options;
+  const { workspaceRoot, sandboxRoot, runtime, resumed } = options;
 
   const session = runtime.getSession();
   const firstUser = session.conversation.find((m) => m.role === "user");
@@ -66,7 +65,11 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     if (input.startsWith("/")) {
       const command = input.slice(1).trim();
-      const exitRequested = await handleSlashCommand(command, { runtime, registry, mcpRegistry });
+      const exitRequested = await handleSlashCommand(command, {
+        runtime,
+        registry: runtime.getModelsRegistry(),
+        mcpRegistry: runtime.getMcpClientRegistry(),
+      });
       if (exitRequested) break;
       continue;
     }
@@ -149,7 +152,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "models":
-      handleModelsCommand(ctx);
+      await handleModelsCommand(ctx);
       return false;
 
     case "model":
@@ -170,18 +173,23 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
   }
 }
 
-function handleModelsCommand(ctx: SlashContext): void {
+async function handleModelsCommand(ctx: SlashContext): Promise<void> {
+  const config = ctx.runtime.getConfigurationRegistry();
+  const modelsFile = await config.getModelsConfiguration();
+
   process.stdout.write(chalk.bold("\nConfigured models:\n"));
-  for (const entry of ctx.registry.listModels()) {
-    const tools = entry.definition.supportsTools ? "tools=native" : "tools=prompted";
-    const reasoning = entry.definition.reasoning ? ", reasoning" : "";
+  for (const [modelId, definition] of Object.entries(modelsFile.models)) {
+    const tools = definition.supportsTools ? "tools=native" : "tools=prompted";
+    const reasoning = definition.reasoning ? ", reasoning" : "";
     process.stdout.write(
-      `  ${chalk.cyan(entry.id)} → ${entry.definition.provider}:${entry.definition.model} (${tools}${reasoning})\n`
+      `  ${chalk.cyan(modelId)} → ${definition.provider}:${definition.model} (${tools}${reasoning})\n`
     );
   }
+
   process.stdout.write(chalk.bold("\nRole assignments:\n"));
-  for (const entry of ctx.registry.listRoles()) {
-    process.stdout.write(`  ${chalk.magenta(entry.role)} → ${entry.modelId} (${entry.provider.modelId})\n`);
+  for (const [role, modelId] of Object.entries(modelsFile.roles)) {
+    const modelDef = modelsFile.models[modelId];
+    process.stdout.write(`  ${chalk.magenta(role)} → ${modelId} (${modelDef.provider}:${modelDef.model})\n`);
   }
   process.stdout.write("\n");
 }
@@ -195,7 +203,7 @@ function handleModelAssignmentCommand(args: string, ctx: SlashContext): void {
 
   const [, role, modelId] = match;
   try {
-    ctx.registry.assignRole(role, modelId);
+    ctx.runtime.getModelsRegistry().assignRole(role, modelId);
     process.stdout.write(chalk.gray(`(role "${role}" now uses "${modelId}")\n`));
   } catch (err) {
     process.stdout.write(chalk.red(`error: ${(err as Error).message}\n`));

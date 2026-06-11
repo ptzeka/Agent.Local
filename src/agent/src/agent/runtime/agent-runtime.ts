@@ -13,6 +13,8 @@ import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeConte
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Logger } from "../../common/logger.js";
+import { ConfigurationRegistry } from "../registries/configuration-registry.js";
+import { ProvidersRegistry } from "../registries/providers-registry.js";
 
 export interface ResetResult {
   context: ProjectContext | null;
@@ -67,9 +69,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private logger!: Logger;
   private session!: Session;
   private workspace!: Workspace;
-  private registry!: ModelRegistry;
+  private modelsRegistry!: ModelRegistry;
+  private configurationRegistry!: ConfigurationRegistry;
+  private providersRegistry!: ProvidersRegistry;
   private mcpClientRegistry!: McpClientRegistry;
-  private toolDescriptors!: ToolDescriptor[];
   private orchestrator!: Orchestrator;
   private inbox!: InputInbox;
   private sessionManager!: SessionManager;
@@ -96,19 +99,21 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    */
   async build(): Promise<this> {
     const ctx: RuntimeContext = {
-      registry: this.deps.registry,
-      mcpRegistry: this.deps.mcpRegistry,
       sessionsDir: this.deps.sessionsDir,
       workspaceRoot: this.deps.workspaceRoot,
+      sandboxRoot: this.deps.sandboxRoot,
       mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
+      configurationRegistry: undefined,
+      modelsRegistry: undefined,
+      mcpRegistry: undefined,
+      providerRegistry: undefined,
       logger: undefined,
       store: undefined,
       workspaces: undefined,
       user: undefined,
       session: undefined,
       workspace: undefined,
-      toolDescriptors: undefined,
       orchestrator: undefined,
       inbox: undefined,
       sessionManager: undefined,
@@ -124,7 +129,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
       !ctx.session && "session (SessionMiddleware)",
       !ctx.workspace && "workspace (SessionMiddleware)",
-      !ctx.toolDescriptors && "toolDescriptors (OrchestratorMiddleware)",
       !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
       !ctx.inbox && "inbox (InputInboxMiddleware)",
       !ctx.sessionManager && "sessionManager (SessionManagerMiddleware)",
@@ -136,14 +140,15 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       );
     }
 
+    this.configurationRegistry = ctx.configurationRegistry!;
     this.logger = ctx.logger!;
-    this.registry = ctx.registry;
-    this.mcpClientRegistry = ctx.mcpRegistry;
+    this.modelsRegistry = ctx.modelsRegistry!;
+    this.mcpClientRegistry = ctx.mcpRegistry!;
+    this.providersRegistry = ctx.providerRegistry!;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;
     this.workspace = ctx.workspace!;
-    this.toolDescriptors = ctx.toolDescriptors!;
     this.orchestrator = ctx.orchestrator!;
     this.inbox = ctx.inbox!;
     this.sessionManager = ctx.sessionManager!;
@@ -303,16 +308,20 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.workspace.projectContext;
   }
 
-  getRegistry(): ModelRegistry {
-    return this.registry;
+  getModelsRegistry(): ModelRegistry {
+    return this.modelsRegistry;
+  }
+
+  getConfigurationRegistry(): ConfigurationRegistry {
+    return this.configurationRegistry;
+  }
+
+  getProvidersRegistry(): ProvidersRegistry {
+    return this.providersRegistry;
   }
 
   getMcpClientRegistry(): McpClientRegistry {
     return this.mcpClientRegistry;
-  }
-
-  getToolDescriptors(): ToolDescriptor[] {
-    return this.toolDescriptors;
   }
 
   getOrchestrator(): Orchestrator {

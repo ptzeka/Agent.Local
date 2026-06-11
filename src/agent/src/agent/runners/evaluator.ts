@@ -89,7 +89,7 @@ export class Evaluator {
     options: EvaluateOptions = {}
   ): Promise<EvaluationVerdict> {
     
-    const provider = this.runtime.getRegistry().getEvaluatorProvider();
+    const provider = this.runtime.getProvidersRegistry().getProvider("summarizer");
     const userMessage = [
       "ORIGINAL REQUEST:",
       params.question,

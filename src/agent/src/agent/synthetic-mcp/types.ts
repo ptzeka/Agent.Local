@@ -1,6 +1,6 @@
 import type { Executor } from "../runners/executor.js";
 import type { OrchestratorEvent, OrchestratorListener } from "../runners/runner-events.js";
-import type { ToolExecutionResult } from "../mcp-client.js";
+import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Session } from "../session/session.js";
 import type { SubSessionCoordinator } from "../runners/subsession.js";

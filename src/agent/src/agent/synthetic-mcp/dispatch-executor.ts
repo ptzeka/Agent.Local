@@ -1,6 +1,6 @@
 import type { ExecutorAsk, ExecutorFeedback } from "../runners/executor.js";
 import type { ExecutorEvent } from "../runners/runner-events.js";
-import type { ToolExecutionResult } from "../mcp-client.js";
+import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { dispatchSignature } from "./dispatch-tracker.js";
 import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "./types.js";

@@ -1,5 +1,5 @@
 import { Executor } from "./executor.js";
-import type { ToolExecutionResult } from "../mcp-client.js";
+import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -20,7 +20,6 @@ import type { SubSessionCoordinator } from "./subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import {
   DispatchTracker,
-  buildExecutorRegistry,
   type SyntheticMcpContext,
   type ToolContext,
 } from "../synthetic-mcp/index.js";
@@ -123,58 +122,53 @@ export class Orchestrator {
   public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
     const session = this.runtime.getSession();
-    const workspace = this.runtime.getWorkspace();
-    const registry = this.runtime.getRegistry();
+    const workspace = this.runtime.getWorkspace();  
+    const registry = this.runtime.getModelsRegistry();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
-    const visibleTools = this.runtime.getToolDescriptors();
-
+    const providersRegistry = this.runtime.getProvidersRegistry();
     const conversation = session.conversation;
+    const executorClient = mcpRegistry.getClient("executor")!;
+    const orchestratorClient = mcpRegistry.getClient("orchestrator")!;
+    const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
 
     await this.maybeSummarize(conversation, emit, options.signal);
-
     conversation.push({ role: "user", content: userInput });
 
-    const orchestratorProvider = registry.getProviderForRole("orchestrator");
-    const executorProvider = registry.getProviderForRole("executor");
+    const orchestratorProvider = providersRegistry.getProvider(registry.getProviderForRole("orchestrator"));
+    const executorProvider = providersRegistry.getProvider(registry.getProviderForRole("executor"));
 
-    const executorTools = registry.filterMcpByServerWhitelist(
-      "executor",
-      mcpRegistry.listTools()
-    );
+    const executorTools = executorClient.listTools();
+    const orchestratorTools = orchestratorClient.listTools();
 
-    const executorRegistry = buildExecutorRegistry(executorTools);
-
-    const modelFilteredTools = registry.filterMcpByServerWhitelist("orchestrator", visibleTools);
-
-    const scopedTools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
+    const scopedExecutorClient = new ScopedToolClient(executorClient, workspace.workspaceId, emit);
+    const scopedOrchestratorClient = new ScopedToolClient(executorClient, workspace.workspaceId, emit);
 
     const executor = new Executor(this.runtime);
 
-    const readToolCount = modelFilteredTools.filter((t) => !executorRegistry.has(t.name)).length;
-
+    
     emit({
       type: OrchestratorEventTypes.START,
       data: {
         orchestratorModel: orchestratorProvider.modelId,
         executorModel: executorProvider.modelId,
-        readToolCount,
+        orchestratorTools,
         executorToolCount: executorTools.length,
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, modelFilteredTools, workspace);
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, executorTools, workspace);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     const turnStartIndex = workingMessages.length - 1;
 
-    const maxIterations = registry.orchestration.maxOrchestratorIterations;
-    const maxExecutorIterations = registry.orchestration.maxExecutorIterationsPerAsk;
-    const checkInterval = registry.orchestration.validatorCheckIntervalDispatches;
+    const maxIterations = config.orchestration.maxOrchestratorIterations;
+    const maxExecutorIterations = config.orchestration.maxExecutorIterationsPerAsk;
+    const checkInterval = config.orchestration.validatorCheckIntervalDispatches;
+    const maxExecutorDispatchesPerTurn = config.orchestration.maxExecutorDispatchesPerTurn;
+    const executorTemperature = config.orchestration.executorTemperature;
+    const orchestratorTemperature = config.orchestration.orchestratorTemperature;
 
-    const tracker = new DispatchTracker(
-      registry.orchestration.maxExecutorDispatchesPerTurn,
-      checkInterval
-    );
+    const tracker = new DispatchTracker(maxExecutorDispatchesPerTurn!, checkInterval!);
 
     const coordinator = options.coordinator;
     const syntheticContext: SyntheticMcpContext = {
@@ -186,8 +180,8 @@ export class Orchestrator {
       tracker,
       emit,
       signal: options.signal,
-      executorMaxIterations: maxExecutorIterations,
-      executorTemperature: registry.orchestration.executorTemperature,
+      executorMaxIterations: maxExecutorIterations!,
+      executorTemperature: executorTemperature!,
     };
 
     const toolCtx: ToolContext = {
@@ -201,10 +195,10 @@ export class Orchestrator {
     // Refresh per-turn servers (subsessions only; Excel is now pre-registered)
     if (coordinator) {
       const subsessionsServer = createSubsessionsMcpServer(toolCtx);
-      await mcpRegistry.refreshTurnServers([{ name: subsessionsServer.serverName, client: subsessionsServer.client }]);
+      //await mcpRegistry.refreshTurnServers([{ name: subsessionsServer.serverName, client: subsessionsServer.client }]);
     }
 
-    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+    for (let iteration = 1; iteration <= maxIterations!; iteration += 1) {
       // Fold in any externally-injected prompts before asking the model. The
       // orchestrator is the sole writer of `conversation`; outside producers
       // enqueue (see InputInbox) and we drain here, at a safe boundary, so a
@@ -222,8 +216,8 @@ export class Orchestrator {
       let response;
       try {
         response = await orchestratorProvider.chat(workingMessages, {
-          tools: orchestratorProvider.supportsNativeTools ? modelFilteredTools : [],
-          temperature: registry.orchestration.orchestratorTemperature,
+          tools: orchestratorProvider.supportsNativeTools ? orchestratorTools : [],
+          temperature: orchestratorTemperature!,
           signal: options.signal,
         });
       } catch (err) {
@@ -294,16 +288,16 @@ export class Orchestrator {
         // sub-agent. Returns the same ToolExecutionResult shape a real MCP tool
         // would, so it is wrapped into a role:"tool" message by the identical
         // code path below.
-        if (executorRegistry.has(call.name)) {
+        if (executorTools.find(e => e.name == call.name)) {
           // Executor handlers self-mark their content (e.g. [dispatch-error]),
           // so it is wrapped verbatim.
-          const result = await executorRegistry.dispatch(call.name, call.arguments, syntheticContext);
+          const result = await scopedExecutorClient.callTool(call.name, call.arguments);
           toolMessages.push(wrapToolResult(call, result.content));
           continue;
         }
 
         // Read-only MCP tool. Dispatch directly (ScopedToolClient emits tool-call/tool-result).
-        const execution: ToolExecutionResult = await scopedTools.callTool(call.name, call.arguments);
+        const execution: ToolExecutionResult = await scopedOrchestratorClient.callTool(call.name, call.arguments);
 
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
@@ -353,7 +347,7 @@ export class Orchestrator {
     });
     return {
       finalMessage: truncationNotice,
-      iterations: maxIterations,
+      iterations: maxIterations!,
       dispatches: tracker.count,
       outcome: "capped",
     };
@@ -377,10 +371,11 @@ export class Orchestrator {
     emit: RunnerListener,
     signal?: AbortSignal
   ): Promise<void> {
-    const threshold = this.runtime.getRegistry().orchestration.summarizeAtMessages;
+    var config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+    const threshold = config.orchestration.summarizeAtMessages!
     if (conversation.length <= threshold) return;
 
-    const desiredKeep = this.runtime.getRegistry().orchestration.summarizerKeepLastN;
+    const desiredKeep = config.orchestration.summarizerKeepLastN!;
     const tailStart = findCleanTailStart(conversation, desiredKeep);
     if (tailStart === 0) return;
 
@@ -430,10 +425,11 @@ export class Orchestrator {
     emit({ type: OrchestratorEventTypes.EVALUATION_START, data: {} });
 
     try {
+       var config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
       const evaluator = new Evaluator(this.runtime);
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
-        { signal, temperature: this.runtime.getRegistry().orchestration.evaluatorTemperature }
+        { signal, temperature: config.orchestration.evaluatorTemperature }
       );
       emit({
         type: OrchestratorEventTypes.EVALUATION_VERDICT,

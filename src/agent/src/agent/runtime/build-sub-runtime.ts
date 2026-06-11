@@ -1,6 +1,6 @@
 import type { SubRuntimeRefs } from "../runners/subsession.js";
 import { AgentRuntime } from "./agent-runtime.js";
-import { AddMcpServersMiddleware } from "./middleware/add-mcp-servers.js";
+import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
 import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
@@ -10,8 +10,11 @@ import { LoggerMiddleware } from "./middleware/logger.js";
 import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
 import { StoreMiddleware } from "./middleware/store.js";
+import { ConfigurationMiddleware } from "./middleware/configuration.js"
 import { WorkspaceRegistryMiddleware } from "./middleware/workspace-registry.js";
 import type { AgentRuntimeDeps } from "./types.js";
+import { ProvidersMiddleware } from "./middleware/providers.js";
+import { ModelsMiddleware } from "./middleware/models.js";
 
 /**
  * Compose a sub-session runtime — the same pipeline the CLI builds for a
@@ -32,6 +35,9 @@ import type { AgentRuntimeDeps } from "./types.js";
 export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): AgentRuntime {
   return new AgentRuntime(deps)
     .add(new LoggerMiddleware())
+    .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
+    .add(new ProvidersMiddleware())
+    .add(new ModelsMiddleware())
     .add(new StoreMiddleware())
     .add(new WorkspaceRegistryMiddleware())
     .add(new InheritedUserMiddleware(refs.user))
@@ -43,7 +49,7 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
         standingContext: refs.standingContext,
       })
     )
-    .add(new AddMcpServersMiddleware())
+    .add(new McpRegistryMiddleware())
     .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: false }))
     .add(new ContextMiddleware({ roleName: "orchestrator", includeSubSessions: false }))

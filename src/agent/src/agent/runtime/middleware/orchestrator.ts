@@ -1,9 +1,4 @@
 import { Orchestrator } from "../../runners/orchestrator.js";
-import { buildExecutorRegistry } from "../../registries/executor-registry.js";
-import {
-  getExcelToolDescriptors,
-  getSubsessionToolDescriptors,
-} from "../../synthetic-mcp/index.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface OrchestratorMiddlewareParams {
@@ -31,25 +26,6 @@ export class OrchestratorMiddleware implements IMiddleware {
           "Ensure the registry is set up before this middleware."
       );
     }
-
-    const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
-
-    const orchestratorTools = ctx.mcpRegistry.listToolsForOrchestrator();
-    const executorTools = ctx.mcpRegistry.listToolsForExecutor();
-
-    const executorRegistry = buildExecutorRegistry(executorTools);
-
-    const excelToolDescriptors = getExcelToolDescriptors();
-    const subsessionToolDescriptors = shouldIncludeSubSessions ? getSubsessionToolDescriptors() : [];
-
-    const allTools = [
-      ...orchestratorTools,
-      ...executorRegistry.listDescriptors(),
-      ...excelToolDescriptors,
-      ...subsessionToolDescriptors,
-    ];
-
-    ctx.toolDescriptors = allTools;
     ctx.orchestrator = new Orchestrator(undefined as any);
     await next();
   }

@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
-import type { ToolDescriptor } from "./providers/provider.js";
+import type { ToolDescriptor } from "../providers/provider.js";
 
 export interface ToolExecutionResult {
   isError: boolean;
@@ -27,17 +27,12 @@ export interface ToolInvoker {
 export class McpClient {
   private tools: ToolDescriptor[];
   private readonly toolIndex = new Map<string, string>();
-  private workspaceRootValue: string;
-
   constructor(
     private readonly serverName: string,
     private readonly client: Client,
-    tools: ToolDescriptor[],
-    workspaceRoot: string
+    tools: ToolDescriptor[]
   ) {
     this.tools = tools;
-    this.workspaceRootValue = workspaceRoot;
-
     for (const tool of tools) {
       this.toolIndex.set(tool.name, tool.name);
     }
@@ -45,10 +40,6 @@ export class McpClient {
 
   public get name(): string {
     return this.serverName;
-  }
-
-  public get sandboxRoot(): string {
-    return this.workspaceRootValue;
   }
 
   public listTools(): ToolDescriptor[] {
@@ -96,8 +87,7 @@ export class McpClient {
 
   public static async createFromConnection(
     serverName: string,
-    client: Client,
-    workspaceRoot: string
+    client: Client
   ): Promise<McpClient> {
     const toolsResponse = await client.listTools();
     const tools: ToolDescriptor[] = toolsResponse.tools.map((tool) => ({
@@ -106,7 +96,7 @@ export class McpClient {
       inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
     }));
 
-    return new McpClient(serverName, client, tools, workspaceRoot);
+    return new McpClient(serverName, client, tools);
   }
 }
 

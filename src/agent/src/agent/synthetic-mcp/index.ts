@@ -1,4 +1,4 @@
-export { ExecutorRegistry, buildExecutorRegistry } from "../registries/executor-registry.js";
+export { ExecutorRegistry } from "../registries/executor-registry.js";
 export { DispatchTracker } from "./dispatch-tracker.js";
 export {
   createExcelTools,

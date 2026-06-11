@@ -8,7 +8,8 @@ import type { RuntimeContext, IMiddleware } from "../types.js";
  */
 export class ConnectMcpServersMiddleware implements IMiddleware {
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    await ctx.mcpRegistry.connectAll(ctx.mcpConfigPath);
+    // flushes the pending in-process clients, then reads mcp.json and calls spawnServer for each declared stdio server
+    //await ctx.mcpRegistry.connectAll(ctx.mcpConfigPath);
     await next();
   }
 }

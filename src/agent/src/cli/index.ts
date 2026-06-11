@@ -21,7 +21,7 @@ import process from "node:process";
 import url from "node:url";
 
 import chalk from "chalk";
-import dotenv from "dotenv";
+import dotenv, { config } from "dotenv";
 
 import { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import { ModelRegistry } from "../agent/registries/model-registry.js";
@@ -38,12 +38,15 @@ import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-ma
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
 import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
 import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
-import { AddMcpServersMiddleware } from "../agent/runtime/middleware/add-mcp-servers.js";
+import { McpRegistryMiddleware } from "../agent/runtime/middleware/mcp-registry.js";
 import { ConnectMcpServersMiddleware } from "../agent/runtime/middleware/connect-mcp-servers.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
 import { renderEvent, renderSubSessionNotification } from "./render.js";
 import { pickSession } from "./session-picker.js";
+import { ConfigurationMiddleware } from "../agent/runtime/middleware/configuration.js";
+import { ProvidersMiddleware } from "../agent/runtime/middleware/providers.js";
+import { ModelsMiddleware } from "../agent/runtime/middleware/models.js";
 
 /** Exit codes for the headless single-run path. */
 const EXIT_SATISFIED = 0;
@@ -56,8 +59,7 @@ interface Bootstrap {
   projectRoot: string;
   sandboxRoot: string;
   sessionsDir: string;
-  registry: ModelRegistry;
-  mcpRegistry: McpClientRegistry;
+  configPath: string;
   mcpConfigPath: string;
   shutdown: () => Promise<void>;
 }
@@ -100,13 +102,10 @@ async function bootstrap(): Promise<Bootstrap> {
   );
 
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
-  const modelsConfigPath = path.join(projectRoot, "models.json");
-
-  const mcpRegistry = new McpClientRegistry(sandboxRoot);
-  const registry = await ModelRegistry.load(modelsConfigPath);
+  const configPath = path.join(projectRoot, "models.json");
 
   const shutdown = async (): Promise<void> => {
-    await mcpRegistry.shutdown();
+    //bye
   };
 
   process.on("SIGINT", () => {
@@ -116,7 +115,7 @@ async function bootstrap(): Promise<Bootstrap> {
     void shutdown().finally(() => process.exit(EXIT_ERROR));
   });
 
-  return { projectRoot, sandboxRoot, sessionsDir, registry, mcpRegistry, mcpConfigPath, shutdown };
+  return { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath, shutdown };
 }
 
 /**
@@ -137,24 +136,27 @@ function buildRuntime(
   boot: Bootstrap,
   sessionId?: string
 ): AgentRuntime {
-  const { projectRoot, sessionsDir, registry, mcpRegistry, mcpConfigPath } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
   const token = process.env.AGENT_API_TOKEN;
   const deps: AgentRuntimeDeps = {
-    registry,
-    mcpRegistry,
     mcpConfigPath,
+    configPath,
     sessionsDir,
     workspaceRoot: projectRoot,
+    sandboxRoot,
     credentials: token ? { token } : {},
   };
   return new AgentRuntime(deps)
   .add(new LoggerMiddleware())
+  .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
+  .add(new ProvidersMiddleware())
+  .add(new ModelsMiddleware())
   .add(new StoreMiddleware())
   .add(new WorkspaceRegistryMiddleware())
   .add(new IdentityMiddleware())
   .add(new AnonymousMiddleware())
   .add(new SessionMiddleware({ sessionId }))
-  .add(new AddMcpServersMiddleware())
+  .add(new McpRegistryMiddleware())
   .add(new ConnectMcpServersMiddleware())
   .add(new OrchestratorMiddleware({ includeSubSessions: true }))
   .add(new ContextMiddleware({ roleName: "orchestrator" }))
@@ -169,7 +171,7 @@ function buildRuntime(
  * the REPL.
  */
 async function runInteractive(boot: Bootstrap): Promise<void> {
-  const { projectRoot, sandboxRoot, sessionsDir, registry, mcpRegistry } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, configPath } = boot;
 
   const saved = await AgentRuntime.listSavedSessions(sessionsDir);
   const choice = await pickSession(saved);
@@ -182,8 +184,7 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
     await runRepl({
       workspaceRoot: projectRoot,
       sandboxRoot,
-      registry,
-      mcpRegistry,
+      configPath,
       runtime,
       resumed: choice.kind === "resume",
     });

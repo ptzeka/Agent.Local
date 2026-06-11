@@ -4,11 +4,11 @@ import os from "node:os";
 import path from "node:path";
 
 import { getContextSnapshot } from "../../src/agent/context/context-loader.js";
-import type { McpClient } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
+import type { ProvidersRegistry } from "../../src/agent/registries/providers-registry.js";
+import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
-import { getSubsessionToolDescriptors } from "../../src/agent/synthetic-mcp/index.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
@@ -16,9 +16,12 @@ import { makeContext } from "./context.js";
 
 /**
  * ContextMiddleware business logic: snapshot the non-conversation context the
- * orchestrator will send (system prompt + project direction + tool block),
- * store it content-addressed, and stamp the hash onto the session — including
- * the includeSubSessions toggle the sub-runtime relies on to reduce its tools.
+ * given role will send (system prompt + project direction + tool block), store
+ * it content-addressed, and stamp the hash onto the session under that role.
+ *
+ * The middleware reads the role's provider (model id + native-tool mode) from
+ * providerRegistry/modelsRegistry, the role's prompt template from
+ * modelsRegistry, and the role's tools from mcpRegistry.getClient(role).
  */
 
 const READ_TOOL: ToolDescriptor = {
@@ -27,41 +30,33 @@ const READ_TOOL: ToolDescriptor = {
   inputSchema: { type: "object" },
 };
 
-/**
- * registry whose orchestrator provider reports the given model + tool mode.
- * `whitelist` mimics ModelRegistry.filterMcpByServerWhitelist: a missing entry for a
- * role means "unrestricted", otherwise only tools from whitelisted MCP servers survive.
- */
-function fakeRegistry(
-  modelId: string,
-  nativeTools: boolean,
-  whitelist?: Partial<Record<string, string[]>>
-): ModelRegistry {
+/** modelsRegistry stub: resolves every role to one model key and serves a per-role template. */
+function fakeModelsRegistry(): ModelRegistry {
   return {
-    getProviderForRole: () => ({ modelId, supportsNativeTools: nativeTools }),
-    getPromptTemplate: (role: string) => {
-      if (role === "orchestrator") return "# System Prompt\nYou are a helpful assistant.";
-      if (role === "executor") return "# Executor Prompt\nExecute the task.";
-      return "";
-    },
-    filterMcpByServerWhitelist: (role: string, tools: ToolDescriptor[]) => {
-      const list = whitelist?.[role];
-      if (!list) return tools;
-      const allow = new Set(list);
-      return tools.filter((tool) => {
-        const serverName = tool.name.split("__")[0];
-        return allow.has(serverName);
-      });
-    },
+    getProviderForRole: (_role: string) => "the-model",
+    getPromptTemplate: (role: string) =>
+      role === "executor" ? "# Executor Prompt\nExecute the task." : "# System Prompt\nYou are a helpful assistant.",
   } as unknown as ModelRegistry;
 }
 
-/** tools client exposing the two tool lists the middleware reads. */
-function fakeTools(): McpClient {
+/** providersRegistry stub: resolves the model key to a provider reporting the given model + tool mode. */
+function fakeProvidersRegistry(modelId: string, nativeTools: boolean): ProvidersRegistry {
   return {
-    listToolsForOrchestrator: () => [READ_TOOL],
-    listToolsForExecutor: () => [],
-  } as unknown as McpClient;
+    getProvider: (_name: string) => ({ modelId, supportsNativeTools: nativeTools }),
+  } as unknown as ProvidersRegistry;
+}
+
+/** mcpRegistry stub: every role's client advertises the given tool list. */
+function fakeMcpRegistry(tools: ToolDescriptor[]): McpClientRegistry {
+  return {
+    sandboxRoot: "/tmp/sandbox",
+    getClient: (_role: string) => ({
+      name: "fsmcp",
+      listTools: () => tools,
+      callTool: jest.fn(),
+      shutdown: jest.fn(),
+    }),
+  } as unknown as McpClientRegistry;
 }
 
 function fakeWorkspace(): Workspace {
@@ -83,11 +78,12 @@ describe("ContextMiddleware", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  function ctxWith(nativeTools = true, whitelist?: Partial<Record<string, string[]>>) {
+  function ctxWith(nativeTools = true, tools: ToolDescriptor[] = [READ_TOOL]) {
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1" });
     return makeContext({
-      registry: fakeRegistry("gemini-x", nativeTools, whitelist),
-      mcpRegistry: fakeTools() as any,
+      modelsRegistry: fakeModelsRegistry(),
+      providerRegistry: fakeProvidersRegistry("gemini-x", nativeTools),
+      mcpRegistry: fakeMcpRegistry(tools),
       store,
       session,
       workspace: fakeWorkspace(),
@@ -106,7 +102,7 @@ describe("ContextMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("writes a content-addressed snapshot reflecting the orchestrator provider", async () => {
+  test("writes a content-addressed snapshot reflecting the role's provider and tools", async () => {
     const ctx = ctxWith(true);
 
     await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
@@ -118,60 +114,27 @@ describe("ContextMiddleware", () => {
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(true);
   });
 
-  test("includeSubSessions:true records the sub-session tools (default)", async () => {
-    const ctx = ctxWith();
+  test("different roles yield different context hashes (distinct prompt templates)", async () => {
+    const orch = ctxWith();
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(orch, async () => {});
 
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
+    const exec = ctxWith();
+    await new ContextMiddleware({ roleName: "executor", contextsDir }).initialize(exec, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
-    expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
-  });
-
-  test("includeSubSessions:false drops the sub-session tools, yielding a different hash", async () => {
-    const withSub = ctxWith();
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(withSub, async () => {});
-
-    const withoutSub = ctxWith();
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir, includeSubSessions: false }).initialize(
-      withoutSub,
-      async () => {}
-    );
-
-    const reduced = await getContextSnapshot(contextsDir, withoutSub.session!.contextHashes?.["orchestrator"]!);
-    expect(reduced!.tools.some((t) => t.name === "create_subsession")).toBe(false);
-    // The tool block differs, so the fingerprint must differ too.
-    expect(withoutSub.session!.contextHashes?.["orchestrator"]).not.toBe(withSub.session!.contextHashes?.["orchestrator"]);
-  });
-
-  test("a per-model whitelist drops non-listed tools from the snapshot", async () => {
-    // Orchestrator whitelist that does NOT include read_file → it must be gone,
-    // while synthetic control tools (added after filtering) remain.
-    const ctx = ctxWith(true, { orchestrator: ["codemcp__search_code"] });
-
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
-
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
-    expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
-    expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
-  });
-
-  test("an empty whitelist removes every model tool but keeps synthetic tools", async () => {
-    const ctx = ctxWith(true, { orchestrator: [] });
-
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
-
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
-    expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
-    expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
+    const orchHash = orch.session!.contextHashes?.["orchestrator"];
+    const execHash = exec.session!.contextHashes?.["executor"];
+    expect(orchHash).toBeDefined();
+    expect(execHash).toBeDefined();
+    expect(execHash).not.toBe(orchHash);
   });
 
   test("throws when session/workspace/store have not been set", async () => {
-    const ctx = makeContext({ registry: fakeRegistry("m", true), tools: fakeTools() });
+    const ctx = makeContext();
     const next = jest.fn(async () => {});
 
-    await expect(new ContextMiddleware({ contextsDir }).initialize(ctx, next)).rejects.toThrow(
-      /requires ctx\.session, ctx\.workspace and ctx\.store/
-    );
+    await expect(
+      new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next)
+    ).rejects.toThrow(/requires ctx\.session, ctx\.workspace and ctx\.store/);
     expect(next).not.toHaveBeenCalled();
   });
 });

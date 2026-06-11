@@ -2,31 +2,26 @@
  * In-process filesystem/search MCP server.
  *
  * This is the former spawned `fsmcp` stdio server, lifted into the agent
- * process. It registers the same seven filesystem/search tools against a real
- * MCP `Server`, but instead of talking stdio to a child process it is linked to
- * a `Client` over an in-memory transport. The returned `{ serverName, client }`
- * pair is handed to `McpClient.connect`, which mounts it exactly like a
- * spawned server — an in-process MCP server is indistinguishable from one over
- * stdio.
+ * process. It owns the same seven filesystem/search tools, but it is no longer
+ * fronted by an SDK `Server` reached over an in-memory transport: the tools are
+ * exposed directly as a `LocalMcp`, so a tool call is a plain in-process
+ * function call — no JSON-RPC round-trip.
+ *
+ * From the registry's perspective a `LocalMcp` is indistinguishable from a
+ * spawned stdio server (`McpClient`): both satisfy the `Mcp` interface.
  *
  * The workspace root is injected (rather than read from AGENT_WORKSPACE) so the
  * tools resolve files to the SAME sandbox root the agent is configured with.
  *
  * Architecture role: Repository / External layer. No agent logic here — pure
- * tool handlers behind a thin MCP transport wrapper.
+ * tool handlers behind a thin in-process adapter.
  */
 
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-  type CallToolRequest,
-  type ListToolsResult,
-} from "@modelcontextprotocol/sdk/types.js";
-
 import type { ZodTypeAny } from "zod";
+
+import type { ToolDescriptor } from "../providers/provider.js";
+import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
+import type { ToolExecutionResult } from "../mcp/mcp.js";
 
 import { zodToJsonSchema } from "./fs-tools/schema-helpers.js";
 import { createWorkspace, WorkspaceViolationError, type Workspace } from "./fs-tools/workspace.js";
@@ -39,14 +34,11 @@ import { listDir, listDirSchema } from "./fs-tools/list-dir.js";
 import { glob, globSchema } from "./fs-tools/glob.js";
 import { grep, grepSchema } from "./fs-tools/grep.js";
 
-/** A pre-connected in-process MCP server, ready for McpClient to mount. */
-export interface InProcessMcpServer {
-  serverName: string;
-  client: Client;
-}
+/** The MCP server name this module mounts under (tools namespace as `fsmcp__*`). */
+export const FS_SERVER_NAME = "fsmcp";
 
 /**
- * A registered tool, ready to be exposed over MCP.
+ * A registered tool, paired with its typed schema.
  *
  * `defineTool` accepts a typed schema + typed handler and packs them into a
  * uniform shape: the runtime handler takes `unknown` arguments and does the Zod
@@ -160,65 +152,39 @@ function formatToolError(err: unknown): string {
 }
 
 /**
- * Build the in-process fsmcp server, link it to a Client over an in-memory
- * transport, and return the connected `{ serverName, client }` pair.
- *
- * The Client is already `connect`ed, so the caller can immediately `listTools`
- * and `callTool` against it.
+ * Adapt a `RegisteredTool` (Zod schema + workspace-bound handler) into a
+ * `LocalTool`: a JSON-schema descriptor plus a direct invocation that does the
+ * Zod parse, serializes the result, and shapes errors exactly as the former
+ * stdio server's `CallTool` handler did.
  */
-export async function createFsMcpServer(workspaceRoot: string): Promise<InProcessMcpServer> {
-  const workspace = createWorkspace(workspaceRoot);
-  const tools = createFsTools();
-
-  // Each tool input is a ZodObject at the top level, so the converter always
-  // produces `type: "object"` here — we cast to satisfy the SDK's literal type.
-  const toolListing: ListToolsResult = {
-    tools: tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: zodToJsonSchema(tool.inputSchema) as ListToolsResult["tools"][number]["inputSchema"],
-    })),
+function toLocalTool(tool: RegisteredTool, workspace: Workspace): LocalTool {
+  const descriptor: ToolDescriptor = {
+    name: tool.name,
+    description: tool.description,
+    inputSchema: zodToJsonSchema(tool.inputSchema) as Record<string, unknown>,
   };
 
-  const server = new Server(
-    { name: "fsmcp", version: "0.1.0" },
-    { capabilities: { tools: {} } }
-  );
+  return {
+    descriptor,
+    invoke: async (args): Promise<ToolExecutionResult> => {
+      try {
+        const result = await tool.invoke(args, workspace);
+        return { isError: false, content: JSON.stringify(result, null, 2) };
+      } catch (err) {
+        return { isError: true, content: formatToolError(err) };
+      }
+    },
+  };
+}
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => toolListing);
-
-  server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest) => {
-    const toolName = request.params.name;
-    const tool = tools.find((candidate) => candidate.name === toolName);
-
-    if (!tool) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: `Unknown tool: ${toolName}` }],
-      };
-    }
-
-    try {
-      const result = await tool.invoke(request.params.arguments, workspace);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        isError: true,
-        content: [{ type: "text" as const, text: formatToolError(err) }],
-      };
-    }
-  });
-
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-
-  const client = new Client(
-    { name: "agent-local-client-fsmcp", version: "0.1.0" },
-    { capabilities: {} }
-  );
-
-  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-
-  return { serverName: "fsmcp", client };
+/**
+ * Build the in-process fsmcp server as a `LocalMcp` bound to `workspaceRoot`.
+ *
+ * The returned server can be registered directly with the MCP registry and is
+ * indistinguishable from a spawned stdio server to every consumer.
+ */
+export function createFsLocalMcp(workspaceRoot: string): LocalMcp {
+  const workspace = createWorkspace(workspaceRoot);
+  const tools = createFsTools().map((tool) => toLocalTool(tool, workspace));
+  return new LocalMcp(FS_SERVER_NAME, tools);
 }

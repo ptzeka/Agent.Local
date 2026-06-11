@@ -1,6 +1,6 @@
 import { describe, expect, test, jest } from "@jest/globals";
 
-import { buildExecutorRegistry } from "../../src/agent/registries/executor-registry.js";
+import { ExecutorRegistry } from "../../src/agent/registries/executor-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import type { SyntheticMcpContext } from "../../src/agent/synthetic-mcp/types.js";
 import type { DispatchTracker } from "../../src/agent/synthetic-mcp/dispatch-tracker.js";
@@ -38,7 +38,7 @@ describe("ExecutorRegistry", () => {
       { name: "fsmcp__write_file", description: "write a file", inputSchema: { type: "object" } },
     ];
 
-    const registry = buildExecutorRegistry(tools);
+    const registry = new ExecutorRegistry(tools);
     const descriptors = registry.listDescriptors();
 
     expect(descriptors).toHaveLength(1);
@@ -46,7 +46,7 @@ describe("ExecutorRegistry", () => {
   });
 
   test("has() identifies dispatch_executor", () => {
-    const registry = buildExecutorRegistry([]);
+    const registry = new ExecutorRegistry([]);
 
     expect(registry.has("dispatch_executor")).toBe(true);
     expect(registry.has("other_tool")).toBe(false);
@@ -54,7 +54,7 @@ describe("ExecutorRegistry", () => {
   });
 
   test("dispatch() rejects unknown tools", async () => {
-    const registry = buildExecutorRegistry([]);
+    const registry = new ExecutorRegistry([]);
     const context = mockContext();
 
     const result = await registry.dispatch("unknown_tool", {}, context);
@@ -68,7 +68,7 @@ describe("ExecutorRegistry", () => {
       { name: "fsmcp__write_file", description: "write a file", inputSchema: { type: "object" } },
     ];
 
-    const registry = buildExecutorRegistry(tools);
+    const registry = new ExecutorRegistry(tools);
     const context = mockContext();
 
     const result = await registry.dispatch("dispatch_executor", { intent: "test" }, context);
@@ -80,7 +80,7 @@ describe("ExecutorRegistry", () => {
   });
 
   test("empty executor tools still produces a valid descriptor", () => {
-    const registry = buildExecutorRegistry([]);
+    const registry = new ExecutorRegistry([]);
     const descriptors = registry.listDescriptors();
 
     expect(descriptors).toHaveLength(1);
@@ -96,7 +96,7 @@ describe("ExecutorRegistry", () => {
       { name: "codemcp__search_code", description: "search code", inputSchema: { type: "object" } },
     ];
 
-    const registry = buildExecutorRegistry(tools);
+    const registry = new ExecutorRegistry(tools);
     const descriptors = registry.listDescriptors();
 
     expect(descriptors).toHaveLength(1);

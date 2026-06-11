@@ -2,7 +2,7 @@ import path from "node:path";
 
 import type { RunnerListener } from "./runners/runner-events.js";
 import { OrchestratorEventTypes } from "./runners/runner-events.js";
-import type { ToolExecutionResult, ToolInvoker } from "./mcp-client.js";
+import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
 
 /**
  * ScopedToolClient — per-workspace path clamp at the agent's tool-call boundary.
@@ -65,7 +65,7 @@ export class ScopeViolationError extends Error {
 
 export class ScopedToolClient implements ToolInvoker {
   constructor(
-    private readonly inner: ToolInvoker,
+    private readonly inner: Mcp,
     private readonly workspaceId: string,
     private readonly emit?: RunnerListener
   ) {}

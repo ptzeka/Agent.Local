@@ -1,48 +1,51 @@
 import type { IdentityContext, Principal } from "../identity/types.js";
 import type { InputInbox } from "../runners/input-inbox.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
-import type { ModelRegistry } from "../registries/model-registry.js";
 import type { Orchestrator } from "../runners/orchestrator.js";
 import type { Session } from "../session/session.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type { SessionStore } from "../session/session-store.js";
-import type { ToolDescriptor } from "../providers/provider.js";
 import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { Logger } from "../../common/logger.js";
+import { ConfigurationRegistry } from "../registries/configuration-registry.js";
+import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
   getWorkspace(): Workspace;
-  getRegistry(): ModelRegistry;
+  getModelsRegistry(): ModelRegistry;
+  getConfigurationRegistry(): ConfigurationRegistry;
+  getProvidersRegistry(): ProvidersRegistry;
   getMcpClientRegistry(): McpClientRegistry;
-  getToolDescriptors(): ToolDescriptor[];
   getLogger(): Logger;
 }
 
 export interface AgentRuntimeDeps {
-  registry: ModelRegistry;
-  mcpRegistry: McpClientRegistry;
+  configPath: string;
   sessionsDir: string;
   workspaceRoot: string;
+  sandboxRoot: string;
   mcpConfigPath: string;
   credentials?: IdentityContext;
 }
 
 export interface RuntimeContext {
-  readonly registry: ModelRegistry;
-  readonly mcpRegistry: McpClientRegistry;
+
+  mcpRegistry: McpClientRegistry | undefined;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
+  readonly sandboxRoot: string;
   readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
-
+  providerRegistry: ProvidersRegistry | undefined;
+  modelsRegistry: ModelRegistry | undefined;
+  configurationRegistry: ConfigurationRegistry | undefined;
   logger: Logger | undefined;
   store: SessionStore | undefined;
   workspaces: WorkspaceRegistry | undefined;
   user: Principal | undefined;
   session: Session | undefined;
   workspace: Workspace | undefined;
-  toolDescriptors: ToolDescriptor[] | undefined;
   orchestrator: Orchestrator | undefined;
   inbox: InputInbox | undefined;
   sessionManager: SessionManager | undefined;

@@ -1,4 +1,4 @@
-import type { ToolExecutionResult, } from "../mcp-client.js";
+import type { ToolExecutionResult, } from "../mcp/mcp-client.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -77,16 +77,15 @@ export class Executor {
     const emit = options.onEvent ?? (() => {});
     const maxIterations = options.maxIterations ?? DEFAULT_MAX_ITERATIONS;
     const temperature = options.temperature ?? DEFAULT_TEMPERATURE;
-    const registry = this.runtime.getRegistry();
+    const registry = this.runtime.getModelsRegistry();
+    const providersRegistry = this.runtime.getProvidersRegistry();
     const workspace = this.runtime.getWorkspace();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
+    const client = mcpRegistry.getClient("executor")!;
 
-    this.provider = registry.getProviderForRole("executor");
-    this.tools = new ScopedToolClient(mcpRegistry, workspace.workspaceId, emit);
-    this.availableTools = registry.filterMcpByServerWhitelist(
-      "executor",
-      mcpRegistry.listTools()
-    );
+    this.provider = providersRegistry.getProvider(registry.getProviderForRole("executor"));
+    this.tools = new ScopedToolClient(client, workspace.workspaceId, emit);
+    this.availableTools = client.listTools();
 
     emit({
       type: ExecutorEventTypes.START,
@@ -265,7 +264,7 @@ export class Executor {
   // --------------------------------------------------------------------------
 
   private buildSystemMessages(): ChatMessage[] {
-    const template = this.runtime?.getRegistry().getPromptTemplate("executor") ?? EXECUTOR_SYSTEM_PROMPT;
+    const template = this.runtime?.getModelsRegistry().getPromptTemplate("executor") ?? EXECUTOR_SYSTEM_PROMPT;
     const basePrompt = fillToolsList(template, this.availableTools!);
     const messages: ChatMessage[] = [{ role: "system", content: basePrompt }];
 

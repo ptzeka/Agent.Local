@@ -1,5 +1,4 @@
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
-import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 
 /**
@@ -8,31 +7,39 @@ import type { RuntimeContext } from "../../src/agent/runtime/types.js";
  * middleware-populated field starts undefined; each test fills in just the
  * inputs the step under test actually reads.
  *
- * `registry` and `tools` are cast fakes: the middleware tests never drive a turn
- * (which is what would invoke them), they only assert the wiring, so their
- * identity is all that matters.
+ * The default `mcpRegistry` is a cast fake exposing the member middleware
+ * reaches for without driving a turn: `getClient(role)` (ContextMiddleware).
+ * `sandboxRoot` lives on the context itself (read by SessionMiddleware). Tests
+ * that need richer behavior pass their own
+ * `mcpRegistry`/`modelsRegistry`/`providerRegistry` overrides.
  */
 export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
-  const mockRegistry = {} as unknown as ModelRegistry;
   const mockMcpRegistry = {
-    listToolsForOrchestrator: () => [],
-    listToolsForExecutor: () => [],
     sandboxRoot: "/tmp/agent-mw-test-sandbox",
+    getClient: () => ({
+      name: "stub",
+      listTools: () => [],
+      callTool: async () => ({ isError: false, content: "" }),
+      shutdown: async () => {},
+    }),
   } as unknown as McpClientRegistry;
 
   return {
-    registry: mockRegistry,
     mcpRegistry: mockMcpRegistry,
     sessionsDir: "/tmp/agent-mw-test-sessions",
     workspaceRoot: "/tmp/agent-mw-test-workspace",
+    sandboxRoot: "/tmp/agent-mw-test-sandbox",
     mcpConfigPath: "/tmp/mcp.json",
     credentials: {},
+    providerRegistry: undefined,
+    modelsRegistry: undefined,
+    configurationRegistry: undefined,
+    logger: undefined,
     store: undefined,
     workspaces: undefined,
     user: undefined,
     session: undefined,
     workspace: undefined,
-    toolDescriptors: undefined,
     orchestrator: undefined,
     inbox: undefined,
     sessionManager: undefined,

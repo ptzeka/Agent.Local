@@ -2,12 +2,6 @@ import path from "node:path";
 
 import { buildContextSnapshot, saveContextSnapshot } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
-import { buildExecutorRegistry } from "../../registries/executor-registry.js";
-import type { ToolDescriptor } from "../../providers/provider.js";
-import {
-  getExcelToolDescriptors,
-  getSubsessionToolDescriptors,
-} from "../../synthetic-mcp/index.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
@@ -57,54 +51,10 @@ export class ContextMiddleware implements IMiddleware {
     }
 
     const role = this.params.roleName;
-    const provider = ctx.registry.getProviderForRole(role);
-
-    const shouldIncludeSubSessions = this.params.includeSubSessions !== false;
-    let tools: ToolDescriptor[];
-
-    if (role === "executor") {
-      // Executor only sees real MCP tools filtered by its whitelist.
-      // No synthetic tools (excel, dispatch_executor, subsession).
-      tools = ctx.registry.filterMcpByServerWhitelist(
-        "executor",
-        ctx.mcpRegistry.listTools()
-      );
-    } else if (ctx.toolDescriptors) {
-      // Orchestrator path: OrchestratorMiddleware has already assembled tools.
-      // Synthetic tools (excel, subsessions, dispatch_executor) bypass the per-model
-      // whitelist — they're always included for orchestration.
-      const mcpTools = ctx.toolDescriptors.filter(
-        (t) => !t.name.startsWith("excel__") &&
-               !t.name.startsWith("subsessions__") &&
-               t.name !== "dispatch_executor"
-      );
-      const filteredMcpTools = ctx.registry.filterMcpByServerWhitelist("orchestrator", mcpTools);
-      const excelTools = ctx.toolDescriptors.filter((t) => t.name.startsWith("excel__"));
-      const dispatchExecutor = ctx.toolDescriptors.filter((t) => t.name === "dispatch_executor");
-      const subsessionTools = shouldIncludeSubSessions
-        ? ctx.toolDescriptors.filter((t) => t.name.startsWith("subsessions__"))
-        : [];
-      tools = [...filteredMcpTools, ...excelTools, ...dispatchExecutor, ...subsessionTools];
-    } else {
-      // Fallback for orchestrator when OrchestratorMiddleware was skipped (tests).
-      const orchestratorTools = ctx.registry.filterMcpByServerWhitelist(
-        "orchestrator",
-        ctx.mcpRegistry.listToolsForOrchestrator()
-      );
-      const executorRegistry = buildExecutorRegistry(
-        ctx.registry.filterMcpByServerWhitelist("executor", ctx.mcpRegistry.listToolsForExecutor())
-      );
-      const excelTools = getExcelToolDescriptors();
-      const subsessionTools = shouldIncludeSubSessions ? getSubsessionToolDescriptors() : [];
-      tools = [
-        ...orchestratorTools,
-        ...executorRegistry.listDescriptors(),
-        ...excelTools,
-        ...subsessionTools,
-      ];
-    }
-
-    const template = ctx.registry.getPromptTemplate(role);
+    const provider = ctx.providerRegistry?.getProvider(ctx.modelsRegistry!.getProviderForRole(role))!;
+    let tools = ctx.mcpRegistry!.getClient(role)?.listTools()!;
+      
+    const template = ctx.modelsRegistry!.getPromptTemplate(role);
     const systemPrompt = fillToolsList(template, tools);
 
     const snapshot = buildContextSnapshot({

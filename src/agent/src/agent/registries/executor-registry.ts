@@ -1,7 +1,7 @@
-import type { ToolExecutionResult } from "../mcp-client.js";
+import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { DispatchExecutorTool } from "../synthetic-mcp/dispatch-executor.js";
-import { toolError, type SyntheticMcp, type SyntheticMcpContext } from "../synthetic-mcp/types.js";
+import { toolError, type SyntheticMcpContext } from "../synthetic-mcp/types.js";
 
 /**
  * ExecutorRegistry — intercepts the `dispatch_executor` tool call.
@@ -40,11 +40,4 @@ export class ExecutorRegistry {
     }
     return this.tool.callTool(args, context);
   }
-}
-
-/**
- * Build the executor registry with this turn's executor tool set.
- */
-export function buildExecutorRegistry(executorTools: ToolDescriptor[]): ExecutorRegistry {
-  return new ExecutorRegistry(executorTools);
 }
