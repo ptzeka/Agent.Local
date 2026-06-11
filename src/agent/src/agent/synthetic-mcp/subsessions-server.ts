@@ -11,6 +11,25 @@
  *
  * Architecture role: Repository / External layer. No orchestrator logic here —
  * just tool handlers and a thin MCP transport wrapper.
+
+MCP (tool servers)
+  ↓
+Tool Descriptors (orchestrator visible)
+  ├─ Real MCP tools (write, read, shell, etc.)
+  ├─ dispatch_executor (synthetic)
+  └─ subsessions__* tools (synthetic)
+       ├─ create_subsession
+       ├─ get_subsession_status
+       ├─ finalize_subsession
+       └─ list_subsessions
+         ↓
+[Orchestrator.ts interceptor]
+  ├─ "dispatch_executor" → createSubSessionTools->handleCreate->SessionManagercreateSubSession()
+  └─ "subsessions__*"   → SessionManager.createSubSession() / getStatus() / finalize()
+         ↓
+[Return feedback to Orchestrator's LLM]
+
+
  */
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";

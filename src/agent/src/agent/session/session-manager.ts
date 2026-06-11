@@ -255,7 +255,7 @@ export class SessionManager implements SubSessionCoordinator {
     if (!this.subRuntimeFactory) {
       throw new Error("SessionManager: no subRuntimeFactory configured; cannot launch a sub-session.");
     }
-
+    
     const runtime = await this.subRuntimeFactory({
       sessionId: sub.subSessionId,
       parentSessionId: params.parentSessionId,

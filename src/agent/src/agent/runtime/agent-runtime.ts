@@ -12,6 +12,7 @@ import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
+import type { Logger } from "../../common/logger.js";
 
 export interface ResetResult {
   context: ProjectContext | null;
@@ -63,6 +64,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private readonly middlewares: IMiddleware[] = [];
 
   // Populated by build() — all required after construction
+  private logger!: Logger;
   private session!: Session;
   private workspace!: Workspace;
   private registry!: ModelRegistry;
@@ -100,6 +102,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       workspaceRoot: this.deps.workspaceRoot,
       mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
+      logger: undefined,
       store: undefined,
       workspaces: undefined,
       user: undefined,
@@ -116,6 +119,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     // Every owned field must have been set by a pipeline step. Report all gaps
     // at once so a misordered/incomplete pipeline is easy to fix.
     const missing = [
+      !ctx.logger && "logger (LoggerMiddleware)",
       !ctx.store && "store (StoreMiddleware)",
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
       !ctx.session && "session (SessionMiddleware)",
@@ -132,6 +136,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       );
     }
 
+    this.logger = ctx.logger!;
     this.registry = ctx.registry;
     this.mcpClientRegistry = ctx.mcpRegistry;
     this.store = ctx.store!;
@@ -238,8 +243,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     if (messages.length === 0 || (messages.length === 1 && isSummaryMessage(messages[0]))) {
       return { summarizedCount: 0, skipped: true, summary: null };
     }
-
-    const summarizer = new Summarizer(this.deps.registry.getSummarizerProvider());
+    
+    const summarizer = new Summarizer(this);
     const summaryText = await summarizer.summarize(messages, { signal: options.signal });
     const summarizedCount = messages.length;
 
@@ -312,6 +317,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
   getOrchestrator(): Orchestrator {
     return this.orchestrator;
+  }
+
+  getLogger(): Logger {
+    return this.logger;
   }
 
   // --------------------------------------------------------------------------

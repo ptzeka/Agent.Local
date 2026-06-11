@@ -6,8 +6,8 @@ import path from "node:path";
 import { ANONYMOUS_PRINCIPAL } from "../../src/agent/identity/types.js";
 import type { McpClient } from "../../src/agent/mcp-client.js";
 import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
-import { createSession } from "../../src/agent/session.js";
-import { SessionStore } from "../../src/agent/session-store.js";
+import { createSession } from "../../src/agent/session/session.js";
+import { SessionStore } from "../../src/agent/session/session-store.js";
 import { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 

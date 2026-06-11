@@ -6,6 +6,7 @@ import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { InheritedUserMiddleware } from "./middleware/inherited-user.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
+import { LoggerMiddleware } from "./middleware/logger.js";
 import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
 import { StoreMiddleware } from "./middleware/store.js";
@@ -30,6 +31,7 @@ import type { AgentRuntimeDeps } from "./types.js";
  */
 export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): AgentRuntime {
   return new AgentRuntime(deps)
+    .add(new LoggerMiddleware())
     .add(new StoreMiddleware())
     .add(new WorkspaceRegistryMiddleware())
     .add(new InheritedUserMiddleware(refs.user))

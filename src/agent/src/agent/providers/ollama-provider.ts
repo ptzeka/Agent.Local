@@ -63,7 +63,16 @@ export class OllamaProvider implements LLMProvider {
     }
 
     const startedAt = Date.now();
-    const response = await this.client.chat(request);
+    let response;
+    try {
+      response = await this.client.chat(request);
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Provider(ollama:${this.modelId}) failed: ${errorMsg}. ` +
+        `Check that Ollama is running and the model "${this.modelId}" is available.`
+      );
+    }
     const totalDurationMs = Date.now() - startedAt;
 
     const rawContent = response.message.content ?? "";

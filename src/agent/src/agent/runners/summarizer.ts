@@ -1,4 +1,5 @@
 import type { ChatMessage, LLMProvider } from "../providers/provider.js";
+import { AgentRuntimeQueryable } from "../runtime/types.js";
 
 /**
  * Summarizer.
@@ -44,25 +45,33 @@ export interface SummarizeOptions {
 }
 
 export class Summarizer {
-  constructor(private readonly provider: LLMProvider) {}
-
+ constructor(private readonly runtime: AgentRuntimeQueryable) {}
   public async summarize(
     prefix: ChatMessage[],
     options: SummarizeOptions = {}
   ): Promise<string> {
+    const provider = this.runtime.getRegistry().getSummarizerProvider();
     const transcript = prefix.map(formatMessageForSummary).join("\n\n");
 
-    const response = await this.provider.chat(
-      [
-        { role: "system", content: SUMMARIZER_SYSTEM_PROMPT },
-        { role: "user", content: transcript },
-      ],
-      {
-        tools: [],
-        temperature: options.temperature ?? DEFAULT_TEMPERATURE,
-        signal: options.signal,
-      }
-    );
+    let response;
+    try {
+      response = await provider.chat(
+        [
+          { role: "system", content: SUMMARIZER_SYSTEM_PROMPT },
+          { role: "user", content: transcript },
+        ],
+        {
+          tools: [],
+          temperature: options.temperature ?? DEFAULT_TEMPERATURE,
+          signal: options.signal,
+        }
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Summarizer (${provider.providerName}:${provider.modelId}) failed: ${errorMsg}`
+      );
+    }
 
     return response.message.content.trim();
   }

@@ -26,7 +26,6 @@ import {
 } from "../synthetic-mcp/index.js";
 import { createSubsessionsMcpServer } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
-import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import type { OrchestratorListener, RunnerListener } from "./runner-events.js";
 
@@ -220,11 +219,19 @@ export class Orchestrator {
 
       emit({ type: OrchestratorEventTypes.ITERATION, data: { iteration, max: maxIterations } });
 
-      const response = await orchestratorProvider.chat(workingMessages, {
-        tools: orchestratorProvider.supportsNativeTools ? modelFilteredTools : [],
-        temperature: registry.orchestration.orchestratorTemperature,
-        signal: options.signal,
-      });
+      let response;
+      try {
+        response = await orchestratorProvider.chat(workingMessages, {
+          tools: orchestratorProvider.supportsNativeTools ? modelFilteredTools : [],
+          temperature: registry.orchestration.orchestratorTemperature,
+          signal: options.signal,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Orchestrator (${orchestratorProvider.providerName}:${orchestratorProvider.modelId}) failed at iteration ${iteration}: ${errorMsg}`
+        );
+      }
 
       accumulateUsage(session.counters, response.usage);
 
@@ -382,7 +389,7 @@ export class Orchestrator {
 
     let summaryText: string;
     try {
-      const summarizer = new Summarizer(this.runtime.getRegistry().getSummarizerProvider());
+      const summarizer = new Summarizer(this.runtime);
       summaryText = await summarizer.summarize(prefix, { signal });
     } catch (err) {
       emit({
@@ -423,7 +430,7 @@ export class Orchestrator {
     emit({ type: OrchestratorEventTypes.EVALUATION_START, data: {} });
 
     try {
-      const evaluator = new Evaluator(this.runtime.getRegistry().getEvaluatorProvider());
+      const evaluator = new Evaluator(this.runtime);
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
         { signal, temperature: this.runtime.getRegistry().orchestration.evaluatorTemperature }

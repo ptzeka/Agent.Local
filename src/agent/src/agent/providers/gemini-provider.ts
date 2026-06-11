@@ -57,8 +57,7 @@ export class GeminiProvider implements LLMProvider {
     const startedAt = Date.now();
 
     const cachedContent = await this.ensureCache(systemInstruction, tools);
-    console.log(systemInstruction, tools, cachedContent);
-
+    
     // When a cache is active it already contains system + tools, so they must
     // be omitted from the per-request config to avoid an API conflict.
     const config: Record<string, unknown> = {
@@ -73,11 +72,20 @@ export class GeminiProvider implements LLMProvider {
       if (tools.length > 0) config.tools = tools;
     }
 
-    const response = await this.client.models.generateContent({
-      model: this.modelId,
-      contents,
-      config,
-    });
+    let response;
+    try {
+      response = await this.client.models.generateContent({
+        model: this.modelId,
+        contents,
+        config,
+      });
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Provider(gemini:${this.modelId}) failed: ${errorMsg}. ` +
+        `Check that the API key is valid and the model "${this.modelId}" is available.`
+      );
+    }
 
     const totalDurationMs = Date.now() - startedAt;
     const { content, toolCalls } = fromGeminiResponse(response);

@@ -130,11 +130,19 @@ export class Executor {
 
     for (let i = 1; i <= maxIterations; i += 1) {
       iterations = i;
-      const response = await this.provider.chat(workingMessages, {
-        tools: this.provider.supportsNativeTools ? this.availableTools : [],
-        temperature,
-        signal: options.signal,
-      });
+      let response;
+      try {
+        response = await this.provider.chat(workingMessages, {
+          tools: this.provider.supportsNativeTools ? this.availableTools : [],
+          temperature,
+          signal: options.signal,
+        });
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
+        throw new Error(
+          `Executor (${this.provider.providerName}:${this.provider.modelId}) failed at iteration ${i}/${maxIterations}: ${errorMsg}`
+        );
+      }
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(response);
       workingMessages.push(assistantMessage);
 

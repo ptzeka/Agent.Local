@@ -8,8 +8,8 @@ import {
   hashContextSnapshot,
   saveContextSnapshot,
   getContextSnapshot,
-} from "../src/agent/context-loader.js";
-import type { ToolDescriptor } from "../src/agent/providers/provider.js";
+} from "../../src/agent/context/context-loader.js";
+import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 
 /**
  * Context-snapshot store tests.

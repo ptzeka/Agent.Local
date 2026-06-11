@@ -5,7 +5,7 @@
       "type": "stdio",
       "command": "node",
       "args": [
-        "c:/www/Agent.Local/src/codemcp/dist/server.js",
+        "/Applications/www/Agent.Local/src/codemcp/dist/server.js",
         "--backend",
         "file"
       ]

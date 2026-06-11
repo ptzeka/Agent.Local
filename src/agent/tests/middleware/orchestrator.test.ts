@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
-import { Orchestrator } from "../../src/agent/orchestrator.js";
+import { Orchestrator } from "../../src/agent/runners/orchestrator.js";
 import { OrchestratorMiddleware } from "../../src/agent/runtime/middleware/orchestrator.js";
 import { makeContext } from "./context.js";
 

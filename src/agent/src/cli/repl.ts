@@ -74,7 +74,14 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     try {
       await runtime.dispatchAsync(input, { onEvent: renderEvent });
     } catch (err) {
-      process.stdout.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
+      const error = err as Error;
+      process.stdout.write(chalk.red(`\n[error] repl: ${error.message}\n`));
+      if (error.cause) {
+        process.stdout.write(chalk.red(`  cause: ${error.cause}\n`));
+      }
+      if (process.env.DEBUG) {
+        process.stdout.write(chalk.gray(`  stack: ${error.stack}\n`));
+      }
     }
   }
 

@@ -3,8 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { ModelRegistry } from "../src/agent/registries/model-registry.js";
-import type { ToolDescriptor } from "../src/agent/providers/provider.js";
+import { ModelRegistry } from "../../src/agent/registries/model-registry.js";
+import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 
 /**
  * ModelRegistry.filterMcpByServerWhitelist: the per-model MCP server whitelist from

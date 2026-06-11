@@ -32,6 +32,7 @@ import { AnonymousMiddleware } from "../agent/runtime/middleware/anonymous.js";
 import { ContextMiddleware } from "../agent/runtime/middleware/context.js";
 import { IdentityMiddleware } from "../agent/runtime/middleware/identity.js";
 import { InputInboxMiddleware } from "../agent/runtime/middleware/input-inbox.js";
+import { LoggerMiddleware } from "../agent/runtime/middleware/logger.js";
 import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator.js";
 import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-manager.js";
 import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
@@ -121,6 +122,7 @@ async function bootstrap(): Promise<Bootstrap> {
 /**
  * Build an AgentRuntime with the standard pipeline. Every subsystem the runtime
  * owns is produced by a step here — build() constructs nothing itself:
+ *   LoggerMiddleware            — initialize the logger
  *   StoreMiddleware             — open the on-disk session store
  *   WorkspaceRegistryMiddleware — create the workspace → root/context map
  *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
@@ -146,6 +148,7 @@ function buildRuntime(
     credentials: token ? { token } : {},
   };
   return new AgentRuntime(deps)
+  .add(new LoggerMiddleware())
   .add(new StoreMiddleware())
   .add(new WorkspaceRegistryMiddleware())
   .add(new IdentityMiddleware())
@@ -218,7 +221,7 @@ async function runHeadless(
       unsubscribe();
     }
   } catch (err) {
-    process.stderr.write(chalk.red(`\n[error] ${(err as Error).message}\n`));
+    process.stderr.write(chalk.red(`\n[error] runHeadless: ${(err as Error).message}\n`));
     return EXIT_ERROR;
   }
 }

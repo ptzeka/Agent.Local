@@ -1,4 +1,5 @@
 import type { ChatMessage, LLMProvider } from "../providers/provider.js";
+import { AgentRuntimeQueryable } from "../runtime/types.js";
 
 /**
  * Evaluator.
@@ -81,12 +82,14 @@ export interface EvaluateOptions {
 }
 
 export class Evaluator {
-  constructor(private readonly provider: LLMProvider) {}
+  constructor(private readonly runtime: AgentRuntimeQueryable) {}
 
   public async evaluate(
     params: EvaluateParams,
     options: EvaluateOptions = {}
   ): Promise<EvaluationVerdict> {
+    
+    const provider = this.runtime.getRegistry().getEvaluatorProvider();
     const userMessage = [
       "ORIGINAL REQUEST:",
       params.question,
@@ -100,17 +103,25 @@ export class Evaluator {
       params.transcript.map(formatMessageForEvaluation).join("\n"),
     ].join("\n");
 
-    const response = await this.provider.chat(
-      [
-        { role: "system", content: EVALUATOR_SYSTEM_PROMPT },
-        { role: "user", content: userMessage },
-      ],
-      {
-        tools: [],
-        temperature: options.temperature ?? DEFAULT_TEMPERATURE,
-        signal: options.signal,
-      }
-    );
+    let response;
+    try {
+      response = await provider.chat(
+        [
+          { role: "system", content: EVALUATOR_SYSTEM_PROMPT },
+          { role: "user", content: userMessage },
+        ],
+        {
+          tools: [],
+          temperature: options.temperature ?? DEFAULT_TEMPERATURE,
+          signal: options.signal,
+        }
+      );
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Evaluator (${provider.providerName}:${provider.modelId}) failed: ${errorMsg}`
+      );
+    }
 
     return parseVerdict(response.message.content);
   }

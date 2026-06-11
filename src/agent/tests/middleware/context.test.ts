@@ -3,14 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getContextSnapshot } from "../../src/agent/context-loader.js";
+import { getContextSnapshot } from "../../src/agent/context/context-loader.js";
 import type { McpClient } from "../../src/agent/mcp-client.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
 import { getSubsessionToolDescriptors } from "../../src/agent/synthetic-mcp/index.js";
-import { createSession } from "../../src/agent/session.js";
-import { SessionStore } from "../../src/agent/session-store.js";
+import { createSession } from "../../src/agent/session/session.js";
+import { SessionStore } from "../../src/agent/session/session-store.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
@@ -39,6 +39,11 @@ function fakeRegistry(
 ): ModelRegistry {
   return {
     getProviderForRole: () => ({ modelId, supportsNativeTools: nativeTools }),
+    getPromptTemplate: (role: string) => {
+      if (role === "orchestrator") return "# System Prompt\nYou are a helpful assistant.";
+      if (role === "executor") return "# Executor Prompt\nExecute the task.";
+      return "";
+    },
     filterMcpByServerWhitelist: (role: string, tools: ToolDescriptor[]) => {
       const list = whitelist?.[role];
       if (!list) return tools;
@@ -116,7 +121,7 @@ describe("ContextMiddleware", () => {
   test("includeSubSessions:true records the sub-session tools (default)", async () => {
     const ctx = ctxWith();
 
-    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
     const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "create_subsession")).toBe(true);
@@ -124,18 +129,18 @@ describe("ContextMiddleware", () => {
 
   test("includeSubSessions:false drops the sub-session tools, yielding a different hash", async () => {
     const withSub = ctxWith();
-    await new ContextMiddleware({ contextsDir }).initialize(withSub, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(withSub, async () => {});
 
     const withoutSub = ctxWith();
-    await new ContextMiddleware({ contextsDir, includeSubSessions: false }).initialize(
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir, includeSubSessions: false }).initialize(
       withoutSub,
       async () => {}
     );
 
-    const reduced = await getContextSnapshot(contextsDir, withoutSub.session!.contextHash!);
+    const reduced = await getContextSnapshot(contextsDir, withoutSub.session!.contextHashes?.["orchestrator"]!);
     expect(reduced!.tools.some((t) => t.name === "create_subsession")).toBe(false);
     // The tool block differs, so the fingerprint must differ too.
-    expect(withoutSub.session!.contextHash).not.toBe(withSub.session!.contextHash);
+    expect(withoutSub.session!.contextHashes?.["orchestrator"]).not.toBe(withSub.session!.contextHashes?.["orchestrator"]);
   });
 
   test("a per-model whitelist drops non-listed tools from the snapshot", async () => {
@@ -143,7 +148,7 @@ describe("ContextMiddleware", () => {
     // while synthetic control tools (added after filtering) remain.
     const ctx = ctxWith(true, { orchestrator: ["codemcp__search_code"] });
 
-    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
     const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);
@@ -153,7 +158,7 @@ describe("ContextMiddleware", () => {
   test("an empty whitelist removes every model tool but keeps synthetic tools", async () => {
     const ctx = ctxWith(true, { orchestrator: [] });
 
-    await new ContextMiddleware({ contextsDir }).initialize(ctx, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
     const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(false);

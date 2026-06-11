@@ -88,12 +88,21 @@ export class AnthropicProvider implements LLMProvider {
     }
 
     const startedAt = Date.now();
-    // Stream the response so high max_tokens values don't trip the SDK's
-    // non-streaming HTTP timeout. We still collect the full message before
-    // returning — finalMessage() yields the same Anthropic.Message that
-    // create() would have, so everything downstream is unchanged.
-    const stream = this.client.messages.stream(request, { signal: options.signal });
-    const response = await stream.finalMessage();
+    let response;
+    try {
+      // Stream the response so high max_tokens values don't trip the SDK's
+      // non-streaming HTTP timeout. We still collect the full message before
+      // returning — finalMessage() yields the same Anthropic.Message that
+      // create() would have, so everything downstream is unchanged.
+      const stream = this.client.messages.stream(request, { signal: options.signal });
+      response = await stream.finalMessage();
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Provider(anthropic:${this.modelId}) failed: ${errorMsg}. ` +
+        `Check that the API key is valid and the model "${this.modelId}" is available.`
+      );
+    }
     const totalDurationMs = Date.now() - startedAt;
 
     const { content, toolCalls } = fromAnthropicContent(response.content);

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { StoreMiddleware } from "../../src/agent/runtime/middleware/store.js";
-import { createSession } from "../../src/agent/session.js";
+import { createSession } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
 
 /**

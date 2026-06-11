@@ -8,6 +8,7 @@ import type { SessionManager } from "../session/session-manager.js";
 import type { SessionStore } from "../session/session-store.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
+import type { Logger } from "../../common/logger.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
@@ -15,6 +16,7 @@ export interface AgentRuntimeQueryable {
   getRegistry(): ModelRegistry;
   getMcpClientRegistry(): McpClientRegistry;
   getToolDescriptors(): ToolDescriptor[];
+  getLogger(): Logger;
 }
 
 export interface AgentRuntimeDeps {
@@ -34,6 +36,7 @@ export interface RuntimeContext {
   readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
 
+  logger: Logger | undefined;
   store: SessionStore | undefined;
   workspaces: WorkspaceRegistry | undefined;
   user: Principal | undefined;
