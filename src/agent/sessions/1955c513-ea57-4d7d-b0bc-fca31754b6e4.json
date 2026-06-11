@@ -1,0 +1,25 @@
+{
+  "sessionId": "1955c513-ea57-4d7d-b0bc-fca31754b6e4",
+  "workspaceId": "e640d87b-d095-4ead-a891-bd18ef66677d",
+  "conversation": [],
+  "status": "idle",
+  "counters": {
+    "turns": 0,
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781212484392,
+  "updatedAt": 1781212484392,
+  "user": {
+    "sub": "anonymous",
+    "isAuthenticated": false,
+    "claims": {},
+    "scopes": []
+  },
+  "contextHashes": {
+    "orchestrator": "e5b9607406319d36",
+    "executor": "352862c0c94ba301"
+  }
+}

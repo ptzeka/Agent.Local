@@ -2,6 +2,7 @@ import chalk from "chalk";
 
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import type { SubSessionNotification } from "../agent/runners/subsession.js";
+import type { TurnRunnerEvent } from "../agent/runners/turn-runner.js";
 
 /**
  * REPL renderer.
@@ -139,6 +140,47 @@ export function renderEvent(event: RunnerEvent): void {
       process.stdout.write(chalk.yellowBright(`[warning] ${message}\n`));
       break;
     }
+  }
+}
+
+/**
+ * Render turn-loop scheduling events. Deliberately quiet for plain user turns
+ * (the prompt/await flow already narrates those); only out-of-band activity —
+ * auto-wake turns from settling sub-sessions, queued/coalesced work — gets a
+ * line, so the user can see WHY the agent started talking unprompted.
+ */
+export function renderTurnEvent(event: TurnRunnerEvent): void {
+  switch (event.type) {
+    case "turn-queued":
+      if (event.source !== "user") {
+        process.stdout.write(
+          chalk.gray(`\n(queued ${event.source} turn — ${event.queueDepth} waiting)\n`)
+        );
+      }
+      break;
+    case "turn-start":
+      if (event.source !== "user") {
+        process.stdout.write(chalk.gray(`\n(auto-wake: processing ${event.source} report)\n`));
+      }
+      break;
+    case "round-start":
+      // Rounds beyond the first mean mid-turn feedback was folded in.
+      if (event.round > 1) {
+        process.stdout.write(chalk.gray(`\n(round ${event.round}: ${event.source} feedback folded into this turn)\n`));
+      }
+      break;
+    case "round-done":
+      // The REPL no longer awaits a turn's settle (the prompt stays live for
+      // mid-turn injection), so failures must surface here or nowhere.
+      if (event.status === "error") {
+        process.stdout.write(chalk.red(`\n[error] turn round failed: ${event.error ?? "unknown error"}\n`));
+      }
+      break;
+    case "turn-done":
+      if (event.status === "cancelled") {
+        process.stdout.write(chalk.yellowBright("\n(turn cancelled)\n"));
+      }
+      break;
   }
 }
 
@@ -294,8 +336,9 @@ export function renderHelp(): void {
     chalk.bold("Commands:"),
     "  /help                       show this help",
     "  /exit                       quit the REPL",
-    "  /reset                      clear conversation history",
-    "  /compact                    fold the conversation into a summary checkpoint and continue",
+    "  /stop                       stop everything: current turn, queued turns, sub-sessions (typing \"stop\" works too)",
+    "  /reset                      stop everything, then clear conversation history",
+    "  /compact                    stop everything, then fold the conversation into a summary checkpoint",
     "  /models                     list configured models and current role assignments",
     "  /model <role>=<model-id>    reassign a role (orchestrator, executor, …)",
     "  /tools                      list every tool exposed by connected MCP servers",

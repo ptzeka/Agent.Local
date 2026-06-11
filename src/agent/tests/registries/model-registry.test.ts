@@ -58,6 +58,13 @@ describe("ModelRegistry", () => {
     expect(() => registry.getPromptTemplate("unknown")).toThrow(/No prompt template/);
   });
 
+  test("getAnchorText embeds the request verbatim in the anchor", () => {
+    const registry = makeRegistry({ "m-orch": { ...base }, "m-exec": { ...base } });
+    const anchor = registry.getAnchorText("delete hello_world.txt");
+    expect(anchor).toContain("«delete hello_world.txt»");
+    expect(anchor).not.toContain("{REQUEST}"); // placeholder must be consumed
+  });
+
   test("assignRole repoints a role and rejects an undefined model", () => {
     const registry = makeRegistry({ "m-orch": { ...base }, "m-exec": { ...base } });
     registry.assignRole("orchestrator", "m-exec");

@@ -17,13 +17,12 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "../scoped-tool-client.js";
 import type { SessionCounters } from "../session/session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
-import type { Workspace } from "../registries/workspace-registry.js";
 import {
   DispatchTracker,
   type SyntheticMcpContext,
   type ToolContext,
 } from "../synthetic-mcp/index.js";
-import { createSubsessionsMcpServer } from "../synthetic-mcp/subsessions-server.js";
+import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import type { OrchestratorListener, RunnerListener } from "./runner-events.js";
@@ -147,6 +146,25 @@ export class Orchestrator {
     const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("orchestrator"));
     const executorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("executor"));
 
+    // The subsessions server was registered at session setup with an undefined
+    // coordinator (advertise-only). Re-bind it to THIS turn's live coordinator
+    // BEFORE the scoped clients capture the server set — ScopedToolClient snapshots
+    // its clients at construction, so a later re-register wouldn't take effect this
+    // turn. registerClient is keyed by server name, so this replaces the placeholder
+    // in place. Without a coordinator the placeholder stays (calls report
+    // "not available"), which keeps sub-sessions one level deep.
+    const coordinator = options.coordinator;
+    if (coordinator) {
+      const subsessionToolCtx: ToolContext = {
+        session,
+        workspace,
+        sandboxRoot: mcpRegistry.sandboxRoot,
+        coordinator,
+        signal: options.signal,
+      };
+      mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
+    }
+
     const scopedExecutorClient = new ScopedToolClient(clientsFor("executor"), workspace.workspaceId, emit);
     const scopedOrchestratorClient = new ScopedToolClient(clientsFor("orchestrator"), workspace.workspaceId, emit);
 
@@ -167,10 +185,22 @@ export class Orchestrator {
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, executorTools, orchestratorContext);
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, orchestratorTools, orchestratorContext);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     const turnStartIndex = workingMessages.length - 1;
+
+    // Anchor parity with the evaluator. The judge is re-told the ORIGINAL
+    // REQUEST verbatim on every call — that is why it stays grounded — while
+    // the orchestrator only had the request as one aging line in a transcript
+    // dominated by finished goals, which is how a stale goal wins. Re-assert
+    // it as the LAST message of every chat call, transient (never pushed to
+    // the conversation), so neither context growth nor summarization can
+    // bury it.
+    const requestAnchor: ChatMessage = {
+      role: "system",
+      content: modelsRegistry.getAnchorText(userInput),
+    };
 
     const maxIterations = config.orchestration.maxOrchestratorIterations;
     const maxExecutorIterations = config.orchestration.maxExecutorIterationsPerAsk;
@@ -181,7 +211,6 @@ export class Orchestrator {
 
     const tracker = new DispatchTracker(maxExecutorDispatchesPerTurn!, checkInterval!);
 
-    const coordinator = options.coordinator;
     const syntheticContext: SyntheticMcpContext = {
       session,
       workspace,
@@ -195,21 +224,15 @@ export class Orchestrator {
       executorTemperature: executorTemperature!,
     };
 
-    const toolCtx: ToolContext = {
-      session,
-      workspace,
-      sandboxRoot: mcpRegistry.sandboxRoot,
-      coordinator,
-      signal: options.signal,
-    };
-
-    // Refresh per-turn servers (subsessions only; Excel is now pre-registered)
-    if (coordinator) {
-      const subsessionsServer = createSubsessionsMcpServer(toolCtx);
-      //await mcpRegistry.refreshTurnServers([{ name: subsessionsServer.serverName, client: subsessionsServer.client }]);
-    }
-
     for (let iteration = 1; iteration <= maxIterations!; iteration += 1) {
+      // Cooperative stop checkpoint. The abort signal only unwinds awaits
+      // that honour it (Ollama's client doesn't, MCP tool calls can't), so
+      // the loop re-checks at every safe boundary — bounding stop latency to
+      // ONE call instead of the rest of the round.
+      if (options.signal?.aborted) {
+        throw new Error("turn aborted: user requested stop");
+      }
+
       // Fold in any externally-injected prompts before asking the model. The
       // orchestrator is the sole writer of `conversation`; outside producers
       // enqueue (see InputInbox) and we drain here, at a safe boundary, so a
@@ -226,7 +249,7 @@ export class Orchestrator {
 
       let response;
       try {
-        response = await orchestratorProvider.chat(workingMessages, {
+        response = await orchestratorProvider.chat([...workingMessages, requestAnchor], {
           tools: orchestratorProvider.supportsNativeTools ? orchestratorTools : [],
           temperature: orchestratorTemperature!,
           signal: options.signal,
@@ -276,15 +299,29 @@ export class Orchestrator {
           };
         }
 
+        if (verdict.state === "awaiting-input") {
+          return {
+            finalMessage: assistantMessage,
+            iterations: iteration,
+            dispatches: tracker.count,
+            outcome: "satisfied",
+          };
+        }
+
+        // Nudges quote the request verbatim: a bare "the request" resolves
+        // against whatever goal is most salient in the transcript, which after
+        // a long session is usually a FINISHED one.
         const nudge: ChatMessage = {
           role: "user",
           content:
             verdict.state === "continue"
               ? `EVALUATOR: on track — ${verdict.reason}\n` +
-                "Keep going: take the next concrete action toward fulfilling the request. " +
+                `The request for THIS turn is exactly: «${userInput}»\n` +
+                "Keep going: take the next concrete action toward fulfilling it. " +
                 "Do not stop until it is complete."
               : `EVALUATOR: off track — ${verdict.reason}\n` +
-                "Stop repeating what isn't working and change your approach. Re-check the " +
+                `The request for THIS turn is exactly: «${userInput}»\n` +
+                "Stop repeating what isn't working and change your approach. Re-check this " +
                 "request and the current workspace state, then take a different next action.",
         };
         conversation.push(nudge);
@@ -295,6 +332,11 @@ export class Orchestrator {
       const toolMessages: ChatMessage[] = [];
 
       for (const call of toolCalls) {
+        // Stop between tool calls too — an executor dispatch can be the
+        // longest single await in the turn.
+        if (options.signal?.aborted) {
+          throw new Error("turn aborted: user requested stop");
+        }
         // Executor dispatch. Intercepted before MCP and routed to the executor
         // sub-agent. Returns the same ToolExecutionResult shape a real MCP tool
         // would, so it is wrapped into a role:"tool" message by the identical
@@ -336,7 +378,8 @@ export class Orchestrator {
             role: "user",
             content:
               `EVALUATOR: off track — ${verdict.reason}\n` +
-              "Stop repeating what isn't working and change your approach. Re-check the " +
+              `The request for THIS turn is exactly: «${userInput}»\n` +
+              "Stop repeating what isn't working and change your approach. Re-check this " +
               "request and the current workspace state, then take a different next action.",
           };
           conversation.push(nudge);
@@ -392,6 +435,11 @@ export class Orchestrator {
 
     const prefix = conversation.slice(0, tailStart);
     const tail = conversation.slice(tailStart);
+
+    emit({
+      type: OrchestratorEventTypes.SUMMARIZATION_START,
+      data: { messageCount: prefix.length },
+    });
 
     let summaryText: string;
     try {

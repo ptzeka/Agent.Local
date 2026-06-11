@@ -10,9 +10,8 @@ export class ProvidersRegistry
     
     public loadModels()
     {
-        // Build one provider per declared model. If AGENT_FORCE_MODEL is set,
-        // we still build every provider — but the role table gets remapped so
-        // the forced model handles every role.
+        // Build one provider per role-referenced model. models.json is the
+        // sole source of truth for model selection — no env-var overrides.
         const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
         const geminiApiKey = process.env.GEMINI_API_KEY;            
         const ollamaHost = process.env.OLLAMA_HOST ?? "http://localhost:11434";

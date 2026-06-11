@@ -12,6 +12,52 @@ items M0-1 and M2-4 are *implemented inside* this design, not separately).
 
 ---
 
+## 0. Status — 2026-06-11 (after the wiring refactor)
+
+The refactor (commits `e1bd504`…`405e44a`) achieved much of this plan's
+*intent* by a **simpler route than the plan prescribed**, and one design
+premise changed underneath it:
+
+> **Design change:** the executor is now defined as *same-turn context
+> separation*, not a sub-agent. `dispatch_executor` is an intentionally
+> dormant stub; the orchestrator dispatches every tool of its whitelisted
+> servers directly. §2.1's GATE/ROUTE layering and the `SyntheticToolSet`
+> conversion (MR-3's first half) are therefore **superseded**, not pending.
+
+Scorecard against the original problems (§1):
+
+| §1 problem | Status |
+|---|---|
+| 1.1 Tool path scattered across five owners | **Largely fixed.** Role filtering = `getValidMcpForModel` server whitelist (suffix heuristic deleted); clamp + routing + events = `ScopedToolClient` (now fronts N servers); synthetic interception = gone (no synthetic tools in the loop); per-turn server churn = `refreshTurnServers` deleted. Owners are down to two: ModelRegistry (what) and ScopedToolClient (how). |
+| 1.2 Tool assembly happens twice | **Fixed.** `OrchestratorMiddleware` no longer assembles descriptors; `Orchestrator.run` builds the surface once per turn from the registries. (`new Orchestrator(undefined as any)` still exists at `middleware/orchestrator.ts:29` — acceptance item 5 open; `setRuntime()` papers over it.) |
+| 1.3 `Orchestrator.run` is a runaway | **Partly improved.** Executor-registry build, server refresh, and dispatch branching are gone, but setup (providers, scoped clients, config, context) is still inline and the method is still ~240 lines. `beginTurn`/TurnContext (MR-4) remains open if wanted. |
+| 1.4 Factory sprawl | **Mostly fixed by middleware, not factories.** Construction now flows through pipeline steps (Configuration → Providers → Models → McpRegistry…) and `AgentRuntimeQueryable` getters. MR-5's RunnerFactory/RegistryFactory are unnecessary in this shape; `new Executor/Evaluator/Summarizer(runtime)` inside runners remains (acceptable — they're stateless). |
+
+Acceptance checklist (§5) re-scored: (1) runners still import
+`ScopedToolClient` — but it is now *the* sanctioned dispatch front, so the
+criterion is obsolete as written; (2) ✅ registry has no role/turn/refresh
+methods; (3) open; (4) holds trivially at **server** granularity (surface and
+dispatch share `clientsFor(role)`); tool-level gating (M0-1) only matters if
+per-tool policy returns; (5) open; (6) ✅ 25/25 suites, 111/111 tests, tsc
+clean.
+
+Loose ends the refactor left (detailed in PRODUCTION_READINESS §0.3):
+evaluator wired to the summarizer's model; DispatchTracker inert (caps,
+dedupe, mid-flight checks dead); subsessions tools unmounted; external MCP /
+mcp.json disconnected (`ConnectMcpServersMiddleware` stubbed); dormant
+`ExecutorRegistry`/`DispatchExecutorTool`/`syntheticContext` dead code; stale
+prompts (`agentcontext.ts`) still teaching the model the old dispatch
+contract.
+
+**What of this plan survives as future work:** MR-4 (TurnContext + loop
+decomposition + usage accounting for all roles), the lint fence (MR-6,
+re-aimed at `runners/**` not importing registries directly), policies.json
+intersection at the whitelist seam (M2-3/M2-4), and re-mounting external
+servers behind the neutral registry. The rest of this document is kept as
+the original design record.
+
+---
+
 ## 1. The problems, with evidence
 
 ### 1.1 The tool path is scattered across five owners

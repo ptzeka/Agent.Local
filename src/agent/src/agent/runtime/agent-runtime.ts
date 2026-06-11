@@ -6,7 +6,9 @@ import type { Session } from "../session/session.js";
 import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
-import type { SubSessionNotificationListener } from "../runners/subsession.js";
+import type { SubSessionNotification, SubSessionNotificationListener } from "../runners/subsession.js";
+import { TurnRunner, type TurnRunnerListener } from "../runners/turn-runner.js";
+import type { RunnerListener } from "../runners/runner-events.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
@@ -79,6 +81,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private sessionManager!: SessionManager;
   private store!: SessionStore;
   private workspaces!: WorkspaceRegistry;
+
+  // Turn loop (optional — hosts opt in via startTurnLoop; headless single runs
+  // keep calling dispatchAsync directly and never construct these).
+  private turnRunner: TurnRunner | null = null;
+  private unsubscribeTurnWake: (() => void) | null = null;
 
   constructor(private readonly deps: AgentRuntimeDeps) {}
 
@@ -159,6 +166,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     // Wire the runtime into the orchestrator so it can query for dependencies
     this.orchestrator.setRuntime(this);
 
+    // reset() re-runs build(), which constructs a NEW SessionManager — an
+    // active turn loop's wake subscription would silently point at the dead
+    // manager, so re-bind it to the one that will actually fire.
+    this.rewireTurnWake();
+
     return this;
   }
 
@@ -190,7 +202,9 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       this.session.counters.turns += 1;
       return result;
     } catch (err) {
-      this.session.status = "error";
+      // A user stop is an abandonment, not a failure — the session must come
+      // back ready for input, not flagged broken.
+      this.session.status = options.signal?.aborted ? "awaiting-input" : "error";
       throw err;
     } finally {
       await this.finalize();
@@ -206,6 +220,85 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.inbox.push(this.session.sessionId, content, source);
   }
 
+  // --------------------------------------------------------------------------
+  // Turn loop — multi-producer scheduling over dispatchAsync
+  // --------------------------------------------------------------------------
+
+  /**
+   * Start the session's turn loop and return its TurnRunner. From here on the
+   * runner's pump is the sole caller of dispatchAsync: hosts SUBMIT turns
+   * (user input, API calls) instead of dispatching, and settling sub-sessions
+   * auto-wake the session — their report is appended as a mid-turn ROUND when
+   * a turn is in flight, or queued as a coalesced wake TURN when idle. Either
+   * way the report enters the conversation, so the orchestrator actually
+   * reasons over the child's result instead of it dying in a log line.
+   *
+   * Idempotent; `onEvent` is bound on first call. Headless single runs simply
+   * never call this and keep the direct dispatchAsync path.
+   */
+  startTurnLoop(options: { onEvent?: RunnerListener; onTurnEvent?: TurnRunnerListener } = {}): TurnRunner {
+    if (this.turnRunner) return this.turnRunner;
+
+    this.turnRunner = new TurnRunner(
+      async (content, signal) => {
+        const result = await this.dispatchAsync(content, { onEvent: options.onEvent, signal });
+        return { outcome: result.outcome, summary: result.finalMessage.content };
+      },
+      { onEvent: options.onTurnEvent }
+    );
+
+    this.rewireTurnWake();
+    this.turnRunner.start();
+    return this.turnRunner;
+  }
+
+  /**
+   * Complete stoppage — the user's "stop": abort the in-flight turn, flush
+   * every queued turn, and cancel every running sub-session of this session.
+   * Children are swept FIRST and through finalize(), whose settle guard
+   * suppresses their report-back notifications — otherwise a dying child
+   * could enqueue a wake turn into the queue being flushed.
+   */
+  stopAllWork(): { cancelledTurns: number; cancelledSubSessions: number } {
+    const cancelledSubSessions = this.sessionManager.cancelActive(this.session.sessionId);
+    const cancelledTurns = this.turnRunner?.cancelAll() ?? 0;
+    return { cancelledTurns, cancelledSubSessions };
+  }
+
+  /**
+   * Stop the turn loop: unhook the wake subscription and let the in-flight
+   * turn finish. Pending turns stay in the runner's queue (snapshot-able by a
+   * future resume path); they are simply no longer pumped.
+   */
+  async stopTurnLoop(): Promise<void> {
+    this.unsubscribeTurnWake?.();
+    this.unsubscribeTurnWake = null;
+    if (this.turnRunner) {
+      await this.turnRunner.stop();
+      this.turnRunner = null;
+    }
+  }
+
+  /**
+   * (Re-)subscribe the turn loop's auto-wake to the CURRENT session manager.
+   * Called from startTurnLoop and from build() so a reset() (which rebuilds
+   * the manager) cannot leave the wake bound to a stale instance.
+   */
+  private rewireTurnWake(): void {
+    this.unsubscribeTurnWake?.();
+    this.unsubscribeTurnWake = null;
+    if (!this.turnRunner || !this.sessionManager) return;
+
+    this.unsubscribeTurnWake = this.sessionManager.onNotification((notification) => {
+      this.turnRunner?.submit({
+        content: formatSubSessionReport(notification),
+        source: "subsession",
+        preferMidTurn: true,
+        coalesceKey: "subsession-report",
+      });
+    });
+  }
+
   /**
    * Persist the current session state. Called automatically by dispatchAsync,
    * reset, and compact — expose as public so callers can flush ad-hoc changes.
@@ -218,18 +311,27 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   /**
    * Clear the conversation transcript and re-read the workspace context from
    * disk, picking up any edits to agentcontext.md since last load.
+   *
+   * Reset means ABANDON: in-flight work is stopped (current turn, queued
+   * turns, sub-sessions) and awaited down to quiescence first — clearing
+   * while a turn unwinds would let the dying turn write into the fresh
+   * conversation.
    */
   async reset(): Promise<boolean> {
+    this.stopAllWork();
+    await this.turnRunner?.awaitIdle();
     if (this.session.status === "running") {
+      // Backstop for hosts that dispatch directly (no turn loop): we hold no
+      // abort handle for such a turn, so refusing is the only safe option.
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot reset now.`);
     }
-    
+
     this.session.conversation.length = 0;
     this.session.status = "idle";
     this.session.counters.turns = 0;
     this.workspace = await this.workspaces.reload(this.session.workspaceId);
     await this.finalize();
-    this.build();
+    await this.build();
 
     return true;
   }
@@ -237,11 +339,17 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   /**
    * Fold the entire conversation into a single summary checkpoint. Unlike the
    * orchestrator's automatic threshold-gated summarization, this collapses the
-   * whole transcript — no verbatim tail is kept. Refused while a turn is in
-   * flight to avoid racing the orchestrator's in-place conversation mutation.
+   * whole transcript — no verbatim tail is kept.
+   *
+   * Like reset, compacting implies stopping: the transcript must be quiescent
+   * while the summarizer reads it, so in-flight work is cancelled and awaited
+   * down rather than raced or refused.
    */
   async compact(options: { signal?: AbortSignal } = {}): Promise<CompactResult> {
+    this.stopAllWork();
+    await this.turnRunner?.awaitIdle();
     if (this.session.status === "running") {
+      // Backstop for direct-dispatch hosts — no abort handle, so refuse.
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot compact now.`);
     }
 
@@ -355,4 +463,32 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     const middleware = this.middlewares[index];
     return middleware.initialize(ctx, () => this.runPipeline(ctx, index + 1));
   }
+}
+
+/**
+ * Shape a settled child's notification into the round content the parent's
+ * orchestrator receives. Self-describing: the orchestrator's system prompt
+ * knows nothing about sub-session reports, so the message itself carries the
+ * facts AND what to do with them.
+ */
+function formatSubSessionReport(notification: SubSessionNotification): string {
+  const header =
+    notification.status === "done"
+      ? `[sub-session report] Sub-session ${notification.subSessionId} COMPLETED.`
+      : `[sub-session report] Sub-session ${notification.subSessionId} FAILED.`;
+
+  const body =
+    notification.status === "done"
+      ? `Result:\n${notification.result ?? "(no result text)"}`
+      : `Error:\n${notification.error ?? "(no error detail)"}`;
+
+  return [
+    header,
+    `Intent: ${notification.intent}`,
+    body,
+    "",
+    "This report arrived asynchronously from a sub-session you previously spawned. " +
+      "Reconcile it with the original request it served: if follow-up work is needed, do it now; " +
+      "otherwise reply with a brief confirmation of the outcome for the user.",
+  ].join("\n");
 }

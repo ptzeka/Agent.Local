@@ -1,11 +1,12 @@
 import { McpClientRegistry } from "../../registries/index.js";
 import { createFsLocalMcp } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp } from "../../synthetic-mcp/excel-server.js";
+import { createSubsessionsLocalMcp } from "../../synthetic-mcp/subsessions-server.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 
 /**
  * Creates the MCP client registry for the session and registers the in-process
- * MCP servers (fsmcp, Excel) on it.
+ * MCP servers (fsmcp, Excel, subsessions) on it.
  *
  * Owns the registry's lifecycle: it constructs `McpClientRegistry` bound to the
  * container sandbox root, then registers the synthetic servers. Both are
@@ -35,6 +36,19 @@ export class McpRegistryMiddleware implements IMiddleware {
     // (coordinator, signal) are absent at session setup, matching prior behavior.
     ctx.mcpRegistry.registerClient(
       createExcelLocalMcp({
+        session,
+        workspace,
+        sandboxRoot,
+        coordinator: undefined,
+        signal: undefined,
+      })
+    );
+
+    // Subsessions server — same in-process LocalMcp pattern as Excel. Per-turn
+    // fields (coordinator, signal) are absent at session setup: the tools
+    // advertise, but calls report "not available" until a coordinator is wired.
+    ctx.mcpRegistry.registerClient(
+      createSubsessionsLocalMcp({
         session,
         workspace,
         sandboxRoot,

@@ -13,6 +13,7 @@ export const OrchestratorEventTypes = {
   DISPATCH_FEEDBACK: "dispatch-feedback",
   EXECUTOR_EVENT: "executor-event",
   FINAL_MESSAGE: "final-message",
+  SUMMARIZATION_START: "summarization-start",
   SUMMARIZATION: "summarization",
   EVALUATION_START: "evaluation-start",
   EVALUATION_VERDICT: "evaluation-verdict",

@@ -148,7 +148,6 @@ Swap a model at runtime: `/model coder=llama-fast` in the REPL.
 OLLAMA_HOST=http://localhost:11434
 AGENT_WORKSPACE=.                              # absolute path is safer
 AGENT_MAX_ITERATIONS=12
-# AGENT_FORCE_MODEL=qwen-coder                 # pin all roles to a single model
 # AGENT_CONTEXT_FILE=src/context/agentcontext.md  # override the direction file
 ```
 

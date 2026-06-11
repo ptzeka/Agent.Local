@@ -73,20 +73,39 @@ export class SessionManager implements SubSessionCoordinator {
   public createSubSession(params: CreateSubSessionParams): CreateSubSessionResult {
     const siblings = this.active.get(params.parentSessionId);
 
-    // Dedupe: an identical outstanding intent is reused, never duplicated. This
-    // also stops a runaway "spawn the same child again" loop from burning the
-    // cap or piling on redundant API load.
+    // Dedupe: an identical outstanding intent is reused if still running, never
+    // duplicated. This also stops a runaway "spawn the same child again" loop from
+    // burning the cap or piling on redundant API load. Completed sub-sessions with
+    // the same intent are auto-finalized to free the slot.
     const wanted = normalizeIntent(params.intent);
+    let reusableRunning: SubSession | undefined;
+    const toFinalize: SubSession[] = [];
+
     if (siblings) {
       for (const sib of siblings.values()) {
         if (normalizeIntent(sib.intent) === wanted) {
-          return {
-            outcome: "reused",
-            snapshot: toSnapshot(sib),
-            reason: `an active sub-session with this intent already exists (${sib.subSessionId}, status=${sib.status})`,
-          };
+          if (sib.status === "running") {
+            reusableRunning = sib;
+          } else if (sib.status !== "archived") {
+            toFinalize.push(sib);
+          }
         }
       }
+    }
+
+    // If running, reuse it immediately. Otherwise clean up completed ones and continue.
+    if (reusableRunning) {
+      return {
+        outcome: "reused",
+        snapshot: toSnapshot(reusableRunning),
+        reason: `an active sub-session with this intent already exists (${reusableRunning.subSessionId}, status=${reusableRunning.status})`,
+      };
+    }
+
+    // Auto-finalize completed sub-sessions (done/error) to free slots. Safe to do
+    // outside iteration since we've collected them first.
+    for (const sub of toFinalize) {
+      this.finalize(params.parentSessionId, sub.subSessionId);
     }
 
     // Cap: refuse to fan out beyond the per-parent ceiling. The orchestrator
@@ -182,6 +201,20 @@ export class SessionManager implements SubSessionCoordinator {
     this.stash(this.archived, sub);
 
     return toSnapshot(sub);
+  }
+
+  /**
+   * Abort and archive every active child of a parent in one sweep — the
+   * "stop everything" path. Goes through finalize() rather than bare abort so
+   * the settle guard suppresses each child's report-back notification: a stop
+   * must not refill the turn queue it is clearing.
+   */
+  public cancelActive(parentSessionId: string): number {
+    const snapshots = this.list(parentSessionId);
+    for (const snapshot of snapshots) {
+      this.finalize(parentSessionId, snapshot.subSessionId, "error");
+    }
+    return snapshots.length;
   }
 
   /** Snapshots of every active (non-archived) child of a parent — powers the

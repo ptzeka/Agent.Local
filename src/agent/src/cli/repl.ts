@@ -3,9 +3,10 @@ import chalk from "chalk";
 
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import type { ModelRegistry } from "../agent/registries/model-registry.js";
+import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 
-import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification } from "./render.js";
+import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification, renderTurnEvent } from "./render.js";
 
 /**
  * Interactive REPL.
@@ -53,6 +54,12 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   // spawned them has ended). Surface them as they arrive.
   const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
 
+  // All turns flow through the runner's single pump: the REPL SUBMITS user
+  // input and awaits the turn's settle, and settling sub-sessions auto-wake
+  // the session through the same queue — no producer ever races the
+  // dispatchAsync running-guard.
+  const turnRunner = runtime.startTurnLoop({ onEvent: renderEvent, onTurnEvent: renderTurnEvent });
+
   while (true) {
     let input: string;
     try {
@@ -63,10 +70,19 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     if (input === "") continue;
 
+    // "stop" is an interrupt, not a prompt: with the input line always live,
+    // it must never enter the queue (where it would be LLM-interpreted after
+    // the very work it was meant to halt).
+    if (input.toLowerCase() === "stop") {
+      writeStopResult(runtime.stopAllWork());
+      continue;
+    }
+
     if (input.startsWith("/")) {
       const command = input.slice(1).trim();
       const exitRequested = await handleSlashCommand(command, {
         runtime,
+        turnRunner,
         registry: runtime.getModelsRegistry(),
         mcpRegistry: runtime.getMcpClientRegistry(),
       });
@@ -74,20 +90,17 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       continue;
     }
 
-    try {
-      await runtime.dispatchAsync(input, { onEvent: renderEvent });
-    } catch (err) {
-      const error = err as Error;
-      process.stdout.write(chalk.red(`\n[error] repl: ${error.message}\n`));
-      if (error.cause) {
-        process.stdout.write(chalk.red(`  cause: ${error.cause}\n`));
-      }
-      if (process.env.DEBUG) {
-        process.stdout.write(chalk.gray(`  stack: ${error.stack}\n`));
-      }
+    // Fire-and-forget so the prompt stays live: typing while a turn runs is
+    // how the user steers it — the input folds into the running turn as a
+    // round rather than waiting behind it. Completion and failures are
+    // reported by the turn-event renderer, so nothing here needs to block.
+    const receipt = turnRunner.submit({ content: input, source: "user", preferMidTurn: true });
+    if (receipt.placement === "mid-turn-round") {
+      process.stdout.write(chalk.gray("(added to the running turn)\n"));
     }
   }
 
+  await runtime.stopTurnLoop();
   unsubscribe();
   rl.close();
 }
@@ -98,6 +111,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
 interface SlashContext {
   runtime: AgentRuntime;
+  turnRunner: TurnRunner;
   registry: ModelRegistry;
   mcpRegistry: McpClientRegistry;
 }
@@ -111,17 +125,31 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     case "quit":
       return true;
 
+    case "stop":
+      writeStopResult(ctx.runtime.stopAllWork());
+      return false;
+
     case "help":
       renderHelp();
       return false;
 
     case "reset": {
+      // The runtime stops and drains in-flight work itself; this pre-pass
+      // exists only to tell the user WHAT got cancelled on their behalf.
+      const stoppedForReset = ctx.runtime.stopAllWork();
+      if (stoppedForReset.cancelledTurns + stoppedForReset.cancelledSubSessions > 0) {
+        writeStopResult(stoppedForReset);
+      }
       await ctx.runtime.reset();
       process.stdout.write(chalk.gray("(conversation cleared)\n"));
       return false;
     }
 
     case "compact": {
+      const stoppedForCompact = ctx.runtime.stopAllWork();
+      if (stoppedForCompact.cancelledTurns + stoppedForCompact.cancelledSubSessions > 0) {
+        writeStopResult(stoppedForCompact);
+      }
       process.stdout.write(chalk.gray("(summarizing…)\n"));
       try {
         const result = await ctx.runtime.compact();
@@ -232,6 +260,17 @@ function handleHistoryCommand(ctx: SlashContext): void {
     process.stdout.write(`  ${colour(label)} ${message.content}\n`);
   }
   process.stdout.write("\n");
+}
+
+function writeStopResult(result: { cancelledTurns: number; cancelledSubSessions: number }): void {
+  const total = result.cancelledTurns + result.cancelledSubSessions;
+  process.stdout.write(
+    total > 0
+      ? chalk.gray(
+          `(stopping everything: ${result.cancelledTurns} turn(s), ${result.cancelledSubSessions} sub-session(s))\n`
+        )
+      : chalk.gray("(nothing is running)\n")
+  );
 }
 
 function previewOf(content: string): string | null {

@@ -12,6 +12,7 @@ export const QUERY_EXCEL_ROWS_TOOL = "query_excel_rows";
 export const LIST_EXCEL_SHEETS_TOOL = "list_sheets";
 export const APPEND_EXCEL_ROWS_TOOL = "append_excel_rows";
 export const APPEND_AFTER_EXCEL_ROWS_TOOL = "append_after_excel_rows";
+export const DELETE_EXCEL_ROWS_TOOL = "delete_excel_rows";
 
 /**
  * Excel synthetic tools — SheetJS-backed read/query/append over .xlsx files.
@@ -52,6 +53,11 @@ export function createExcelTools(): SyntheticMcp[] {
       name: APPEND_AFTER_EXCEL_ROWS_TOOL,
       descriptor: appendAfterRowsDescriptor(),
       callTool: handleAppendAfterRows,
+    },
+    {
+      name: DELETE_EXCEL_ROWS_TOOL,
+      descriptor: deleteRowsDescriptor(),
+      callTool: handleDeleteRows,
     },
   ];
 }
@@ -199,6 +205,26 @@ async function handleAppendAfterRows(
   return writeRows(ctx, parsed.value.filePath, parsed.value.sheetName, parsed.value.rows, afterRow);
 }
 
+async function handleDeleteRows(
+  args: Record<string, unknown>,
+  ctx: ToolContext
+): Promise<RichToolResult> {
+  const filePath = requireString(args.file_path, "file_path");
+  if (!filePath.ok) return toolError(`[excel-error] ${filePath.reason}`);
+  const sheetName = requireString(args.sheet_name, "sheet_name");
+  if (!sheetName.ok) return toolError(`[excel-error] ${sheetName.reason}`);
+
+  const rowIndices = args.row_indices;
+  if (!Array.isArray(rowIndices) || !rowIndices.every((i) => Number.isInteger(i) && i >= 0)) {
+    return toolError(
+      `[excel-error] ${DELETE_EXCEL_ROWS_TOOL}.row_indices must be an array of non-negative integers ` +
+        `(0-based data row indices to delete)`
+    );
+  }
+
+  return deleteRows(ctx, filePath.value, sheetName.value, rowIndices as number[]);
+}
+
 // ---------------------------------------------------------------------------
 // Write path (shared by both append tools)
 // ---------------------------------------------------------------------------
@@ -285,6 +311,67 @@ async function writeRows(
         file_path: filePath,
         sheet_name: sheetName,
         appended: newRows.length,
+      },
+    },
+  };
+}
+
+/**
+ * Delete rows from a sheet by 0-based data row indices and persist the workbook.
+ * Row indices are sorted descending before removal to avoid index shifts.
+ */
+async function deleteRows(
+  ctx: ToolContext,
+  filePath: string,
+  sheetName: string,
+  rowIndicesToDelete: number[]
+): Promise<RichToolResult> {
+  const resolved = resolveWorkspacePath(ctx, filePath);
+  if (!resolved.ok) return toolError(`[excel-error] ${resolved.reason}`);
+
+  const loaded = await loadWorkbook(ctx, filePath);
+  if (!loaded.ok) return toolError(`[excel-error] ${loaded.reason}`);
+
+  const sheet = resolveSheet(loaded.value, sheetName);
+  if (!sheet.ok) return toolError(`[excel-error] ${sheet.reason}`);
+
+  const { headers, rows } = sheetToTable(sheet.value.worksheet);
+
+  // Validate indices
+  const validIndices = rowIndicesToDelete.filter((i) => i >= 0 && i < rows.length);
+  if (validIndices.length === 0) {
+    return toolError(`[excel-error] no valid row indices to delete (valid range: 0-${rows.length - 1})`);
+  }
+
+  // Remove rows by index, sorting descending to avoid index shifts
+  const indicesToRemove = new Set(validIndices);
+  const remaining = rows.filter((_, idx) => !indicesToRemove.has(idx));
+
+  const worksheet = XLSX.utils.json_to_sheet(remaining, { header: headers });
+  loaded.value.Sheets[sheetName] = worksheet;
+
+  const buffer = XLSX.write(loaded.value, { type: "buffer", bookType: "xlsx" }) as Buffer;
+  await fs.mkdir(path.dirname(resolved.absolutePath), { recursive: true });
+  await fs.writeFile(resolved.absolutePath, buffer);
+
+  const resultData = {
+    file_path: filePath,
+    sheet_name: sheetName,
+    deleted_count: validIndices.length,
+    total_count: remaining.length,
+    columns: headers,
+  };
+
+  return {
+    isError: false,
+    content: JSON.stringify(resultData, null, 2),
+    event: {
+      type: "tool-result",
+      data: {
+        tool: DELETE_EXCEL_ROWS_TOOL,
+        file_path: filePath,
+        sheet_name: sheetName,
+        deleted: validIndices.length,
       },
     },
   };
@@ -685,6 +772,31 @@ function appendAfterRowsDescriptor(): ToolDescriptor {
           type: "array",
           description: "Rows to insert, each an object keyed by column name.",
           items: { type: "object" },
+        },
+      },
+    },
+  };
+}
+
+function deleteRowsDescriptor(): ToolDescriptor {
+  return {
+    name: DELETE_EXCEL_ROWS_TOOL,
+    description: [
+      "Delete specific rows from a sheet by their 0-based data row indices.",
+      "row_indices is a list of 0-based indices (0 = first data row, 1 = second,",
+      "etc.; the header is never counted). Invalid indices are ignored; if all",
+      "indices are out of range the operation fails.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      required: ["file_path", "sheet_name", "row_indices"],
+      properties: {
+        file_path: { type: "string", description: "Workspace-relative path to the .xlsx file." },
+        sheet_name: { type: "string", description: "Sheet to delete rows from." },
+        row_indices: {
+          type: "array",
+          description: "0-based data-row indices to delete (0 = first data row).",
+          items: { type: "integer", minimum: 0 },
         },
       },
     },

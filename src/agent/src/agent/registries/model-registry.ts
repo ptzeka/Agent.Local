@@ -1,4 +1,4 @@
-import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
 import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
 /**
@@ -37,6 +37,16 @@ export class ModelRegistry {
       default:
         throw new Error(`No prompt template for role "${role}".`);
     }
+  }
+
+  /**
+   * The per-call ACTIVE REQUEST anchor with the turn's request filled in.
+   * Served through the registry (not imported from the template directly) so
+   * the anchor wording can be swapped — per-deployment, per-model, or from
+   * config — without touching orchestrator code.
+   */
+  public getAnchorText(request: string): string {
+    return REQUEST_ANCHOR_TEMPLATE.replace("{REQUEST}", request);
   }
 
   public getValidModels(): Array<string>

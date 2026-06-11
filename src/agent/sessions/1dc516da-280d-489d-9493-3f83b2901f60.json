@@ -1,0 +1,54 @@
+{
+  "sessionId": "1dc516da-280d-489d-9493-3f83b2901f60",
+  "workspaceId": "8bab0034-06b9-4e11-a8ce-55d22b5b7db4",
+  "parentSessionId": "f12faae4-bdf8-4666-bb14-ec9c9387e0a2",
+  "conversation": [
+    {
+      "role": "user",
+      "content": "Delete the file hello_world.txt"
+    },
+    {
+      "role": "assistant",
+      "content": "",
+      "toolCalls": [
+        {
+          "id": "fsmcp__delete_file",
+          "name": "fsmcp__delete_file",
+          "arguments": {
+            "path": "hello_world.txt"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "content": "{\n  \"path\": \"hello_world.txt\",\n  \"deleted\": true,\n  \"kind\": \"file\"\n}",
+      "toolCallId": "fsmcp__delete_file",
+      "toolName": "fsmcp__delete_file"
+    },
+    {
+      "role": "assistant",
+      "content": ""
+    }
+  ],
+  "status": "done",
+  "counters": {
+    "turns": 1,
+    "inputTokens": 10360,
+    "outputTokens": 23,
+    "cacheReadInputTokens": 10270,
+    "cacheCreationInputTokens": 0
+  },
+  "createdAt": 1781210792170,
+  "updatedAt": 1781210794414,
+  "user": {
+    "sub": "anonymous",
+    "isAuthenticated": false,
+    "claims": {},
+    "scopes": []
+  },
+  "contextHashes": {
+    "orchestrator": "77137c4842450e38",
+    "executor": "352862c0c94ba301"
+  }
+}

@@ -134,6 +134,13 @@ export class Executor {
 
     for (let i = 1; i <= maxIterations; i += 1) {
       iterations = i;
+
+      // Cooperative stop checkpoint — same contract as the orchestrator loop:
+      // never start another model call once the turn's signal has fired.
+      if (options.signal?.aborted) {
+        throw new Error("executor aborted: user requested stop");
+      }
+
       let response;
       try {
         response = await this.provider.chat(workingMessages, {

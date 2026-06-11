@@ -54,6 +54,104 @@
 
 ---
 
+## 0. Assessment update — 2026-06-11 (post wiring refactor)
+
+*Re-verified against the working tree after the runtime-centralization refactor
+(commits `e1bd504`…`405e44a`): `tsc --noEmit` clean, 25/25 suites, 111/111
+tests passing. The findings below amend §2–§3; unamended findings stand.*
+
+### 0.1 What the refactor delivered
+
+- **`McpClientRegistry` is now a neutral transport** (~30 lines: register /
+  getClient / listTools). `refreshTurnServers`, `listToolsForOrchestrator`,
+  `READ_ONLY_TAILS`, `callTool`, and `spawnServer` are gone — the registry no
+  longer knows about roles or turns.
+- **New `mcp/` module** as the single server abstraction: `Mcp` interface,
+  `LocalMcp` (plain in-process dispatch — replaces the SDK-server/transport
+  wrappers for fsmcp and excel), `McpClient` (external stdio).
+- **Config decomposed:** `ConfigurationRegistry` (loads/merges models.json,
+  owns `OrchestrationConfig`), `ProvidersRegistry` (provider instances),
+  `ModelRegistry` slimmed from ~335 to ~73 lines (role→model map + per-model
+  `mcp` whitelist + prompts).
+- **Construction centralized in the pipeline:** Configuration → Providers →
+  Models → McpRegistry middleware steps; runners obtain everything via
+  `AgentRuntimeQueryable` getters instead of ad-hoc imports/constructions.
+- **`ScopedToolClient` is now the single dispatch front:** fronts N mounted
+  servers per role, routes `<server>__<tool>`, clamps fsmcp paths, emits
+  tool-call/tool-result events centrally.
+- Context snapshots are now per-role (`session.contextHashes[role]`);
+  `ContextLoader` reduced to pure build/save/get.
+
+### 0.2 Design decision recorded (supersedes parts of §3.1)
+
+The executor is **same-turn context separation, not a sub-agent**.
+`dispatch_executor` is an intentionally-dormant stub and must not be
+"completed" into an LLM-handoff. The orchestrator now advertises **and
+directly executes** every tool of its whitelisted servers — including
+fsmcp writes — as a deliberate interim choice. If tool restriction is
+reintroduced, the agreed mechanism is a **dedicated read-only MCP server**,
+not a tool-name classifier.
+
+Consequences for §3.1: the condemned suffix heuristic is gone (good), and
+advertisement ≡ enforcement now holds *trivially* — surface and dispatch both
+derive from the same `clientsFor(role)` server set, so they cannot drift. But
+the gate granularity is **server-level only**; the read/write split that §2
+listed as a verified capability is currently **suspended**, and prompts/docs
+(`agentcontext.ts`, orchestrator banner, models.json comments) still describe
+the old dispatch contract — they now mislead the model and the reader.
+
+### 0.3 New findings (introduced or exposed by the refactor)
+
+1. **Evaluator runs on the wrong model** — `evaluator.ts:92` resolves
+   `getProviderForRole("summarizer")`, so the completion gate runs on
+   `llama-fast` (gemma3:4b), not the declared evaluator model. One-line fix;
+   directly undermines the "keep the evaluator on a strong model" rule (§ status
+   note 5).
+2. **DispatchTracker is inert.** It is constructed but `reserve()`/
+   `recordSuccess()` are never called now that dispatch_executor is dormant:
+   the per-turn dispatch cap, duplicate-mutation guard, and **mid-flight
+   evaluator progress checks never fire** (`dueForPeriodicCheck()` is never
+   true), and `RunResult.dispatches` is always 0.
+3. **Sub-session tools are unreachable** — the subsessions `LocalMcp` is never
+   mounted (creation commented out, `orchestrator.ts:207–210`); the
+   `subsessions` whitelist entries silently resolve to no server.
+4. **External MCP is disconnected** — `ConnectMcpServersMiddleware` body is
+   commented out, so `codemcp` never mounts (whitelists skip it silently) and
+   `mcp.json` is read by nothing; CLI `shutdown()` is a no-op.
+5. **`AgentRuntime.reset()` calls `this.build()` un-awaited** — a floating
+   promise that re-runs the whole middleware pipeline against live state;
+   either await it or (better) re-derive only what reset needs.
+6. **Dead code awaiting a decision:** `ExecutorRegistry`,
+   `DispatchExecutorTool`, `subsessions-server` wrapper, and the unused
+   `Executor`/`syntheticContext` constructed inside `Orchestrator.run`
+   (L156–210). Keep only if the context-separation executor will reuse them;
+   otherwise delete (git remembers).
+7. **Config validation moved upstream — by decision (2026-06-11):**
+   models.json is the source of truth and is *assumed consistent by
+   contract*; role↔model checks belong to whatever produces the config (a
+   future config table / authoring step), not to the runtime.
+   `ConfigurationRegistry` is deliberately just a reader and registries stay
+   dumb lookups. Accepted consequence: until that producer exists, a
+   hand-edited typo surfaces as an `undefined` provider crash at call time
+   rather than a named startup error. `AGENT_FORCE_MODEL` is **removed by
+   decision** (same date): dynamic config is the sole source of truth, no
+   env-var overrides — its documentation has been deleted from README and
+   `.env.example`.
+8. `ToolExecutionResult`/`ToolInvoker` are now defined twice (`mcp/mcp.ts`
+   and `mcp/mcp-client.ts`) with imports split across both — collapse to one.
+
+### 0.4 Findings amended
+
+- **§3.5 env leakage:** moot for now — no servers are spawned. Revisit when
+  ConnectMcpServers returns; provider keys are still read from `process.env`
+  un-scrubbed (M0-2 half-done).
+- **§3.8 git hygiene:** still open and growing — new `sessions/*.json` and
+  `contexts/*.json` were committed during the refactor.
+- **§2 capability table:** rows "Read/write segregation" and "Sub-sessions"
+  should read **suspended** pending the context-separation executor design.
+
+---
+
 ## 1. Executive summary
 
 The draft is architecturally further along than most prototypes: it has a clean

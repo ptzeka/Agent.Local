@@ -1,5 +1,6 @@
 import type { ChatMessage, LLMProvider } from "../providers/provider.js";
 import { AgentRuntimeQueryable } from "../runtime/types.js";
+import { EVALUATOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 
 /**
  * Evaluator.
@@ -21,46 +22,16 @@ import { AgentRuntimeQueryable } from "../runtime/types.js";
  * judge can never trap the user in an endless loop.
  */
 
-const EVALUATOR_SYSTEM_PROMPT = `You are the EVALUATOR.
-
-You are given:
-  - The user's ORIGINAL request for this turn.
-  - The orchestrator's PROPOSED final answer.
-  - A TRANSCRIPT of what the orchestrator actually did (tool calls,
-    executor results, read-backs).
-
-Decide ONE of three states for this turn, and reply with EXACTLY one
-line, no prose before or after:
-    EVALUATOR: SATISFIED <why the request is fully met>
-    EVALUATOR: CONTINUE <progress made so far + the next concrete step>
-    EVALUATOR: UNSATISFIED <why the work is stuck or off track>
-
-How to choose:
-  - SATISFIED — the user's request is fully accomplished. Do not invent
-    extra requirements they never asked for.
-  - CONTINUE — not done yet, but the orchestrator is making real progress
-    toward the request and is on the right track. This is the NORMAL
-    verdict for partially-finished work: acknowledge the progress and name
-    the next step. Prefer CONTINUE over UNSATISFIED whenever genuine
-    forward progress is visible (e.g. files are being created, the right
-    directory was just made, an executor reported OK on a needed step).
-  - UNSATISFIED — the orchestrator is NOT making progress: it keeps
-    repeating a failing action, is working on the wrong thing relative to
-    the request, or is contradicting what was asked. Use this to force a
-    change of approach, not merely to note that work remains.
-
-  Judge against what was ASKED, not against perfection.`;
-
 const DEFAULT_TEMPERATURE = 0.1;
 
 /**
- * Three-state verdict:
- *   - "satisfied"   → the request is fully met; the orchestrator turn ends.
- *   - "continue"    → real progress, on the right track; nudge to keep going.
- *   - "unsatisfied" → stuck or off track; force a change of approach.
- * Both non-satisfied states keep the loop running, with different steering.
+ * Four-state verdict:
+ *   - "satisfied"       → the request is fully met; the orchestrator turn ends.
+ *   - "continue"        → real progress, on the right track; nudge to keep going.
+ *   - "unsatisfied"     → stuck or off track; force a change of approach.
+ *   - "awaiting-input"  → blocked waiting for user clarification; turn pauses.
  */
-export type EvaluationState = "satisfied" | "continue" | "unsatisfied";
+export type EvaluationState = "satisfied" | "continue" | "unsatisfied" | "awaiting-input";
 
 export interface EvaluationVerdict {
   state: EvaluationState;
@@ -89,7 +60,7 @@ export class Evaluator {
     options: EvaluateOptions = {}
   ): Promise<EvaluationVerdict> {
     const modelsRegistry = this.runtime.getModelsRegistry();
-    const provider = this.runtime.getProvidersRegistry().getProvider(modelsRegistry.getProviderForRole("summarizer"));
+    const provider = this.runtime.getProvidersRegistry().getProvider(modelsRegistry.getProviderForRole("evaluator"));
     const userMessage = [
       "ORIGINAL REQUEST:",
       params.question,
@@ -135,9 +106,9 @@ export class Evaluator {
 function parseVerdict(content: string): EvaluationVerdict {
   for (const raw of content.split("\n")) {
     const line = raw.trim();
-    const match = line.match(/^EVALUATOR:\s*(SATISFIED|CONTINUE|UNSATISFIED)\b\s*(.*)$/i);
+    const match = line.match(/^EVALUATOR:\s*(SATISFIED|CONTINUE|UNSATISFIED|AWAITING-INPUT|AWAITING_INPUT)\b\s*(.*)$/i);
     if (match) {
-      const state = match[1].toLowerCase() as EvaluationState;
+      let state = match[1].toLowerCase().replace(/_/g, "-") as EvaluationState;
       const reason = match[2].trim() || DEFAULT_REASON[state];
       return { state, reason };
     }
@@ -152,6 +123,7 @@ const DEFAULT_REASON: Record<EvaluationState, string> = {
   satisfied: "request addressed",
   continue: "making progress; continue with the next step",
   unsatisfied: "not making progress; change approach",
+  "awaiting-input": "orchestrator is waiting for user input",
 };
 
 function formatMessageForEvaluation(message: ChatMessage): string {

@@ -65,7 +65,7 @@ export class OllamaProvider implements LLMProvider {
     const startedAt = Date.now();
     let response;
     try {
-      response = await this.client.chat(request);
+      response = await raceWithAbort(this.client.chat(request), options.signal);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -161,4 +161,33 @@ function extractToolCalls(message: OllamaMessage): ToolCall[] {
  */
 function stripThinkTags(content: string): string {
   return content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
+}
+
+/**
+ * The ollama client offers no per-request AbortSignal, so without this a user
+ * stop would hang until a long generation finished. Racing the request against
+ * the signal unwinds the agent promptly; the daemon still completes (and
+ * discards) the generation server-side — abandoning it is the best the client
+ * API allows.
+ */
+function raceWithAbort<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new Error("request aborted before send"));
+      return;
+    }
+    const onAbort = () => reject(new Error("request aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    work.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      }
+    );
+  });
 }

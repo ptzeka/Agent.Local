@@ -42,8 +42,37 @@ import {
   type ListToolsResult,
 } from "@modelcontextprotocol/sdk/types.js";
 
+import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
 import type { SyntheticMcp, ToolContext } from "./types.js";
+
+/** The MCP server name this module mounts under (tools namespace as `subsessions__*`). */
+export const SUBSESSIONS_SERVER_NAME = "subsessions";
+
+/**
+ * Build a subsessions `LocalMcp` for a specific turn's context.
+ *
+ * Mirrors `createExcelLocalMcp`: each subsession tool is already a
+ * `{ descriptor, callTool(args, ctx) }`, so we bind the turn's `ToolContext`
+ * into a `LocalTool.invoke(args)` to satisfy the `Mcp` contract. Tool calls are
+ * plain in-process function calls — no SDK `Server` or in-memory transport.
+ *
+ * The handlers' optional post-call `event` is dropped here (the `LocalMcp` path
+ * carries only `{ isError, content }`), matching how Excel is mounted. When the
+ * turn's `ToolContext.coordinator` is absent the tools still advertise, but each
+ * call returns the handlers' own "sub-sessions are not available" error.
+ */
+export function createSubsessionsLocalMcp(toolCtx: ToolContext): LocalMcp {
+  const tools: LocalTool[] = createSubSessionTools().map((tool) => ({
+    descriptor: tool.descriptor,
+    invoke: async (args) => {
+      const result = await tool.callTool(args ?? {}, toolCtx);
+      return { isError: result.isError, content: result.content };
+    },
+  }));
+
+  return new LocalMcp(SUBSESSIONS_SERVER_NAME, tools);
+}
 
 /** A pre-connected in-process MCP server, ready for McpClient to mount. */
 export interface InProcessMcpServer {
