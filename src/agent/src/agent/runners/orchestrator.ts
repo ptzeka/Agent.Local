@@ -27,6 +27,7 @@ import { createSubsessionsMcpServer } from "../synthetic-mcp/subsessions-server.
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import type { OrchestratorListener, RunnerListener } from "./runner-events.js";
+import { ContextSnapshot } from "../context/context-loader.js";
 
 // Re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
@@ -123,19 +124,22 @@ export class Orchestrator {
     const emit = options.onEvent ?? (() => {});
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();  
-    const registry = this.runtime.getModelsRegistry();
+    const modelsRegistry = this.runtime.getModelsRegistry();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
     const providersRegistry = this.runtime.getProvidersRegistry();
     const conversation = session.conversation;
     const executorClient = mcpRegistry.getClient("executor")!;
     const orchestratorClient = mcpRegistry.getClient("orchestrator")!;
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
+    const contextLoader = this.runtime.getContextLoader();
+    const orchestratorContextHash = session.contextHashes ? session.contextHashes["orchestrator"] : null;
+    const orchestratorContext = orchestratorContextHash ? await contextLoader.getContextSnapshot(orchestratorContextHash) : null;
 
     await this.maybeSummarize(conversation, emit, options.signal);
     conversation.push({ role: "user", content: userInput });
 
-    const orchestratorProvider = providersRegistry.getProvider(registry.getProviderForRole("orchestrator"));
-    const executorProvider = providersRegistry.getProvider(registry.getProviderForRole("executor"));
+    const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("orchestrator"));
+    const executorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("executor"));
 
     const executorTools = executorClient.listTools();
     const orchestratorTools = orchestratorClient.listTools();
@@ -156,7 +160,7 @@ export class Orchestrator {
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, executorTools, workspace);
+    const systemMessages = this.buildSystemMessages(orchestratorProvider, executorTools, orchestratorContext);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     const turnStartIndex = workingMessages.length - 1;
@@ -449,18 +453,17 @@ export class Orchestrator {
   private buildSystemMessages(
     orchestrator: LLMProvider,
     visibleTools: ToolDescriptor[],
-    workspace: Workspace
+    context?: ContextSnapshot | null
   ): ChatMessage[] {
     const messages: ChatMessage[] = [];
 
-    if (workspace.projectContext) {
+    if (context) {
       messages.push({
         role: "system",
         content:
-          `Project context (from ${workspace.projectContext.sourcePath}). ` +
           `Treat this as standing direction from the user; follow it unless ` +
           `a specific request overrides it.\n\n` +
-          workspace.projectContext.content,
+          context.projectContext,
       });
     }
 

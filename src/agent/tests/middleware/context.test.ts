@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getContextSnapshot } from "../../src/agent/context/context-loader.js";
+import { ContextLoader } from "../../src/agent/context/context-loader.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ProvidersRegistry } from "../../src/agent/registries/providers-registry.js";
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
@@ -102,15 +102,16 @@ describe("ContextMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("writes a content-addressed snapshot reflecting the role's provider and tools", async () => {
+  test("writes a content-addressed snapshot reflecting the role's prompt and tools", async () => {
     const ctx = ctxWith(true);
 
     await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
-    const snapshot = await getContextSnapshot(contextsDir, ctx.session!.contextHashes?.["orchestrator"]!);
+    const loader = new ContextLoader(contextsDir);
+    const snapshot = await loader.getContextSnapshot(ctx.session!.contextHashes?.["orchestrator"]!);
     expect(snapshot).not.toBeNull();
-    expect(snapshot!.model).toBe("gemini-x");
-    expect(snapshot!.nativeTools).toBe(true);
+    expect(snapshot!.role).toBe("orchestrator");
+    expect(snapshot!.systemPrompt).toContain("You are a helpful assistant.");
     expect(snapshot!.tools.some((t) => t.name === "read_file")).toBe(true);
   });
 

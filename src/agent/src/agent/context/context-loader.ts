@@ -21,24 +21,22 @@ import type { ToolDescriptor } from "../providers/provider.js";
  */
 
 export interface ContextSnapshot {
-  /** Orchestrator model id this context targeted. */
-  model: string;
+  /** Role this context targeted. */
+  role: string;
   /** The base orchestrator system prompt. */
   systemPrompt: string;
   /** Whether tools were sent natively (true) vs. as prompted JSON instructions. */
   nativeTools: boolean;
   /** Project direction in effect, or null when the workspace ships none. */
-  projectContext: { sourcePath: string; content: string } | null;
-  /** Tool descriptors advertised to the orchestrator, sorted by name. */
+  projectContext: string;
+  /**
+   * Tool descriptors advertised to the role, captured in the order advertised.
+   * Any change to the tool set (membership or order) yields a different hash and
+   * therefore a new context snapshot.
+   */
   tools: ToolDescriptor[];
 }
 
-export interface ProjectContext {
-  /** Absolute path the content was read from. Surfaced in the banner. */
-  sourcePath: string;
-  /** Trimmed file body. Empty files are treated as "no context". */
-  content: string;
-}
 
 // Use a namespaced subdirectory so the file is clearly Agent.Local's
 // (rather than something a different tool might also try to read).
@@ -61,7 +59,19 @@ export class ContextLoader
     return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex").slice(0, 16);
   }
 
-  async saveContextSnapshot(
+  public buildContext(role: string, systemPrompt: string, projectTemplate: string, tools: ToolDescriptor[]) : ContextSnapshot
+  {
+    const snapshot =
+    {
+        role,
+        systemPrompt,
+        projectContext: projectTemplate,
+        tools
+    } as ContextSnapshot;
+    return snapshot;
+  }
+
+  public async saveContextSnapshot(
     snapshot: ContextSnapshot
   ): Promise<string> {
     const dir = path.resolve(this.contextsDir);
@@ -86,13 +96,12 @@ export class ContextLoader
    * Read a previously saved snapshot by hash. Returns null when no such snapshot
    * exists (e.g. a session persisted before snapshots, or a pruned contexts dir).
    */
-  async getContextSnapshot(
-    contextsDir: string,
+  public async getContextSnapshot(
     hash: string
   ): Promise<ContextSnapshot | null> {
     // Sanitise the hash so a malformed pointer can't escape the contexts dir.
     const safe = hash.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const target = path.join(path.resolve(contextsDir), `${safe}.json`);
+    const target = path.join(path.resolve(this.contextsDir), `${safe}.json`);
     try {
       return JSON.parse(await fs.readFile(target, "utf8")) as ContextSnapshot;
     } catch (err) {

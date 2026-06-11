@@ -1,6 +1,5 @@
 import path from "node:path";
-
-import { buildContextSnapshot, saveContextSnapshot } from "../../context/context-loader.js";
+import { ContextLoader, ContextSnapshot } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
@@ -49,32 +48,20 @@ export class ContextMiddleware implements IMiddleware {
           "Add StoreMiddleware and SessionMiddleware earlier in the pipeline."
       );
     }
-
+    ctx.contextLoader ??= new ContextLoader(this.params.contextsDir!);
     const role = this.params.roleName;
-    const provider = ctx.providerRegistry?.getProvider(ctx.modelsRegistry!.getProviderForRole(role))!;
-    let tools = ctx.mcpRegistry!.getClient(role)?.listTools()!;
-      
-    const template = ctx.modelsRegistry!.getPromptTemplate(role);
-    const systemPrompt = fillToolsList(template, tools);
-
-    const snapshot = buildContextSnapshot({
-      model: provider.modelId,
-      systemPrompt,
-      nativeTools: provider.supportsNativeTools,
-      projectContext: ctx.workspace.projectContext,
-      tools,
-    });
-
-    const contextsDir =
-      this.params.contextsDir ?? path.resolve(ctx.sessionsDir, "..", "contexts");
-    const hash = await saveContextSnapshot(contextsDir, snapshot);
+    const tools = ctx.mcpRegistry!.getClient(role)?.listTools()!;
+    const projectTemplate = ctx.modelsRegistry?.getPromptTemplate("project");
+    const agentTemplate = ctx.modelsRegistry!.getPromptTemplate(role);
+    const systemPrompt = fillToolsList(agentTemplate, tools);  
+    const context = ctx.contextLoader.buildContext(role, systemPrompt, projectTemplate || '', tools);
+    const hash = await ctx.contextLoader.saveContextSnapshot(context);
 
     // Stamp the pointer by role and persist now so the hash is durable from init, even
     // if the first turn never reaches finalize().
     ctx.session.contextHashes ??= {};
     ctx.session.contextHashes[role] = hash;
     await ctx.store.save(ctx.session);
-
     await next();
   }
 

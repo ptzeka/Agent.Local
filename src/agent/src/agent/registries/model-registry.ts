@@ -1,5 +1,5 @@
-import type { ToolDescriptor } from "../providers/provider.js";
 import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
+import { PROJECT_CONTEXT } from '../context/agentcontext.js';
 import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
 /**
  * Model registry.
@@ -28,6 +28,8 @@ export class ModelRegistry {
 
   public getPromptTemplate(role: string): string {
     switch (role) {
+      case "project":
+        return PROJECT_CONTEXT;
       case "orchestrator":
         return ORCHESTRATOR_SYSTEM_PROMPT;
       case "executor":

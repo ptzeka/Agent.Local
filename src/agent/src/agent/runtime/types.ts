@@ -9,6 +9,7 @@ import type { Workspace, WorkspaceRegistry } from "../registries/workspace-regis
 import type { Logger } from "../../common/logger.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
+import { ContextLoader } from "../context/context-loader.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
@@ -17,6 +18,7 @@ export interface AgentRuntimeQueryable {
   getConfigurationRegistry(): ConfigurationRegistry;
   getProvidersRegistry(): ProvidersRegistry;
   getMcpClientRegistry(): McpClientRegistry;
+  getContextLoader(): ContextLoader;
   getLogger(): Logger;
 }
 
@@ -42,6 +44,7 @@ export interface RuntimeContext {
   configurationRegistry: ConfigurationRegistry | undefined;
   logger: Logger | undefined;
   store: SessionStore | undefined;
+  contextLoader: ContextLoader| undefined,
   workspaces: WorkspaceRegistry | undefined;
   user: Principal | undefined;
   session: Session | undefined;

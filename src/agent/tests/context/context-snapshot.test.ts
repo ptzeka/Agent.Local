@@ -3,12 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import {
-  buildContextSnapshot,
-  hashContextSnapshot,
-  saveContextSnapshot,
-  getContextSnapshot,
-} from "../../src/agent/context/context-loader.js";
+import { ContextLoader } from "../../src/agent/context/context-loader.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 
 /**
@@ -16,8 +11,8 @@ import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
  *
  * The snapshot captures the non-conversation context (system prompt + project
  * direction + tool block) under a content-addressed hash. These cover the
- * three invariants ContextMiddleware leans on: deterministic hashing, write-once
- * dedup, and a faithful round-trip read.
+ * invariants ContextMiddleware leans on: deterministic hashing keyed on the
+ * captured inputs, write-once dedup, and a faithful round-trip read.
  */
 
 const tool = (name: string): ToolDescriptor => ({
@@ -26,41 +21,53 @@ const tool = (name: string): ToolDescriptor => ({
   inputSchema: { type: "object" },
 });
 
-const baseInput = () => ({
-  model: "gemini-3.1-flash-lite",
-  systemPrompt: "You are the ORCHESTRATOR.",
-  nativeTools: true,
-  projectContext: { sourcePath: "/ws/agentcontext.md", content: "do the thing" },
-  tools: [tool("read_file"), tool("list_dir")],
-});
+const ROLE = "orchestrator";
+const SYSTEM_PROMPT = "You are the ORCHESTRATOR.";
+const PROJECT_CONTEXT = "do the thing";
+const TOOLS = [tool("read_file"), tool("list_dir")];
 
-describe("buildContextSnapshot / hashContextSnapshot", () => {
-  test("sorts tools by name so iteration order doesn't change the hash", () => {
-    const a = buildContextSnapshot(baseInput());
-    const b = buildContextSnapshot({ ...baseInput(), tools: [tool("list_dir"), tool("read_file")] });
+describe("ContextLoader.buildContext / hashContextSnapshot", () => {
+  // The contexts dir is irrelevant for pure build/hash work — only save/get touch disk.
+  const loader = new ContextLoader(os.tmpdir());
 
-    expect(a.tools.map((t) => t.name)).toEqual(["list_dir", "read_file"]);
-    expect(hashContextSnapshot(a)).toBe(hashContextSnapshot(b));
+  test("captures the build inputs verbatim", () => {
+    const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+
+    expect(snapshot.role).toBe(ROLE);
+    expect(snapshot.systemPrompt).toBe(SYSTEM_PROMPT);
+    expect(snapshot.projectContext).toBe(PROJECT_CONTEXT);
+    expect(snapshot.tools.map((t) => t.name)).toEqual(["read_file", "list_dir"]);
+  });
+
+  test("the same inputs hash identically", () => {
+    const a = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+    const b = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+
+    expect(loader.hashContextSnapshot(a)).toBe(loader.hashContextSnapshot(b));
   });
 
   test("a changed system prompt yields a different hash", () => {
-    const a = buildContextSnapshot(baseInput());
-    const b = buildContextSnapshot({ ...baseInput(), systemPrompt: "different" });
+    const a = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+    const b = loader.buildContext(ROLE, "different", PROJECT_CONTEXT, TOOLS);
 
-    expect(hashContextSnapshot(a)).not.toBe(hashContextSnapshot(b));
+    expect(loader.hashContextSnapshot(a)).not.toBe(loader.hashContextSnapshot(b));
   });
 
-  test("null project context is preserved (not coerced)", () => {
-    const snapshot = buildContextSnapshot({ ...baseInput(), projectContext: null });
-    expect(snapshot.projectContext).toBeNull();
+  test("a changed tool set yields a different hash", () => {
+    const a = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+    const b = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, [tool("read_file")]);
+
+    expect(loader.hashContextSnapshot(a)).not.toBe(loader.hashContextSnapshot(b));
   });
 });
 
-describe("saveContextSnapshot / getContextSnapshot", () => {
+describe("ContextLoader.saveContextSnapshot / getContextSnapshot", () => {
   let dir: string;
+  let loader: ContextLoader;
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "ctx-snap-"));
+    loader = new ContextLoader(dir);
   });
 
   afterEach(async () => {
@@ -68,22 +75,22 @@ describe("saveContextSnapshot / getContextSnapshot", () => {
   });
 
   test("saves under <hash>.json and round-trips the exact snapshot", async () => {
-    const snapshot = buildContextSnapshot(baseInput());
-    const hash = await saveContextSnapshot(dir, snapshot);
+    const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+    const hash = await loader.saveContextSnapshot(snapshot);
 
-    expect(hash).toBe(hashContextSnapshot(snapshot));
+    expect(hash).toBe(loader.hashContextSnapshot(snapshot));
     await expect(fs.access(path.join(dir, `${hash}.json`))).resolves.toBeUndefined();
-    expect(await getContextSnapshot(dir, hash)).toEqual(snapshot);
+    expect(await loader.getContextSnapshot(hash)).toEqual(snapshot);
   });
 
   test("is write-once: re-saving the same context does not rewrite the file", async () => {
-    const snapshot = buildContextSnapshot(baseInput());
-    const hash = await saveContextSnapshot(dir, snapshot);
+    const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
+    const hash = await loader.saveContextSnapshot(snapshot);
 
     const target = path.join(dir, `${hash}.json`);
     const firstMtime = (await fs.stat(target)).mtimeMs;
 
-    const hashAgain = await saveContextSnapshot(dir, snapshot);
+    const hashAgain = await loader.saveContextSnapshot(snapshot);
     const secondMtime = (await fs.stat(target)).mtimeMs;
 
     expect(hashAgain).toBe(hash);
@@ -91,6 +98,6 @@ describe("saveContextSnapshot / getContextSnapshot", () => {
   });
 
   test("returns null for an unknown hash", async () => {
-    expect(await getContextSnapshot(dir, "deadbeefdeadbeef")).toBeNull();
+    expect(await loader.getContextSnapshot("deadbeefdeadbeef")).toBeNull();
   });
 });

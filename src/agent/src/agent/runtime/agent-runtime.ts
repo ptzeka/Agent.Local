@@ -1,7 +1,7 @@
 import { InputInbox } from "../runners/input-inbox.js";
 import { Orchestrator, type RunOptions, type RunResult } from "../runners/orchestrator.js";
-import type { ProjectContext } from "../context/context-loader.js";
-import type { ChatMessage, ToolDescriptor } from "../providers/provider.js";
+import type { ContextLoader } from "../context/context-loader.js";
+import type { ChatMessage } from "../providers/provider.js";
 import type { Session } from "../session/session.js";
 import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
@@ -17,7 +17,7 @@ import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
 
 export interface ResetResult {
-  context: ProjectContext | null;
+  projectContext: string | null;
   contextChanged: boolean;
 }
 
@@ -73,6 +73,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private configurationRegistry!: ConfigurationRegistry;
   private providersRegistry!: ProvidersRegistry;
   private mcpClientRegistry!: McpClientRegistry;
+  private contextLoader!: ContextLoader;
   private orchestrator!: Orchestrator;
   private inbox!: InputInbox;
   private sessionManager!: SessionManager;
@@ -107,6 +108,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       configurationRegistry: undefined,
       modelsRegistry: undefined,
       mcpRegistry: undefined,
+      contextLoader: undefined,
       providerRegistry: undefined,
       logger: undefined,
       store: undefined,
@@ -144,6 +146,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.logger = ctx.logger!;
     this.modelsRegistry = ctx.modelsRegistry!;
     this.mcpClientRegistry = ctx.mcpRegistry!;
+    this.contextLoader = ctx.contextLoader!;
     this.providersRegistry = ctx.providerRegistry!;
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
@@ -216,21 +219,19 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    * Clear the conversation transcript and re-read the workspace context from
    * disk, picking up any edits to agentcontext.md since last load.
    */
-  async reset(): Promise<ResetResult> {
+  async reset(): Promise<boolean> {
     if (this.session.status === "running") {
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot reset now.`);
     }
-
-    const before = this.workspace.projectContext?.content ?? null;
-    this.workspace = await this.workspaces.reload(this.session.workspaceId);
-    const after = this.workspace.projectContext?.content ?? null;
-
+    
     this.session.conversation.length = 0;
     this.session.status = "idle";
     this.session.counters.turns = 0;
+    this.workspace = await this.workspaces.reload(this.session.workspaceId);
     await this.finalize();
+    this.build();
 
-    return { context: this.workspace.projectContext, contextChanged: before !== after };
+    return true;
   }
 
   /**
@@ -304,8 +305,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.session.conversation;
   }
 
-  getWorkspaceContext(): ProjectContext | null {
-    return this.workspace.projectContext;
+  getContextLoader(): ContextLoader {
+    return this.contextLoader;
   }
 
   getModelsRegistry(): ModelRegistry {

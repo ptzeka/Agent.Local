@@ -41,7 +41,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       turns: session.counters.turns,
       preview,
     },
-    runtime.getWorkspaceContext()?.sourcePath ?? null
+    null
   );
 
   const rl = readline.createInterface({
@@ -116,12 +116,8 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "reset": {
-      const result = await ctx.runtime.reset();
-      const contextNote = result.context
-        ? `context reloaded from ${result.context.sourcePath}` +
-          (result.contextChanged ? " (changed)" : " (unchanged)")
-        : "no project context file";
-      process.stdout.write(chalk.gray(`(conversation cleared; ${contextNote})\n`));
+      await ctx.runtime.reset();
+      process.stdout.write(chalk.gray("(conversation cleared)\n"));
       return false;
     }
 

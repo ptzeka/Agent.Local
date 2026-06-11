@@ -1,5 +1,3 @@
-import { loadProjectContext, type ProjectContext } from "../context/context-loader.js";
-
 /**
  * WorkspaceRegistry — Repository layer.
  *
@@ -18,8 +16,6 @@ export interface Workspace {
   workspaceId: string;
   /** Root used to resolve project context (agentcontext.md). */
   root: string;
-  /** Standing direction for this workspace, or null when none is present. */
-  projectContext: ProjectContext | null;
 }
 
 export class WorkspaceRegistry {
@@ -34,8 +30,7 @@ export class WorkspaceRegistry {
     const existing = this.workspaces.get(workspaceId);
     if (existing) return existing;
 
-    const projectContext = await loadProjectContext(root);
-    const workspace: Workspace = { workspaceId, root, projectContext };
+    const workspace: Workspace = { workspaceId, root };
     this.workspaces.set(workspaceId, workspace);
     return workspace;
   }
@@ -58,8 +53,7 @@ export class WorkspaceRegistry {
    */
   public async reload(workspaceId: string): Promise<Workspace> {
     const workspace = this.get(workspaceId);
-    const projectContext = await loadProjectContext(workspace.root);
-    const updated: Workspace = { ...workspace, projectContext };
+    const updated: Workspace = { ...workspace };
     this.workspaces.set(workspaceId, updated);
     return updated;
   }

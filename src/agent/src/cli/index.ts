@@ -21,10 +21,8 @@ import process from "node:process";
 import url from "node:url";
 
 import chalk from "chalk";
-import dotenv, { config } from "dotenv";
+import dotenv from "dotenv";
 
-import { McpClientRegistry } from "../agent/registries/mcp-registry.js";
-import { ModelRegistry } from "../agent/registries/model-registry.js";
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { buildSubRuntime } from "../agent/runtime/build-sub-runtime.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
