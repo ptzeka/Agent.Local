@@ -18,6 +18,11 @@ Everything here is independent of the future user-keyed store and survives it.
 
 ### M0-1 · Dispatch-time tool gate — `~1.5d` · P0
 The core fix: restrictions must hold at dispatch, not just advertisement.
+> **Superseded by MR-1/MR-2** (see milestone MR below and
+> [UNIFIED_RUNTIME_PLAN.md](UNIFIED_RUNTIME_PLAN.md)): the gate is built as
+> the first layer of the runtime ToolPort instead of patching
+> `ScopedToolClient`, so it isn't redone during the refactor. The acceptance
+> test below still applies verbatim — check this item off when MR-2 lands.
 - [ ] Add an `allowedTools: ReadonlySet<string>` to `ScopedToolClient`
       (or a new `GatedToolClient` decorator implementing `ToolInvoker` that
       wraps it — decorator keeps path-clamping and policy separable).
@@ -192,7 +197,30 @@ model returns `[policy-error]` and no fs mutation occurred.
 - [ ] Tests proving *denial* per layer: read-only user role blocks a write
       tool even when the model whitelist allows it, and vice versa.
 
-### M2-5 · Mutation audit log — `~1d` · P1
+### M2-5 · Remote MCP servers with bearer auth — `~1.5d` · P1
+Today `McpClientRegistry` speaks stdio only; anything beyond local testing
+needs remote MCP servers over Streamable HTTP with an `Authorization: Bearer`
+header per the MCP spec (OAuth 2.1 for remote servers).
+- [ ] `mcp.json` schema: support `{"type": "http", "url": "...", "auth": {"type": "bearer", "tokenEnv": "MY_SERVER_TOKEN"}}`
+      alongside the existing stdio entries. Token comes from a named env var
+      (or, later, the M3 store) — never inline in the config file, which is
+      committed.
+- [ ] `registries/mcp-registry.ts`: connect via the MCP SDK's
+      `StreamableHTTPClientTransport` with the bearer header when
+      `type: "http"`; keep `spawnServer` for stdio. Both land in the same
+      neutral TRANSPORT layer — the ToolPort gate above is unchanged.
+- [ ] Treat remote servers as untrusted by default: their tools get no
+      read-only classification for free; explicit per-server allowlist entry
+      required (same rule as MR-1) before any tool is advertised.
+- [ ] Never log the token; redact `auth` when echoing config in errors/logs.
+- [ ] Defer full OAuth 2.1 dynamic registration/refresh until a real server
+      needs it — static bearer covers hosted MCP servers for now; note the
+      upgrade path (refresh-token grant at the transport layer).
+- [ ] Tests: header is attached on connect; token absent from logs/events;
+      unauthenticated (401) connect surfaces a clear startup error naming the
+      server, not a mid-turn tool failure.
+
+### M2-6 · Mutation audit log — `~1d` · P1
 - [ ] Append-only JSONL (per session, or single file with sessionId field):
       `{ ts, userSub, sessionId, tool, argsHash, verdict, evidence }`.
 - [ ] Write at executor dispatch completion (`synthetic-mcp/dispatch-executor.ts`)
@@ -290,6 +318,39 @@ filter — no code path can hydrate another user's session and forget to check.
 
 ---
 
+## MR — Unified runtime refactor (≈ 9 focused days)
+
+Full design and rationale in
+[UNIFIED_RUNTIME_PLAN.md](UNIFIED_RUNTIME_PLAN.md). One-line versions here
+for tracking; the plan doc has per-step file lists and acceptance criteria.
+Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
+`resolveAllowedTools` afterward.
+
+- [ ] **MR-1** · `resolveAllowedTools` + ToolPort skeleton (GATE → SCOPE →
+      TRANSPORT); replace `READ_ONLY_TAILS` heuristic with explicit
+      per-server config; M0-1 acceptance tests written here — `~1.5d`
+- [ ] **MR-2** · Runtime owns the port; orchestrator/executor stop building
+      their own `ScopedToolClient` + filters; kill the dual descriptor
+      assembly in `OrchestratorMiddleware` — `~1d`
+- [ ] **MR-3** · `SyntheticToolSet` for dispatch_executor/subsessions/excel;
+      delete `refreshTurnServers` + role methods from `McpClientRegistry`
+      (registry becomes a neutral transport) — `~2d`
+- [ ] **MR-4** · `AgentRuntime.beginTurn()` → `TurnContext`; decompose
+      `Orchestrator.run` (loop / CompletionGate / normalization →
+      tool-adapter); usage accounting moves to TurnContext (closes M1-2) — `~2.5d`
+- [ ] **MR-5** · Factories: `RunnerFactory` (`runtime.runners`),
+      `RegistryFactory.fromConfig`, `RuntimeFactory.standard()/child()`
+      replacing `cli buildRuntime` + `build-sub-runtime.ts` — `~1.5d`
+- [ ] **MR-6** · Import fence (lint rule: `runners/**` can't import
+      registries/synthetic-mcp/mcp-client); update REGISTRY_PATTERN.md and
+      README diagram; sweep dead exports — `~0.5d`
+
+**Done when:** the five acceptance checks in UNIFIED_RUNTIME_PLAN.md §5 pass,
+including `Orchestrator.run` under ~100 lines and one test proving
+advertised surface ≡ dispatch enforcement.
+
+---
+
 ## Open decisions — track, don't drift
 
 - [ ] **D1 · Step-level durability.** Turn-boundary persistence loses an
@@ -312,14 +373,18 @@ filter — no code path can hydrate another user's session and forget to check.
 ## Suggested order (solo, dependency-aware)
 
 ```
-M0-1 → M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7        (hole-closing)
-M1-1 → M1-2 → M1-3 → M1-4 → M1-5                       (reliability)
-M2-1 → M2-2 → M2-3 → M2-4 → M2-5                       (identity/policy)
+MR-1 → MR-2                                            (the gate — was M0-1)
+M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, disjoint files)
+MR-3 → MR-4 → MR-5 → MR-6                              (finish the unified runtime)
+M1-1 → M1-3 → M1-4 → M1-5                              (reliability; M1-2 closed by MR-4)
+M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6                (identity/policy — after MR)
 M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)
 ```
 
-M1 can interleave with M2 freely (no shared files beyond the gate).
-M3 strictly precedes M4-1 (leases). Total ≈ **8.5–10.5 solo weeks** of
-focused build time; the milestones are each independently shippable, so the
-agent stays usable throughout.
+MR-1/MR-2 go first (they are the security fix). The M0 hygiene items touch
+disjoint files and can interleave with MR-3…MR-6 freely. M2 lands after MR so
+policy is written once, into `resolveAllowedTools`. M3 strictly precedes
+M4-1 (leases). Total ≈ **9.5–11.5 solo weeks** of focused build time; the
+milestones are each independently shippable, so the agent stays usable
+throughout.
