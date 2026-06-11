@@ -57,7 +57,7 @@ export class ModelRegistry {
      }
      return result;
   }
-
+    
   public getValidMcpForModel(role: string): string[] {
     var modelName = this.roleAssignments[role];
     var model = this.definitions[modelName];

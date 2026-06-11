@@ -128,8 +128,14 @@ export class Orchestrator {
     const mcpRegistry = this.runtime.getMcpClientRegistry();
     const providersRegistry = this.runtime.getProvidersRegistry();
     const conversation = session.conversation;
-    const executorClient = mcpRegistry.getClient("executor")!;
-    const orchestratorClient = mcpRegistry.getClient("orchestrator")!;
+    // Resolve a role's tool servers (role → model → models.json `mcp` list),
+    // skipping any that are declared but not mounted (e.g. codemcp before
+    // ConnectMcpServers lands), so a single scoped client fronts the whole set.
+    const clientsFor = (role: string) =>
+      modelsRegistry.getValidMcpForModel(role).flatMap((serverName) => {
+        const client = mcpRegistry.getClient(serverName);
+        return client ? [client] : [];
+      });
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
     const orchestratorContextHash = session.contextHashes ? session.contextHashes["orchestrator"] : null;
@@ -141,11 +147,11 @@ export class Orchestrator {
     const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("orchestrator"));
     const executorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("executor"));
 
-    const executorTools = executorClient.listTools();
-    const orchestratorTools = orchestratorClient.listTools();
+    const scopedExecutorClient = new ScopedToolClient(clientsFor("executor"), workspace.workspaceId, emit);
+    const scopedOrchestratorClient = new ScopedToolClient(clientsFor("orchestrator"), workspace.workspaceId, emit);
 
-    const scopedExecutorClient = new ScopedToolClient(executorClient, workspace.workspaceId, emit);
-    const scopedOrchestratorClient = new ScopedToolClient(executorClient, workspace.workspaceId, emit);
+    const executorTools = scopedExecutorClient.listTools();
+    const orchestratorTools = scopedOrchestratorClient.listTools();
 
     const executor = new Executor(this.runtime);
 
@@ -156,6 +162,7 @@ export class Orchestrator {
         orchestratorModel: orchestratorProvider.modelId,
         executorModel: executorProvider.modelId,
         orchestratorTools,
+        readToolCount: orchestratorTools.length,
         executorToolCount: executorTools.length,
       },
     });

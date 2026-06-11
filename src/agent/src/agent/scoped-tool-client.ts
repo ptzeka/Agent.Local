@@ -3,6 +3,7 @@ import path from "node:path";
 import type { RunnerListener } from "./runners/runner-events.js";
 import { OrchestratorEventTypes } from "./runners/runner-events.js";
 import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
+import type { ToolDescriptor } from "./providers/provider.js";
 
 /**
  * ScopedToolClient — per-workspace path clamp at the agent's tool-call boundary.
@@ -24,7 +25,7 @@ import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
  * delegated untouched, so the orchestrator keeps repo-wide read visibility.
  */
 
-const FS_SERVER_PREFIX = "fsmcp__";
+const FS_SERVER_NAME = "fsmcp";
 
 /**
  * Which input field carries the workspace path, keyed by the tool's tail name
@@ -64,20 +65,48 @@ export class ScopeViolationError extends Error {
 }
 
 export class ScopedToolClient implements ToolInvoker {
+  /** The fronted servers, keyed by server name for `<server>__<tool>` routing. */
+  private readonly clientsByServer: Map<string, Mcp>;
+
   constructor(
-    private readonly inner: Mcp,
+    clients: Mcp[],
     private readonly workspaceId: string,
     private readonly emit?: RunnerListener
-  ) {}
+  ) {
+    this.clientsByServer = new Map(clients.map((client) => [client.name, client]));
+  }
+
+  /** Union of every fronted server's tools (namespaced `<server>__<tool>` descriptors). */
+  public listTools(): ToolDescriptor[] {
+    const tools: ToolDescriptor[] = [];
+    for (const client of this.clientsByServer.values()) {
+      tools.push(...client.listTools());
+    }
+    return tools;
+  }
 
   public async callTool(
     name: string,
     args: Record<string, unknown>
   ): Promise<ToolExecutionResult> {
-    // Only fsmcp tools are segmented; everything else passes through verbatim.
-    if (!name.startsWith(FS_SERVER_PREFIX)) {
+    // Route by the tool's `<server>__<tool>` namespace to the owning server, then
+    // hand that server the bare tool name (each server only knows its own tools).
+    const separator = name.indexOf("__");
+    const serverName = separator === -1 ? "" : name.slice(0, separator);
+    const toolTail = separator === -1 ? name : name.slice(separator + 2);
+    const client = this.clientsByServer.get(serverName);
+    if (!client) {
+      return {
+        isError: true,
+        content: `Unknown tool "${name}": no server "${serverName}" mounted on this client.`,
+      };
+    }
+
+    // Only fsmcp tools carry workspace paths and need clamping; everything else
+    // (excel, codemcp, subsessions, …) passes through to its server verbatim.
+    if (serverName !== FS_SERVER_NAME) {
       this.emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
-      const result = await this.inner.callTool(name, args);
+      const result = await client.callTool(toolTail, args);
       this.emit?.({
         type: OrchestratorEventTypes.TOOL_RESULT,
         data: { id: "", name, isError: result.isError, contentPreview: result.content.slice(0, 400) },
@@ -85,11 +114,10 @@ export class ScopedToolClient implements ToolInvoker {
       return result;
     }
 
-    const toolTail = name.slice(FS_SERVER_PREFIX.length);
     const inputField = INPUT_FIELD_BY_TAIL[toolTail];
     if (!inputField) {
       // An fsmcp tool with no path surface (none today) — nothing to clamp.
-      return this.inner.callTool(name, args);
+      return client.callTool(toolTail, args);
     }
 
     let scopedArgs: Record<string, unknown>;
@@ -105,7 +133,7 @@ export class ScopedToolClient implements ToolInvoker {
     }
 
     this.emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
-    const result = await this.inner.callTool(name, scopedArgs);
+    const result = await client.callTool(toolTail, scopedArgs);
     const stripped = this.stripResult(toolTail, result);
     this.emit?.({
       type: OrchestratorEventTypes.TOOL_RESULT,

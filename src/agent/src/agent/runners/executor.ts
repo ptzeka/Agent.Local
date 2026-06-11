@@ -81,11 +81,16 @@ export class Executor {
     const providersRegistry = this.runtime.getProvidersRegistry();
     const workspace = this.runtime.getWorkspace();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
-    const client = mcpRegistry.getClient("executor")!;
+    // Resolve the executor's tool servers (role → model → models.json `mcp` list),
+    // skipping any not currently mounted, and front them with one scoped client.
+    const clients = registry.getValidMcpForModel("executor").flatMap((serverName) => {
+      const mounted = mcpRegistry.getClient(serverName);
+      return mounted ? [mounted] : [];
+    });
 
     this.provider = providersRegistry.getProvider(registry.getProviderForRole("executor"));
-    this.tools = new ScopedToolClient(client, workspace.workspaceId, emit);
-    this.availableTools = client.listTools();
+    this.tools = new ScopedToolClient(clients, workspace.workspaceId, emit);
+    this.availableTools = this.tools.listTools();
 
     emit({
       type: ExecutorEventTypes.START,

@@ -48,9 +48,19 @@ export class ContextMiddleware implements IMiddleware {
           "Add StoreMiddleware and SessionMiddleware earlier in the pipeline."
       );
     }
-    ctx.contextLoader ??= new ContextLoader(this.params.contextsDir!);
+    // Default the snapshot store to a `contexts` folder beside the sessions dir
+    // (…/sessions and …/contexts sit together) when no explicit dir is given.
+    const contextsDir = this.params.contextsDir ?? path.join(path.dirname(ctx.sessionsDir), "contexts");
+    ctx.contextLoader ??= new ContextLoader(contextsDir);
     const role = this.params.roleName;
-    const tools = ctx.mcpRegistry!.getClient(role)?.listTools()!;
+
+    // Resolve the role's tools by combining every MCP server the role's model is
+    // allowed to use (role → model → models.json `mcp` list). Servers that are
+    // declared but not yet connected (e.g. codemcp, subsessions) resolve to
+    // undefined and are skipped, so the snapshot reflects what is actually mounted.
+    const serverNames = ctx.modelsRegistry!.getValidMcpForModel(role);
+    const tools = serverNames.flatMap((serverName) => ctx.mcpRegistry!.getClient(serverName)?.listTools() ?? []);
+
     const projectTemplate = ctx.modelsRegistry?.getPromptTemplate("project");
     const agentTemplate = ctx.modelsRegistry!.getPromptTemplate(role);
     const systemPrompt = fillToolsList(agentTemplate, tools);  

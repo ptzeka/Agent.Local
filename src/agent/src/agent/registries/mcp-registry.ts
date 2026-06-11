@@ -14,10 +14,11 @@ export class McpClientRegistry {
   }
 
   public registerClient(client: Mcp): void {
+    // server name
     this.clients.set(client.name, client);
   }
-  public getClient(name: string): Mcp | undefined {
-    return this.clients.get(name);
+  public getClient(serverName: string): Mcp | undefined {
+    return this.clients.get(serverName);
   }
   public listTools(): ToolDescriptor[] {
     const flattened: ToolDescriptor[] = [];
