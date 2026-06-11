@@ -140,12 +140,42 @@ model returns `[policy-error]` and no fs mutation occurred.
 - [ ] Headless exit code for budget-capped (extend `cli/index.ts` codes).
 - [ ] Test: tiny budget + fake provider → loop stops with the right outcome.
 
-### M1-4 · Evaluator fail-open visibility — `~0.5d` · P2
+### M1-4 · Prompt-cache strategy — `~1.5d` · P1
+Today: Anthropic caches system+tools only (one breakpoint); Gemini caches
+system+tools explicitly with an unhandled 5-min expiry; the growing
+conversation — the expensive part of an agentic turn — is never cached.
+- [x] Anthropic (`providers/anthropic-provider.ts`): moving breakpoint on the
+      LAST content block of the messages array each call — done 2026-06-10
+      (`applyMessageBreakpoints`, tests in `tests/anthropic-cache.test.ts`).
+- [x] Third breakpoint ~15 blocks before the last for the 20-block lookback —
+      done 2026-06-10, same change (budget: system 1 + messages 2 = 3 of 4).
+- [x] Gemini (`providers/gemini-provider.ts`): track `expireTime` from
+      `caches.create` and recreate when near expiry — done 2026-06-10
+      (`cacheExpiryMs` helper + 30s margin + tests in
+      `tests/gemini-cache.test.ts`). Still open: verify the explicit cache
+      isn't below flash-lite's minimum-token threshold in practice (if so,
+      rely on Gemini 2.5 implicit prefix caching and delete the explicit path).
+- [ ] Determinism: sort tool descriptors by name at the provider boundary
+      (moves into the ToolPort with MR); rule: nothing volatile (timestamps,
+      ids) in system messages — project context + static prompts only.
+- [ ] Tripwire: WARNING event when an Anthropic call at iteration ≥2 of a
+      turn reports `cache_read_input_tokens == 0` — converts silent cache
+      regressions into visible events. Log when a role's `contextHash`
+      changes (known cold-cache cause).
+- [ ] Keep 5-min ephemeral TTL (interactive cadence + sub-session poll
+      backoff fit inside it); skip evaluator/summarizer tuning (cheap models;
+      Haiku's 4096-token minimum prefix means small judge prompts don't cache).
+
+**Done when:** a mocked 3-iteration turn shows breakpoints on system + last
+block + lookback block, and session counters show cache reads ≥ prior-prompt
+size from iteration 2 onward in a live smoke test.
+
+### M1-5 · Evaluator fail-open visibility — `~0.5d` · P2
 - [ ] New event type `EVALUATION_FAILED_OPEN` (today it's a generic WARNING
       in `runners/orchestrator.ts` ~L443) + a session counter, so a dead
       judge is observable instead of silent leniency.
 
-### M1-5 · MCP client resilience — `~1d` · P2
+### M1-6 · MCP client resilience — `~1d` · P2
 - [ ] Detect transport death in `McpClient` (closed/error event from the
       SDK client); mark disconnected.
 - [ ] One lazy reconnect attempt on next `callTool` for stdio servers
@@ -367,6 +397,15 @@ advertised surface ≡ dispatch enforcement.
 - [ ] **D4 · Anonymous mode in production.** CLI keeps anonymous fallback;
       decide whether service mode allows it at all (recommend: no —
       `AnonymousMiddleware` excluded from the service pipeline).
+- [ ] **D5 · IoC: pure DI, no container.** Composition stays explicit —
+      MR-5's factories are the composition root; the middleware pipeline is
+      the per-session scope; MR-4's TurnContext removes run-time service
+      location (`runtime.get*()` inside runners). Domain registries
+      (ModelRegistry, McpClientRegistry) are runtime dispatch tables, not DI —
+      they stay. No InversifyJS/tsyringe/Awilix unless a real trigger
+      appears: a plugin system needing dynamic registration (then Awilix —
+      no decorators, `createScope()` maps to session lifetime) or a NestJS
+      transport in M4 (Nest DI for controllers only; agent core stays pure).
 
 ---
 
@@ -376,7 +415,7 @@ advertised surface ≡ dispatch enforcement.
 MR-1 → MR-2                                            (the gate — was M0-1)
 M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, disjoint files)
 MR-3 → MR-4 → MR-5 → MR-6                              (finish the unified runtime)
-M1-1 → M1-3 → M1-4 → M1-5                              (reliability; M1-2 closed by MR-4)
+M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-2 closed by MR-4)
 M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6                (identity/policy — after MR)
 M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)

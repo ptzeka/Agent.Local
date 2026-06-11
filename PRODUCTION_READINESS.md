@@ -31,6 +31,26 @@
 >    durable execution, policy engine, tenancy, telemetry — which is accretion
 >    on the existing seams, not surgery. Two open architectural decisions are
 >    tracked in the backlog (D1 step-level durability, D2 fixed topology).
+> 5. **Design strength — per-role model routing (local/cloud hybrid).** The
+>    role→model registry makes model choice a *per-role config decision*
+>    (orchestrator, executor, evaluator, summarizer independently assignable,
+>    hot-swappable, each with its own MCP scope) rather than a global
+>    architecture decision. This positions the project unusually well if
+>    local LLMs keep maturing: the privilege architecture compensates for
+>    model weakness exactly where local models are weakest — the executor is
+>    bounded and deterministically verified on disk, so a small local model
+>    is acceptable there while judgment-heavy roles stay on cloud models —
+>    and the prompted-JSON tool fallback hardens against the flaky native
+>    tool-calling that is local models' main failure mode. With M2's policy
+>    layer this becomes a security feature, not just a cost feature:
+>    "local-models-only" per user role or workspace = data never leaves the
+>    machine for sensitive work. Force-multiplier when wanted: one
+>    OpenAI-compatible provider would extend the bet from Ollama to the whole
+>    local serving ecosystem (llama.cpp, vLLM, LM Studio) plus low-cost cloud.
+>    Known sharp edge: roles mapped to models that can't co-reside in VRAM
+>    thrash on load/unload (documented in models.json comments); evaluator is
+>    the one role to keep on a strong model — it gates completion and fails
+>    open.
 
 ---
 

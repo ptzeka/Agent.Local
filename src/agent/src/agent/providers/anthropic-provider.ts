@@ -42,6 +42,15 @@ export interface AnthropicProviderConfig {
 const DEFAULT_MAX_TOKENS = 16000;
 const DEFAULT_TEMPERATURE = 0.2;
 
+/**
+ * Span back to the second conversation breakpoint. Cache lookup walks back at
+ * most 20 content blocks from a breakpoint; a dispatch-heavy iteration can
+ * append more than that in one go, so a trailing breakpoint alone would fail
+ * to find the entry the previous call wrote. Keeping a second breakpoint ~15
+ * blocks behind the tail guarantees a hit point inside the window.
+ */
+const LOOKBACK_BLOCK_SPAN = 15;
+
 export class AnthropicProvider implements LLMProvider {
   public readonly providerName = "anthropic";
   public readonly modelId: string;
@@ -59,6 +68,12 @@ export class AnthropicProvider implements LLMProvider {
 
   public async chat(messages: ChatMessage[], options: ChatOptions): Promise<ChatResponse> {
     const { system, anthropicMessages } = toAnthropicMessages(messages);
+
+    // Rolling conversation cache: each call's prompt extends the previous
+    // call's, so breakpoints near the tail let iteration N read iteration
+    // N-1's entire prompt at cache-read price and pay full price only for
+    // the delta (new tool results + the new user turn).
+    applyMessageBreakpoints(anthropicMessages);
 
     const request: Anthropic.MessageCreateParamsNonStreaming = {
       model: this.modelId,
@@ -126,6 +141,44 @@ export class AnthropicProvider implements LLMProvider {
         totalDurationMs,
       },
     };
+  }
+}
+
+/**
+ * Place the two moving conversation breakpoints, walking blocks from the end:
+ * one on the very last content block (the next call extends this prompt, so
+ * it reads everything up to here as a cache hit), and one LOOKBACK_BLOCK_SPAN
+ * blocks earlier (so THIS call still finds the entry the previous call wrote
+ * even when a single iteration appended more than the 20-block window).
+ *
+ * String message content is normalised to a single text block when it has to
+ * carry a marker — byte-equivalent for the API; only block objects can hold
+ * cache_control. Counts CONTENT BLOCKS, not messages: a user turn batching
+ * five tool_results is five blocks. Budget: 2 here + 1 on system = 3 of the
+ * allowed 4 breakpoints.
+ *
+ * Mutates in place — chat() builds these arrays fresh per call.
+ */
+export function applyMessageBreakpoints(messages: Anthropic.MessageParam[]): void {
+  let blocksFromEnd = 0;
+
+  for (let m = messages.length - 1; m >= 0; m -= 1) {
+    const message = messages[m];
+    const blocks: Anthropic.ContentBlockParam[] =
+      typeof message.content === "string"
+        ? [{ type: "text", text: message.content }]
+        : message.content;
+
+    for (let b = blocks.length - 1; b >= 0; b -= 1) {
+      blocksFromEnd += 1;
+      if (blocksFromEnd === 1 || blocksFromEnd === LOOKBACK_BLOCK_SPAN + 1) {
+        (blocks[b] as { cache_control?: { type: "ephemeral" } }).cache_control = {
+          type: "ephemeral",
+        };
+        message.content = blocks; // persist the string→block normalisation
+        if (blocksFromEnd > 1) return; // both breakpoints placed
+      }
+    }
   }
 }
 

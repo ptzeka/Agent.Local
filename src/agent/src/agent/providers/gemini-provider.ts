@@ -25,7 +25,11 @@ export interface GeminiProviderConfig {
 
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_TEMPERATURE = 0.2;
-const CACHE_TTL = "300s";
+const CACHE_TTL_SECONDS = 300;
+const CACHE_TTL = `${CACHE_TTL_SECONDS}s`;
+/** Recreate the cache this long before server-side expiry, so an in-flight
+ *  request can't reference an entry that lapses mid-call. */
+const CACHE_EXPIRY_MARGIN_MS = 30_000;
 
 export class GeminiProvider implements LLMProvider {
   public readonly providerName = "gemini";
@@ -36,9 +40,12 @@ export class GeminiProvider implements LLMProvider {
   private readonly defaultMaxTokens: number;
 
   // Prompt cache for the stable prefix (system instruction + tools).
-  // One cache entry per provider instance; invalidated when the key changes.
+  // One cache entry per provider instance; invalidated when the key changes
+  // or the server-side TTL lapses (entries are deleted server-side at
+  // expireTime — reusing a lapsed name fails the request outright).
   private cachedContentName: string | undefined;
   private cacheKey: string | undefined;
+  private cacheExpiresAtMs: number | undefined;
 
   constructor(config: GeminiProviderConfig) {
     this.modelId = config.model;
@@ -122,7 +129,12 @@ export class GeminiProvider implements LLMProvider {
     if (!systemInstruction && tools.length === 0) return undefined;
 
     const key = JSON.stringify({ systemInstruction, tools });
-    if (key === this.cacheKey && this.cachedContentName) {
+    if (
+      key === this.cacheKey &&
+      this.cachedContentName &&
+      this.cacheExpiresAtMs !== undefined &&
+      Date.now() < this.cacheExpiresAtMs - CACHE_EXPIRY_MARGIN_MS
+    ) {
       return this.cachedContentName;
     }
 
@@ -138,14 +150,27 @@ export class GeminiProvider implements LLMProvider {
 
       this.cachedContentName = cache.name;
       this.cacheKey = key;
+      this.cacheExpiresAtMs = cacheExpiryMs(cache.expireTime, Date.now());
       return cache.name;
     } catch {
       // Too few tokens or model doesn't support context caching — inline fallback.
       this.cachedContentName = undefined;
       this.cacheKey = undefined;
+      this.cacheExpiresAtMs = undefined;
       return undefined;
     }
   }
+}
+
+/**
+ * Resolve when a created cache entry lapses, as epoch millis. Prefers the
+ * server-reported `expireTime` (authoritative — the server deletes the entry
+ * then); falls back to now + the requested TTL when the field is absent or
+ * unparseable, which errs on the early side and merely recreates sooner.
+ */
+export function cacheExpiryMs(expireTime: string | undefined, nowMs: number): number {
+  const parsed = expireTime ? Date.parse(expireTime) : NaN;
+  return Number.isFinite(parsed) ? parsed : nowMs + CACHE_TTL_SECONDS * 1000;
 }
 
 /**
