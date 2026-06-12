@@ -20,13 +20,9 @@ export function renderEvent(event: RunnerEvent): void {
   switch (event.type) {
     case "orchestrator-start": {
       const orch = String(event.data.orchestratorModel ?? "");
-      const exec = String(event.data.executorModel ?? "");
       const reads = Number(event.data.readToolCount ?? 0);
-      const execs = Number(event.data.executorToolCount ?? 0);
       process.stdout.write(
-        chalk.cyanBright(
-          `\n[ORCHESTRATOR] ${orch} — ${reads} read tools, dispatch_executor → ${exec} (${execs} tools)\n`
-        )
+        chalk.cyanBright(`\n[ORCHESTRATOR] ${orch} — ${reads} tools\n`)
       );
       break;
     }
@@ -220,51 +216,35 @@ export function renderSubSessionNotification(notification: SubSessionNotificatio
 function renderExecutorEvent(data: Record<string, unknown>): void {
   const kind = String(data.kind ?? "");
   switch (kind) {
-    case "executor-start": {
-      const model = String(data.model ?? "");
-      const tool = String(data.tool ?? "");
-      process.stdout.write(chalk.magenta(`  [EXECUTOR] start (${model}) tool=${tool}\n`));
+    // Orchestrator-style events forwarded from the executor sub-run.
+    case "orchestrator-start": {
+      const model = String(data.orchestratorModel ?? "");
+      process.stdout.write(chalk.magenta(`  [EXECUTOR] running (${model})\n`));
       return;
     }
-    case "executor-ack": {
-      const ack = String(data.ack ?? "");
-      process.stdout.write(chalk.magenta(`  [EXECUTOR] ACK ${ack}\n`));
+    case "orchestrator-message": {
+      const content = String(data.content ?? "").trim();
+      if (content.length > 0) {
+        process.stdout.write(chalk.magenta("  [EXECUTOR] ") + content + "\n");
+      }
       return;
     }
-    case "executor-tool-call": {
+    case "tool-call": {
       const name = String(data.name ?? "");
-      process.stdout.write(chalk.yellow(`  [EXECUTOR] → ${name}\n`));
+      const args = JSON.stringify(data.arguments ?? {}, null, 0);
+      process.stdout.write(chalk.yellow(`  [EXECUTOR] → tool: ${name} ${chalk.gray(args)}\n`));
       return;
     }
-    case "executor-validate": {
-      const name = String(data.name ?? "");
-      process.stdout.write(chalk.cyan(`  [EXECUTOR] validate → ${name}\n`));
-      return;
-    }
-    case "executor-tool-result": {
+    case "tool-result": {
       const name = String(data.name ?? "");
       const isError = Boolean(data.isError);
       const colour = isError ? chalk.red : chalk.green;
-      const label = isError ? "tool-error" : "tool-ok";
-      process.stdout.write(colour(`  [EXECUTOR] ← ${label}: ${name}\n`));
+      process.stdout.write(colour(`  [EXECUTOR] ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`));
       return;
     }
-    case "executor-report": {
-      const verdict = String(data.verdict ?? "");
+    case "warning": {
       const message = String(data.message ?? "");
-      const colour = verdict === "OK" ? chalk.greenBright : chalk.redBright;
-      process.stdout.write(colour(`  [EXECUTOR] RESULT ${verdict} `) + chalk.gray(message) + "\n");
-      return;
-    }
-    case "executor-deterministic-verdict": {
-      const verdict = String(data.verdict ?? "");
-      const evidence = String(data.evidence ?? "");
-      process.stdout.write(chalk.gray(`  [EXECUTOR] deterministic=${verdict} — ${evidence}\n`));
-      return;
-    }
-    case "executor-warning": {
-      const reason = String(data.reason ?? "");
-      process.stdout.write(chalk.yellowBright(`  [EXECUTOR] warning: ${reason}\n`));
+      process.stdout.write(chalk.yellowBright(`  [EXECUTOR] warning: ${message}\n`));
       return;
     }
   }
@@ -297,7 +277,7 @@ export function renderBanner(
     chalk.gray(`session:   ${sessionLine(session)}`),
     chalk.gray(`project:   ${workspaceRoot}`),
     chalk.gray(`fs sandbox: ${sandboxRoot} (all file I/O confined here)`),
-    chalk.gray("architecture: orchestrator (read-only) → dispatch_executor → executor (mutations)"),
+    chalk.gray("architecture: orchestrator (read-only) → executor__dispatch → executor (mutations)"),
   ];
   if (contextPath) {
     lines.push(chalk.gray(`project context: ${contextPath}`));

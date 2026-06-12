@@ -14,7 +14,7 @@ export interface ModelDefinition {
 export interface OrchestrationConfig {
   /** Hard cap on orchestrator LLM turns per user message. */
   maxOrchestratorIterations: number;
-  /** Hard cap on dispatch_executor calls per user message. */
+  /** Hard cap on executor__dispatch calls per user message. */
   maxExecutorDispatchesPerTurn: number;
   /** Hard cap on executor LLM turns per single dispatch. */
   maxExecutorIterationsPerAsk: number;

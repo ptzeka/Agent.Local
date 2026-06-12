@@ -10,7 +10,8 @@
       "Bash(timeout 60 node dist/cli/index.js)",
       "Bash(rm -f /c/www/Agent.Local/src/agent/src/agent/_scope_check.ts && echo removed)",
       "Bash(echo \"exit: $?\")",
-      "Bash(npx tsx *)"
+      "Bash(npx tsx *)",
+      "Bash(Remove-Item \"c:\\\\www\\\\Agent.Local\\\\agent.ai\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"

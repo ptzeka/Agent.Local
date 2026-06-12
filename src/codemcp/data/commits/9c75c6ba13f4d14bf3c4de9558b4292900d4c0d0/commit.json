@@ -1,0 +1,10 @@
+{
+  "commitSha": "9c75c6ba13f4d14bf3c4de9558b4292900d4c0d0",
+  "branch": "main",
+  "repository": "ptzeka/Agent.Local",
+  "indexedAt": "2026-06-12T01:30:38.925Z",
+  "embedModel": "local:hashed-bag-768",
+  "embedDim": 768,
+  "fileCount": 251,
+  "chunkCount": 1618
+}

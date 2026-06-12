@@ -1,4 +1,3 @@
-import { Executor } from "./zzz_executor.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type {
   ChatMessage,
@@ -7,7 +6,7 @@ import type {
   ToolCall,
   ToolDescriptor,
 } from "../providers/provider.js";
-import { ORCHESTRATOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
@@ -17,11 +16,8 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "../scoped-tool-client.js";
 import type { SessionCounters } from "../session/session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
-import {
-  DispatchTracker,
-  type SyntheticMcpContext,
-  type ToolContext,
-} from "../synthetic-mcp/index.js";
+import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
+import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
@@ -34,18 +30,15 @@ export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js
 /**
  * Orchestrator.
  *
- * Coordinates execution; never executes. The orchestrator LLM is given
- * the read-only context tools (read_file, list_dir, glob, grep, codemcp.*)
- * plus a single synthetic tool — `dispatch_executor` — which is the only
- * way for it to cause a mutation.
+ * Runs the agentic loop for any role (orchestrator or executor). The role
+ * determines which model is used, which tools are visible, which system
+ * prompt is applied, and the iteration cap.
  *
- * When the LLM calls `dispatch_executor`, the orchestrator catches the
- * call before it touches MCP, hands the ask to the Executor sub-agent,
- * and feeds the structured feedback (ACK + RESULT + deterministic
- * verdict) back to the LLM as a `role: "tool"` message. The LLM then
- * recalculates: next dispatch, or final answer.
+ * For the "orchestrator" role the loop coordinates via read-only tools plus
+ * `executor__dispatch`; for the "executor" role it runs the write tools and
+ * terminates on the first tool-free response (no evaluator gate).
  *
- * The orchestrator is STATELESS. It holds only app-level dependencies
+ * The Orchestrator is STATELESS. It holds only app-level dependencies
  * (the model registry and tool client); every piece of per-turn state —
  * the transcript and the project context — arrives as arguments to `run`
  * via the `Session` and `Workspace` it is handed. The Initializer owns
@@ -98,7 +91,7 @@ export interface SessionRunner {
 export class Orchestrator {
   private runtime!: AgentRuntimeQueryable;
 
-  constructor(private readonly role: string, runtime?: AgentRuntimeQueryable, ) {
+  constructor(private readonly role: string, runtime?: AgentRuntimeQueryable) {
     if (runtime) {
       this.runtime = runtime;
     }
@@ -112,21 +105,17 @@ export class Orchestrator {
   /**
    * Run one user turn end-to-end for the session in the runtime.
    * Mutates `session.conversation` in place (the turn's work product); holds
-   * no reference to it afterward. The orchestrator loop:
-   *   - asks its LLM for the next move
-   *   - dispatches any read-only tool calls directly via MCP
-   *   - catches `dispatch_executor` calls and routes them to Executor.run
-   *   - feeds structured feedback back to the LLM
-   *   - returns when the LLM produces a final tool-free message or caps out
+   * no reference to it afterward.
    */
   public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
     const session = this.runtime.getSession();
-    const workspace = this.runtime.getWorkspace();  
+    const workspace = this.runtime.getWorkspace();
     const modelsRegistry = this.runtime.getModelsRegistry();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
     const providersRegistry = this.runtime.getProvidersRegistry();
     const conversation = session.conversation;
+
     // Resolve a role's tool servers (role → model → models.json `mcp` list),
     // skipping any that are declared but not mounted (e.g. codemcp before
     // ConnectMcpServers lands), so a single scoped client fronts the whole set.
@@ -135,23 +124,20 @@ export class Orchestrator {
         const client = mcpRegistry.getClient(serverName);
         return client ? [client] : [];
       });
+
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
-    const orchestratorContextHash = session.contextHashes ? session.contextHashes[this.role] : null;
-    const orchestratorContext = orchestratorContextHash ? await contextLoader.getContextSnapshot(orchestratorContextHash) : null;
+    const contextHash = session.contextHashes ? session.contextHashes[this.role] : null;
+    const context = contextHash ? await contextLoader.getContextSnapshot(contextHash) : null;
 
     await this.maybeSummarize(conversation, emit, options.signal);
     conversation.push({ role: "user", content: userInput });
 
-    const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
+    const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
-    // The subsessions server was registered at session setup with an undefined
-    // coordinator (advertise-only). Re-bind it to THIS turn's live coordinator
-    // BEFORE the scoped clients capture the server set — ScopedToolClient snapshots
-    // its clients at construction, so a later re-register wouldn't take effect this
-    // turn. registerClient is keyed by server name, so this replaces the placeholder
-    // in place. Without a coordinator the placeholder stays (calls report
-    // "not available"), which keeps sub-sessions one level deep.
+    // Re-bind the subsessions server to this turn's live coordinator so tool
+    // calls land on the right instance. registerClient is keyed by server name,
+    // so this replaces the placeholder in the registry.
     const coordinator = options.coordinator;
     if (coordinator) {
       const subsessionToolCtx: ToolContext = {
@@ -164,26 +150,38 @@ export class Orchestrator {
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
     }
 
-    const scopedExecutorClient = new ScopedToolClient(clientsFor("executor"), emit);
-    const scopedOrchestratorClient = new ScopedToolClient(clientsFor("orchestrator"), emit);
+    const scopedClient = new ScopedToolClient(clientsFor(this.role), emit);
+    const visibleTools = scopedClient.listTools();
 
-    const executorTools = scopedExecutorClient.listTools();
-    const orchestratorTools = scopedOrchestratorClient.listTools();
+    const maxDispatches = config.orchestration.maxExecutorDispatchesPerTurn!;
+    const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
+    const tracker = new DispatchTracker(maxDispatches, checkInterval);
 
-    const executor = new Executor(this.runtime);
+    // Bind per-turn context on the executor LocalMcp only for roles that
+    // actually dispatch to it (orchestrator-family). The executor sub-run
+    // itself does not dispatch further, so we skip binding there to avoid
+    // overwriting the parent turn's tracker while a dispatch is in-flight.
+    if (this.role !== "executor") {
+      const executorMcp = mcpRegistry.getClient("executor");
+      if (executorMcp && typeof (executorMcp as unknown as TurnBindable).bindTurn === "function") {
+        (executorMcp as unknown as TurnBindable).bindTurn(
+          options.signal,
+          emit as OrchestratorListener,
+          tracker
+        );
+      }
+    }
 
-    
     emit({
       type: OrchestratorEventTypes.START,
       data: {
-        orchestratorModel: orchestratorProvider.modelId,
-        orchestratorTools,
-        readToolCount: orchestratorTools.length,
-        executorToolCount: executorTools.length,
+        orchestratorModel: provider.modelId,
+        orchestratorTools: visibleTools,
+        readToolCount: visibleTools.length,
       },
     });
 
-    const systemMessages = this.buildSystemMessages(orchestratorProvider, orchestratorTools, orchestratorContext);
+    const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
 
     const turnStartIndex = workingMessages.length - 1;
@@ -191,50 +189,28 @@ export class Orchestrator {
     // Anchor parity with the evaluator. The judge is re-told the ORIGINAL
     // REQUEST verbatim on every call — that is why it stays grounded — while
     // the orchestrator only had the request as one aging line in a transcript
-    // dominated by finished goals, which is how a stale goal wins. Re-assert
-    // it as the LAST message of every chat call, transient (never pushed to
-    // the conversation), so neither context growth nor summarization can
-    // bury it.
+    // dominated by finished goals. Re-assert it as the LAST message of every
+    // chat call, transient (never pushed to the conversation).
     const requestAnchor: ChatMessage = {
       role: "system",
       content: modelsRegistry.getAnchorText(userInput),
     };
 
-    const maxIterations = config.orchestration.maxOrchestratorIterations;
-    const maxExecutorIterations = config.orchestration.maxExecutorIterationsPerAsk;
-    const checkInterval = config.orchestration.validatorCheckIntervalDispatches;
-    const maxExecutorDispatchesPerTurn = config.orchestration.maxExecutorDispatchesPerTurn;
-    const executorTemperature = config.orchestration.executorTemperature;
+    const maxIterations =
+      this.role === "executor"
+        ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
+        : (config.orchestration.maxOrchestratorIterations ?? 16);
+
     const orchestratorTemperature = config.orchestration.orchestratorTemperature;
+    const executorTemperature = config.orchestration.executorTemperature;
+    const temperature = this.role === "executor" ? executorTemperature! : orchestratorTemperature!;
 
-    const tracker = new DispatchTracker(maxExecutorDispatchesPerTurn!, checkInterval!);
-
-    const syntheticContext: SyntheticMcpContext = {
-      session,
-      workspace,
-      sandboxRoot: mcpRegistry.sandboxRoot,
-      executor,
-      coordinator,
-      tracker,
-      emit,
-      signal: options.signal,
-      executorMaxIterations: maxExecutorIterations!,
-      executorTemperature: executorTemperature!,
-    };
-
-    for (let iteration = 1; iteration <= maxIterations!; iteration += 1) {
-      // Cooperative stop checkpoint. The abort signal only unwinds awaits
-      // that honour it (Ollama's client doesn't, MCP tool calls can't), so
-      // the loop re-checks at every safe boundary — bounding stop latency to
-      // ONE call instead of the rest of the round.
+    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (options.signal?.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
 
-      // Fold in any externally-injected prompts before asking the model. The
-      // orchestrator is the sole writer of `conversation`; outside producers
-      // enqueue (see InputInbox) and we drain here, at a safe boundary, so a
-      // mid-run injection becomes a user turn the next iteration acts on.
+      // Drain any externally-injected prompts before asking the model.
       const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
       for (const text of injectedPrompts) {
         const injected: ChatMessage = { role: "user", content: text };
@@ -245,23 +221,23 @@ export class Orchestrator {
 
       emit({ type: OrchestratorEventTypes.ITERATION, data: { iteration, max: maxIterations } });
 
-      let response;
+      let response: ChatResponse;
       try {
-        response = await orchestratorProvider.chat([...workingMessages, requestAnchor], {
-          tools: orchestratorProvider.supportsNativeTools ? orchestratorTools : [],
-          temperature: orchestratorTemperature!,
+        response = await provider.chat([...workingMessages, requestAnchor], {
+          tools: provider.supportsNativeTools ? visibleTools : [],
+          temperature,
           signal: options.signal,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
         throw new Error(
-          `Orchestrator (${orchestratorProvider.providerName}:${orchestratorProvider.modelId}) failed at iteration ${iteration}: ${errorMsg}`
+          `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${iteration}: ${errorMsg}`
         );
       }
 
       accumulateUsage(session.counters, response.usage);
 
-      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(orchestratorProvider, response, emit);
+      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, emit);
 
       emit({
         type: OrchestratorEventTypes.MESSAGE,
@@ -277,9 +253,17 @@ export class Orchestrator {
       workingMessages.push(assistantMessage);
 
       if (toolCalls.length === 0) {
-        // Candidate completion. Gate it through the evaluator: the turn only
-        // ends on a SATISFIED verdict. CONTINUE and UNSATISFIED both keep the
-        // loop running, with different steering.
+        // Executor: first tool-free response is the RESULT — no evaluator gate.
+        if (this.role === "executor") {
+          return {
+            finalMessage: assistantMessage,
+            iterations: iteration,
+            dispatches: tracker.count,
+            outcome: "satisfied",
+          };
+        }
+
+        // Orchestrator: gate through the evaluator.
         const verdict = await this.evaluateCompletion(
           userInput,
           assistantMessage.content,
@@ -288,7 +272,7 @@ export class Orchestrator {
           options.signal
         );
 
-        if (verdict.state === "satisfied") {
+        if (verdict.state === "satisfied" || verdict.state === "awaiting-input") {
           return {
             finalMessage: assistantMessage,
             iterations: iteration,
@@ -297,18 +281,7 @@ export class Orchestrator {
           };
         }
 
-        if (verdict.state === "awaiting-input") {
-          return {
-            finalMessage: assistantMessage,
-            iterations: iteration,
-            dispatches: tracker.count,
-            outcome: "satisfied",
-          };
-        }
-
-        // Nudges quote the request verbatim: a bare "the request" resolves
-        // against whatever goal is most salient in the transcript, which after
-        // a long session is usually a FINISHED one.
+        // Nudges quote the request verbatim to prevent goal drift.
         const nudge: ChatMessage = {
           role: "user",
           content:
@@ -330,26 +303,11 @@ export class Orchestrator {
       const toolMessages: ChatMessage[] = [];
 
       for (const call of toolCalls) {
-        // Stop between tool calls too — an executor dispatch can be the
-        // longest single await in the turn.
         if (options.signal?.aborted) {
           throw new Error("turn aborted: user requested stop");
         }
-        // Executor dispatch. Intercepted before MCP and routed to the executor
-        // sub-agent. Returns the same ToolExecutionResult shape a real MCP tool
-        // would, so it is wrapped into a role:"tool" message by the identical
-        // code path below.
-        if (executorTools.find(e => e.name == call.name)) {
-          // Executor handlers self-mark their content (e.g. [dispatch-error]),
-          // so it is wrapped verbatim.
-          const result = await scopedExecutorClient.callTool(call.name, call.arguments);
-          toolMessages.push(wrapToolResult(call, result.content));
-          continue;
-        }
 
-        // Read-only MCP tool. Dispatch directly (ScopedToolClient emits tool-call/tool-result).
-        const execution: ToolExecutionResult = await scopedOrchestratorClient.callTool(call.name, call.arguments);
-
+        const execution: ToolExecutionResult = await scopedClient.callTool(call.name, call.arguments);
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
         );
@@ -358,12 +316,9 @@ export class Orchestrator {
       conversation.push(...toolMessages);
       workingMessages.push(...toolMessages);
 
-      // Periodic progress gate. Every N successful dispatches, run the
-      // validator mid-flight (not only at completion) so a no-progress streak
-      // that never stops calling tools still gets caught. Only an off-track
-      // verdict steers; CONTINUE/SATISFIED let the loop run on, since a
-      // lenient mid-loop judge must not terminate the turn early.
-      if (tracker.dueForPeriodicCheck()) {
+      // Periodic progress gate (orchestrator only). Every N successful dispatches,
+      // run the validator mid-flight to catch no-progress loops before they cap.
+      if (this.role !== "executor" && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
           userInput,
           "(in-progress checkpoint — no final answer yet)",
@@ -395,11 +350,11 @@ export class Orchestrator {
     conversation.push(truncationNotice);
     emit({
       type: OrchestratorEventTypes.WARNING,
-      data: { message: "orchestrator hit iteration cap", iterations: maxIterations },
+      data: { message: `${this.role} hit iteration cap`, iterations: maxIterations },
     });
     return {
       finalMessage: truncationNotice,
-      iterations: maxIterations!,
+      iterations: maxIterations,
       dispatches: tracker.count,
       outcome: "capped",
     };
@@ -407,24 +362,13 @@ export class Orchestrator {
 
   // --------------------------------------------------------------------------
 
-  /**
-   * Fold the older portion of the conversation into a single summary
-   * `system` message when the transcript grows past the configured
-   * threshold. Runs at the top of each user turn, BEFORE the new user
-   * message is appended, so the summarizer only sees prior completed
-   * exchanges.
-   *
-   * Mutates the passed `conversation` array in place. The tail boundary is
-   * snapped forward to avoid orphaning a `role:"tool"` message from its
-   * parent assistant tool-call turn.
-   */
   private async maybeSummarize(
     conversation: ChatMessage[],
     emit: RunnerListener,
     signal?: AbortSignal
   ): Promise<void> {
-    var config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
-    const threshold = config.orchestration.summarizeAtMessages!
+    const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+    const threshold = config.orchestration.summarizeAtMessages!;
     if (conversation.length <= threshold) return;
 
     const desiredKeep = config.orchestration.summarizerKeepLastN!;
@@ -466,12 +410,6 @@ export class Orchestrator {
     });
   }
 
-  /**
-   * Run the completion gate. Asks the evaluator whether `proposedAnswer`,
-   * together with the work in `transcript`, fulfils the original question.
-   * Fails OPEN: any evaluator error is treated as satisfied so a flaky
-   * judge can never trap the user in an endless loop.
-   */
   private async evaluateCompletion(
     question: string,
     proposedAnswer: string,
@@ -482,7 +420,7 @@ export class Orchestrator {
     emit({ type: OrchestratorEventTypes.EVALUATION_START, data: {} });
 
     try {
-       var config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+      const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
       const evaluator = new Evaluator(this.runtime);
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
@@ -504,7 +442,7 @@ export class Orchestrator {
   }
 
   private buildSystemMessages(
-    orchestrator: LLMProvider,
+    provider: LLMProvider,
     visibleTools: ToolDescriptor[],
     context?: ContextSnapshot | null
   ): ChatMessage[] {
@@ -520,8 +458,9 @@ export class Orchestrator {
       });
     }
 
-    const basePrompt = ORCHESTRATOR_SYSTEM_PROMPT;
-    const promptedInstructions = orchestrator.supportsNativeTools
+    const basePrompt =
+      this.role === "executor" ? EXECUTOR_SYSTEM_PROMPT : ORCHESTRATOR_SYSTEM_PROMPT;
+    const promptedInstructions = provider.supportsNativeTools
       ? ""
       : buildPromptedToolInstructions(visibleTools);
 
@@ -534,11 +473,11 @@ export class Orchestrator {
   }
 
   private normaliseAssistantTurn(
-    orchestrator: LLMProvider,
+    provider: LLMProvider,
     response: ChatResponse,
     emit: OrchestratorListener
   ): { assistantMessage: ChatMessage; toolCalls: ToolCall[] } {
-    if (orchestrator.supportsNativeTools) {
+    if (provider.supportsNativeTools) {
       const nativeCalls = response.message.toolCalls ?? [];
       if (nativeCalls.length > 0) {
         return { assistantMessage: response.message, toolCalls: nativeCalls };
@@ -551,7 +490,7 @@ export class Orchestrator {
           data: {
             message:
               "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
-            model: orchestrator.modelId,
+            model: provider.modelId,
             recoveredCount: recoveredCalls.length,
           },
         });
@@ -577,15 +516,10 @@ export class Orchestrator {
       toolCalls,
     };
   }
-
 }
 
 // ---------------------------------------------------------------------------
 // Fold one chat response's token usage into the session's running tally.
-// Defensive `?? 0` on the counters covers sessions persisted before the token
-// fields existed; on the usage side it covers providers (or requests) that
-// report no caching. Mutates in place — the counters ride along on the Session
-// the caller already persists.
 // ---------------------------------------------------------------------------
 
 function accumulateUsage(counters: SessionCounters, usage: ChatResponse["usage"]): void {
@@ -599,11 +533,7 @@ function accumulateUsage(counters: SessionCounters, usage: ChatResponse["usage"]
 }
 
 // ---------------------------------------------------------------------------
-// Wrap a tool result (synthetic OR real MCP) into a role:"tool" message. Both
-// kinds produce the same ToolExecutionResult shape, so this single path keeps
-// their message construction identical — the only difference is interception
-// upstream, and how each branch pre-formats `content` (real MCP errors are
-// tagged `[tool-error]`; synthetic handlers carry their own domain markers).
+// Wrap a tool result into a role:"tool" message.
 // ---------------------------------------------------------------------------
 
 function wrapToolResult(call: ToolCall, content: string): ChatMessage {
@@ -624,15 +554,7 @@ function wrapToolResult(call: ToolCall, content: string): ChatMessage {
  *     it; kept alone it breaks providers that validate tool_call_id pairing.
  *   - an `assistant` turn carrying `toolCalls` — it becomes a model
  *     functionCall turn, which Gemini rejects unless it immediately follows a
- *     user turn or a functionResponse (HTTP 400: "function call turn comes
- *     immediately after a user turn or after a function response turn"). After
- *     summarization the summary is a `system` message that lands in
- *     systemInstruction, not contents, so the tail's first turn really is
- *     contents[0] — it cannot be a bare tool-call.
- *
- * Starts from the desired window (`messages.length - desiredTailLen`) and walks
- * forward until such a head is found. If none remains, returns `messages.length`
- * so the caller summarizes everything.
+ *     user turn or a functionResponse.
  */
 function findCleanTailStart(messages: ChatMessage[], desiredTailLen: number): number {
   const initial = Math.max(0, messages.length - desiredTailLen);

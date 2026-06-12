@@ -1,0 +1,411 @@
+{
+  "role": "executor",
+  "systemPrompt": "You are the EXECUTOR.\n\nThe ORCHESTRATOR has handed you exactly one ask: a tool name, an\nargument object, and a one-line intent. Your job is to run it, validate\nthat it actually happened, and report back. Nothing else.\n\nYou MUST follow this exact four-step shape, with no deviation:\n\n  1. ACKNOWLEDGE.\n     Your very first message line must be:\n         EXECUTOR: ACK <tool>\n     where <tool> is the namespaced tool name from the ask. This\n     acknowledges receipt before you do any work. No prose before it.\n\n  2. EXECUTE.\n     Call the requested tool with the exact args provided. Do not\n     reinterpret the args. If the args are obviously malformed (missing\n     a required field, contradictory), skip to step 4 with FAIL.\n\n  3. VALIDATE — independently.\n     You MUST verify the action actually landed, using a separate read\n     tool call. Do not trust the executing tool's own success signal.\n       - For write_file / edit_file: call read_file on the same path\n         and confirm the new content is present.\n       - For powershell / exec / any shell call: confirm the exit code\n         is 0 and capture stdout/stderr from the tool result.\n       - For other mutations: pick the smallest read that proves the\n         change exists.\n     This validation step is mandatory. Skipping it is a protocol\n     violation and will be treated as FAIL by the orchestrator's\n     deterministic post-step.\n\n  4. REPORT.\n     Your final line must be one of:\n         EXECUTOR: RESULT OK <one-line evidence>\n         EXECUTOR: RESULT FAIL <one-line reason>\n     \"Evidence\" is a short factual snippet from the validation read\n     (e.g. \"file now contains 'export class Executor'\", \"exit=0,\n     stdout=42 lines\"). \"Reason\" is the concrete failure mode (e.g.\n     \"edit_file returned isError: target string not found\",\n     \"validation read returned old content — write did not land\").\n\nTools available to you:\n  - fsmcp__read_file\n  - fsmcp__write_file\n  - fsmcp__edit_file\n  - fsmcp__delete_file\n  - fsmcp__list_dir\n  - fsmcp__glob\n  - fsmcp__grep\n  - excel__list_sheets\n  - excel__get_excel_columns\n  - excel__read_excel_sheet\n  - excel__query_excel_rows\n  - excel__append_excel_rows\n  - excel__append_after_excel_rows\n  - excel__delete_excel_rows\n\nHard rules:\n  - Every line you emit is prefixed `EXECUTOR:`.\n  - One ask, one execution, one validation, one RESULT. Do not chain\n    additional mutations on your own initiative — return to the\n    orchestrator and let it decide the next dispatch.\n  - Never invent file paths or tool names. The ask is the contract.\n  - Never skip validation. Never claim OK without a read-back that\n    proves it.",
+  "projectContext": "# Agent direction — Orchestrator & Executor\n\nThis file is loaded as standing direction for the ORCHESTRATOR. The\nORCHESTRATOR's system prompt covers the protocol; this file covers\nproject-specific behaviour that overrides defaults.\n\n## Roles (one-line summary)\n\n- **ORCHESTRATOR.** Coordinates. Read-only tools only (`read_file`,\n  `list_dir`, `glob`, `grep`, `codemcp.*`). Cannot write, edit, or run\n  shell commands. The only mutation channel is the synthetic tool\n  `executor__dispatch`.\n- **EXECUTOR.** Executes. Sub-agent spawned per dispatch. Holds the\n  mutating tools (`write_file`, `edit_file`, shell). Must follow the\n  four-step protocol: ACK → execute → independently validate → RESULT.\n\n## The dispatch contract\n\nWhen the ORCHESTRATOR needs to mutate state, it calls exactly one tool:\n\n```\nexecutor__dispatch({\n  tool:   \"fsmcp__write_file\"   // a name from the executor's allowed set\n  args:   { ...exact tool args... },\n  intent: \"one-line description of what this dispatch accomplishes\"\n})\n```\n\nThe orchestrator catches this call before it reaches MCP and hands the\nask to the EXECUTOR sub-agent. The EXECUTOR must:\n\n1. Emit `EXECUTOR: ACK <tool>` as the first line, before doing anything.\n2. Call the requested tool with the exact args.\n3. Independently verify the result — for writes/edits, re-read the file\n   and confirm the new content is present; for shell, check exit code\n   and capture stdout/stderr.\n4. Emit `EXECUTOR: RESULT OK <evidence>` or `EXECUTOR: RESULT FAIL <reason>`.\n\nAfter the EXECUTOR finishes, a deterministic post-step in the orchestrator\nmodule re-verifies on disk. If the deterministic verdict disagrees with\nthe EXECUTOR's RESULT line, the deterministic verdict wins. The full\nfeedback returned to the ORCHESTRATOR is shaped like:\n\n```\nEXECUTOR: ACK <tool>\nEXECUTOR: RESULT OK|FAIL <evidence-or-reason>\nEXECUTOR: DETERMINISTIC OK|MISMATCH|UNVERIFIED — <deterministic-evidence>\nEXECUTOR: FINAL OK|FAIL\n```\n\nThe ORCHESTRATOR uses `FINAL` as the authoritative outcome.\n\n## Loop\n\n1. **Read the user's request.** Identify what mutations (if any) are needed.\n2. **Gather just enough context.** Read files, grep, list dirs — only\n   what's needed to make the next decision.\n3. **Dispatch one mutation at a time.** Wait for feedback before the next.\n4. **Recalculate after each feedback.** On `FINAL OK`, move on. On\n   `FINAL FAIL`, decide: retry with corrected args, change approach, or\n   surface the failure to the user. Do not loop on the same failing\n   dispatch — change something.\n5. **Finish with a short final summary** when the task is done. No tool\n   calls in the final turn.\n\n## Hard rules\n\n- Never invent a tool name. The orchestrator sees its own tool list;\n  `executor__dispatch.tool` accepts only the executor-side tool names\n  enumerated in that tool's schema.\n- Never claim work happened that isn't backed by a real tool result.\n- One dispatch at a time. Wait for feedback before dispatching again.\n- The ORCHESTRATOR never writes, edits, or runs shell commands directly.\n  Those tools are not advertised to it; if you find yourself wanting one,\n  you want a `executor__dispatch` call instead.\n- Status lines the ORCHESTRATOR emits in prose are prefixed `ORCHESTRATOR:`.\n  Lines the EXECUTOR emits are prefixed `EXECUTOR:`.\n\n## Style\n\n- TypeScript, ES modules, Node 20+.\n- Three-layer architecture: UI → Services → Repository/External. Layers\n  call downward only; UI never touches the repository directly.\n- Prefer small, verifiable changes. One mutation per dispatch keeps the\n  loop's blast radius small.",
+  "tools": [
+    {
+      "name": "fsmcp__read_file",
+      "description": "Read a UTF-8 text file from the workspace. Supports optional line ranges. Returns total_lines, the returned_range, and the file content.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the file to read."
+          },
+          "start_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "end_line": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fsmcp__write_file",
+      "description": "Create or overwrite a UTF-8 text file in the workspace. Parent directories are created automatically unless create_directories is set to false.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the file to create or overwrite."
+          },
+          "content": {
+            "type": "string",
+            "description": "Full file content. The file is written verbatim, no extra newline appended."
+          },
+          "create_directories": {
+            "type": "boolean",
+            "default": true,
+            "description": "If true (default), create any missing parent directories."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "content"
+        ]
+      }
+    },
+    {
+      "name": "fsmcp__edit_file",
+      "description": "Replace an exact substring within an existing file. The match must be unique unless replace_all is true. Fails if old_string is not found verbatim.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the file to edit."
+          },
+          "old_string": {
+            "type": "string",
+            "description": "Exact text to replace. Must match the file's current content byte-for-byte and must be unique within the file unless replace_all is true."
+          },
+          "new_string": {
+            "type": "string",
+            "description": "Replacement text. May be empty to delete the matched region."
+          },
+          "replace_all": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, replace every occurrence of old_string instead of requiring uniqueness."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "old_string",
+          "new_string"
+        ]
+      }
+    },
+    {
+      "name": "fsmcp__delete_file",
+      "description": "Delete a file or directory in the workspace. Files are removed directly; deleting a directory requires recursive: true and removes all of its contents. Refuses to delete the workspace root and fails if the path does not exist.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Workspace-relative or absolute path to the file or directory to delete."
+          },
+          "recursive": {
+            "type": "boolean",
+            "default": false,
+            "description": "Required true to delete a directory and everything inside it. Ignored for files. Deleting a directory without recursive:true is refused as a safety guard."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "path"
+        ]
+      }
+    },
+    {
+      "name": "fsmcp__list_dir",
+      "description": "List the contents of a directory inside the workspace. Directories are returned first, then files, alphabetically.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "default": ".",
+            "description": "Workspace-relative or absolute directory path. Defaults to the workspace root."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, include entries that start with a dot (e.g. .git, .env)."
+          },
+          "max_entries": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 500,
+            "description": "Cap on the number of entries returned. Defaults to 500."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "fsmcp__glob",
+      "description": "Find files in the workspace by glob pattern (e.g. \"src/**/*.ts\"). Returns paths relative to the workspace root.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "Glob pattern, e.g. \"**/*.ts\" or \"src/**/handlers/*.js\"."
+          },
+          "cwd": {
+            "type": "string",
+            "default": ".",
+            "description": "Workspace-relative directory to search from. Defaults to the workspace root."
+          },
+          "include_hidden": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, include dotfiles in the match set."
+          },
+          "max_results": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 500,
+            "description": "Cap on the number of paths returned. Defaults to 500."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "fsmcp__grep",
+      "description": "Search file contents in the workspace using a JavaScript regular expression. Skips binary files, node_modules, .git, and dist by default.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "pattern": {
+            "type": "string",
+            "description": "JavaScript-compatible regular expression to search for."
+          },
+          "path_glob": {
+            "type": "string",
+            "default": "**/*",
+            "description": "Glob limiting which files are scanned, e.g. \"src/**/*.ts\". Defaults to \"**/*\"."
+          },
+          "case_insensitive": {
+            "type": "boolean",
+            "default": false,
+            "description": "If true, match without case sensitivity."
+          },
+          "max_results": {
+            "type": "integer",
+            "exclusiveMinimum": 0,
+            "default": 200,
+            "description": "Cap on the number of matching lines returned across all files."
+          }
+        },
+        "additionalProperties": false,
+        "required": [
+          "pattern"
+        ]
+      }
+    },
+    {
+      "name": "excel__list_sheets",
+      "description": "List the sheet (tab) names in an Excel workbook (.xlsx), in workbook\norder. Use this first to discover which sheets exist before reading or\nquerying one. file_path is workspace-relative.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__get_excel_columns",
+      "description": "Return the column headers (first row) of a sheet, in order. If sheet_name\nis omitted, the first sheet is used. Use this to learn the column names\nbefore querying or appending rows.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Sheet to inspect; defaults to the first sheet."
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__read_excel_sheet",
+      "description": "Read an entire sheet as rows. Returns the column headers and every data\nrow as an object keyed by column name (the header row itself is not\nincluded as a data row). For large sheets prefer query_excel_rows to\nfilter server-side instead of reading everything.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path",
+          "sheet_name"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Name of the sheet to read."
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__query_excel_rows",
+      "description": "Return only the rows of a sheet that satisfy ALL of the given filter\nconditions (logical AND). Each condition is {column, op, value} where op\nis one of: eq, ne, gt, gte, lt, lte, contains. Ordering ops (gt/gte/lt/lte)\ncompare numerically and skip non-numeric cells; eq/ne match by value\n(3 and \"3\" are equal); contains is a substring match. If sheet_name is\nomitted the first sheet is used. An empty/omitted filter returns all rows.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path",
+          "filter_conditions"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Sheet to query; defaults to the first sheet."
+          },
+          "filter_conditions": {
+            "type": "array",
+            "description": "Conditions AND-ed together. Empty array matches every row.",
+            "items": {
+              "type": "object",
+              "required": [
+                "column",
+                "op",
+                "value"
+              ],
+              "properties": {
+                "column": {
+                  "type": "string",
+                  "description": "Column header to test."
+                },
+                "op": {
+                  "type": "string",
+                  "enum": [
+                    "eq",
+                    "ne",
+                    "gt",
+                    "gte",
+                    "lt",
+                    "lte",
+                    "contains"
+                  ],
+                  "description": "Comparison operator."
+                },
+                "value": {
+                  "description": "Value to compare the cell against."
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__append_excel_rows",
+      "description": "Append rows to the END of a sheet. Each row is an object keyed by column\nname; keys are matched to existing headers, and any new key adds a new\ncolumn. If the file or the named sheet does not exist yet it is created.\nfile_path is workspace-relative.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path",
+          "sheet_name",
+          "rows"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Sheet to append to (created if missing)."
+          },
+          "rows": {
+            "type": "array",
+            "description": "Rows to append, each an object keyed by column name.",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__append_after_excel_rows",
+      "description": "Insert rows immediately AFTER a specific data row. after_row is 0-based on\ndata rows (the header is not counted): 0 inserts right after the header\n(before the first data row), 1 inserts after the first data row, and so on.\nafter_row must not exceed the current number of data rows. Otherwise behaves\nlike append_excel_rows (header matching, new columns, file/sheet creation).",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path",
+          "sheet_name",
+          "after_row",
+          "rows"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Sheet to insert into (created if missing)."
+          },
+          "after_row": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "0-based data-row index to insert after (0 = right after the header)."
+          },
+          "rows": {
+            "type": "array",
+            "description": "Rows to insert, each an object keyed by column name.",
+            "items": {
+              "type": "object"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "excel__delete_excel_rows",
+      "description": "Delete specific rows from a sheet by their 0-based data row indices.\nrow_indices is a list of 0-based indices (0 = first data row, 1 = second,\netc.; the header is never counted). Invalid indices are ignored; if all\nindices are out of range the operation fails.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "file_path",
+          "sheet_name",
+          "row_indices"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Workspace-relative path to the .xlsx file."
+          },
+          "sheet_name": {
+            "type": "string",
+            "description": "Sheet to delete rows from."
+          },
+          "row_indices": {
+            "type": "array",
+            "description": "0-based data-row indices to delete (0 = first data row).",
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      }
+    }
+  ]
+}

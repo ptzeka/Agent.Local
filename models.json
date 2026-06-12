@@ -66,14 +66,14 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "dispatch_executor", "subsessions"]
+      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"]
     },
     "gemini-2.5-flash-lite-orchestrator": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "dispatch_executor", "subsessions"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "executor", "subsessions"]
     }
   },
 

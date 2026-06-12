@@ -9,7 +9,7 @@ project-specific behaviour that overrides defaults.
 - **ORCHESTRATOR.** Coordinates. Read-only tools only (\`read_file\`,
   \`list_dir\`, \`glob\`, \`grep\`, \`codemcp.*\`). Cannot write, edit, or run
   shell commands. The only mutation channel is the synthetic tool
-  \`dispatch_executor\`.
+  \`executor__dispatch\`.
 - **EXECUTOR.** Executes. Sub-agent spawned per dispatch. Holds the
   mutating tools (\`write_file\`, \`edit_file\`, shell). Must follow the
   four-step protocol: ACK → execute → independently validate → RESULT.
@@ -19,7 +19,7 @@ project-specific behaviour that overrides defaults.
 When the ORCHESTRATOR needs to mutate state, it calls exactly one tool:
 
 \`\`\`
-dispatch_executor({
+executor__dispatch({
   tool:   "fsmcp__write_file"   // a name from the executor's allowed set
   args:   { ...exact tool args... },
   intent: "one-line description of what this dispatch accomplishes"
@@ -66,13 +66,13 @@ The ORCHESTRATOR uses \`FINAL\` as the authoritative outcome.
 ## Hard rules
 
 - Never invent a tool name. The orchestrator sees its own tool list;
-  \`dispatch_executor.tool\` accepts only the executor-side tool names
+  \`executor__dispatch.tool\` accepts only the executor-side tool names
   enumerated in that tool's schema.
 - Never claim work happened that isn't backed by a real tool result.
 - One dispatch at a time. Wait for feedback before dispatching again.
 - The ORCHESTRATOR never writes, edits, or runs shell commands directly.
   Those tools are not advertised to it; if you find yourself wanting one,
-  you want a \`dispatch_executor\` call instead.
+  you want a \`executor__dispatch\` call instead.
 - Status lines the ORCHESTRATOR emits in prose are prefixed \`ORCHESTRATOR:\`.
   Lines the EXECUTOR emits are prefixed \`EXECUTOR:\`.
 

@@ -19,7 +19,7 @@ export const DELETE_EXCEL_ROWS_TOOL = "delete_excel_rows";
  *
  * Like the other synthetic tools these LOOK like real MCP tools to the LLM, but
  * the orchestrator intercepts them and runs them in-process. Unlike
- * dispatch_executor (which routes every mutation through the executor), these
+ * executor__dispatch (which routes every mutation through the executor), these
  * are self-contained DATA operations: a spreadsheet read/append is a single,
  * well-bounded effect, so routing it through a free-form sub-agent would add
  * cost and non-determinism without buying safety.

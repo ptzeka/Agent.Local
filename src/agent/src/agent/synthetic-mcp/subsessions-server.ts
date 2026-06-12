@@ -16,7 +16,7 @@ MCP (tool servers)
   ↓
 Tool Descriptors (orchestrator visible)
   ├─ Real MCP tools (write, read, shell, etc.)
-  ├─ dispatch_executor (synthetic)
+  ├─ executor__dispatch (synthetic)
   └─ subsessions__* tools (synthetic)
        ├─ create_subsession
        ├─ get_subsession_status
@@ -24,7 +24,7 @@ Tool Descriptors (orchestrator visible)
        └─ list_subsessions
          ↓
 [Orchestrator.ts interceptor]
-  ├─ "dispatch_executor" → createSubSessionTools->handleCreate->SessionManagercreateSubSession()
+  ├─ "executor__dispatch" → ExecutorLocalMcp->Orchestrator.run(role=executor)
   └─ "subsessions__*"   → SessionManager.createSubSession() / getStatus() / finalize()
          ↓
 [Return feedback to Orchestrator's LLM]

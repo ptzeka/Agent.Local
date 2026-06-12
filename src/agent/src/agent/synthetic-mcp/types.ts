@@ -1,4 +1,3 @@
-import type { Executor } from "../runners/zzz_executor.js";
 import type { OrchestratorEvent, OrchestratorListener } from "../runners/runner-events.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
@@ -6,7 +5,6 @@ import type { Session } from "../session/session.js";
 import type { SubSessionCoordinator } from "../runners/subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
-import { IdentityContext } from "../identity/types.js";
 
 /**
  * Slim context for MCP server tool handlers — only the fields tools actually need.
@@ -44,27 +42,6 @@ export interface RichToolResult extends ToolExecutionResult {
  */
 
 /**
- * Everything a synthetic MCP server handler may need that the orchestrator owns for
- * the current turn. Assembled once per `Orchestrator.run` and passed verbatim to
- * every synthetic dispatch, so handlers stay free of orchestrator internals.
- */
-export interface SyntheticMcpContext {
-  readonly session: Session;
-  readonly workspace: Workspace;
-  readonly configPath: string;
-  readonly sessionsDir: string;
-  readonly mcpConfigPath: string;
-  readonly credentials: IdentityContext;
-  readonly sandboxRoot: string;
-  readonly executorMaxIterations: number;
-  readonly executorTemperature: number;
-  readonly coordinator?: SubSessionCoordinator;
-  readonly tracker: DispatchTracker;
-  readonly emit: OrchestratorListener;
-  readonly signal?: AbortSignal;
-}
-
-/**
  * A single synthetic MCP server. `descriptor` is what the LLM sees; `callTool` is the
  * intercepted invocation. The shape deliberately mirrors a real MCP tool so the
  * two can be dispatched and wrapped identically.
@@ -73,6 +50,20 @@ export interface SyntheticMcp {
   readonly name: string;
   readonly descriptor: ToolDescriptor;
   callTool(args: Record<string, unknown>, context: ToolContext): Promise<RichToolResult>;
+}
+
+/**
+ * Per-turn binding surface for MCP servers that need turn-scoped context
+ * (abort signal, event emitter, dispatch tracker). Implemented by ExecutorLocalMcp;
+ * the orchestrator casts to this interface after looking up the "executor" client
+ * so there is no import cycle between orchestrator and executor-server.
+ */
+export interface TurnBindable {
+  bindTurn(
+    signal: AbortSignal | undefined,
+    emit: OrchestratorListener,
+    tracker: DispatchTracker
+  ): void;
 }
 
 /** Shape a non-success synthetic result the same way MCP errors are shaped. */

@@ -2,6 +2,10 @@
 
 Model Context Protocol server that exposes the [codeindex](../../tools/codeindex/) repository index to coding assistants (Claude Code, Cursor, any MCP-compatible client). Stdio transport. Backed by either PostgreSQL/pgvector or a local file directory — same interface, swap with one flag.
 
+## For AI assistants
+
+See [AGENTS.md](../../AGENTS.md) for tool-selection rules and the list of indexed repositories.
+
 ## Build
 
 ```bash
@@ -145,7 +149,7 @@ A single backend can hold commits from multiple repositories. Every commit row c
 
 ### `search_code`
 
-Semantic vector search. Best when you don't know the exact symbol name and want code by intent.
+Semantic vector search. **Prefer this over `grep` for intent-based queries.** Best when you don't know the exact symbol name and want code by behavior or concept.
 
 **Input**
 
@@ -175,7 +179,7 @@ probe search_code '{\"query\":\"migration runner with checksum\",\"k\":3,\"area\
 
 ### `find_symbol`
 
-Exact-match symbol lookup. Faster and more precise than `search_code` when you already know the name.
+Exact-match symbol lookup. **Prefer this over `grep` for known symbol names.** Faster and more precise than `search_code` when you already know the name.
 
 **Input**
 
@@ -201,7 +205,7 @@ probe find_symbol '{\"name\":\"PgConnectionFactory\"}'
 
 ### `get_file_context`
 
-Returns every chunk for a given file, plus the governing `CLAUDE.md` files. Use before editing a file the assistant hasn't seen.
+Returns every chunk for a given file, plus the governing `CLAUDE.md` files. **Prefer this over `Read` for any file in an indexed repository.** Use before editing a file the assistant hasn't seen.
 
 **Input**
 
@@ -297,18 +301,7 @@ node src/codemcp/dist/server.js --backend file --branch feature/add_solution pro
 node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe find_symbol '{\"name\":\"PgConnectionFactory\"}'
 
 # Example do not delete:
-node tools/codeindex/dist/cli.js --backend file --branch feature/add_solution publish && cp -R tools/codeindex/data/. tools/codemcp/data/ &&
-node tools/codeindex/dist/cli.js --backend file --branch dev --repository /Applications/WWW/xpo-messaging-backend publish &&
-
-
-.\scripts\publish-codeindex.ps1 -Repository C:\Users\periklis.tzeka\www\platform\Rxo.Platform.Web.Sandbox
-.\scripts\publish-codeindex.ps1 -Repository C:\Users\periklis.tzeka\www\platform\xpo-messaging-backend
-.\scripts\publish-codeindex.ps1 -Repository C:\Users\periklis.tzeka\www\Dev-Sandbox\poc-monorepo-ui
-.\scripts\publish-codeindex.ps1 -Repository C:\Users\periklis.tzeka\www\central\rxo-design-system
-
-
-.\scripts\publish-codeindex.ps1 -Branch main -Repository C:\Users\periklis.tzeka\www\DevOps\pipeline-variables
-.\scripts\publish-codeindex.ps1 -Branch release/latest -Repository C:\Users\periklis.tzeka\www\DevOps\rxo.systems.azurepipelines
+powershell.exe -ExecutionPolicy Bypass -File c:\www\agent.local\scripts\publish-codeindex.ps1 c:\www\agent.local
 
 rm -R tools/codeindex/data
 rm -R tools/codemcp/data

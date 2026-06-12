@@ -1,5 +1,4 @@
-export { ExecutorRegistry } from "../registries/executor-registry.js";
-export { DispatchTracker } from "./dispatch-tracker.js";
+export { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 export {
   createExcelTools,
   getExcelToolDescriptors,
@@ -8,4 +7,4 @@ export {
   createSubSessionTools,
   getSubsessionToolDescriptors,
 } from "./subsessions-tools/subsessions.js";
-export type { RichToolResult, SyntheticMcp, SyntheticMcpContext, ToolContext } from "./types.js";
+export type { RichToolResult, SyntheticMcp, TurnBindable, ToolContext } from "./types.js";

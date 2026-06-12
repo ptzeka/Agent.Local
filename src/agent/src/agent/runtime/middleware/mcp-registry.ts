@@ -3,6 +3,7 @@ import { McpClientRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp } from "../../synthetic-mcp/subsessions-server.js";
+import { ExecutorLocalMcp } from "../../synthetic-mcp/executor-server.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 
 /**
@@ -65,6 +66,11 @@ export class McpRegistryMiddleware implements IMiddleware {
         signal: undefined,
       })
     );
+
+    // Executor server — constructed once with the full RuntimeContext by reference.
+    // Per-turn fields (signal, emit, tracker) are injected lazily via bindTurn()
+    // at the start of each orchestrator turn before any dispatch can arrive.
+    ctx.mcpRegistry.registerClient(new ExecutorLocalMcp(ctx));
 
     await next();
   }

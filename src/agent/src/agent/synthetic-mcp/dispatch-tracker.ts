@@ -1,7 +1,15 @@
-import type { ExecutorAsk } from "../runners/zzz_executor.js";
+/**
+ * Shape of a single dispatch ask — tool name, args, and one-line intent.
+ * Defined here (not imported from zzz_executor) so the tracker has no runner dependency.
+ */
+export interface DispatchAsk {
+  tool: string;
+  args: Record<string, unknown>;
+  intent: string;
+}
 
 /**
- * DispatchTracker — per-turn accounting for `dispatch_executor`.
+ * DispatchTracker — per-turn accounting for executor dispatches.
  *
  * Pulls together the three pieces of state the orchestrator loop used to keep
  * loose: the dispatch cap, the duplicate-mutation guard, and the
@@ -76,7 +84,7 @@ export class DispatchTracker {
  * drift between otherwise-identical calls — a naive JSON.stringify would miss
  * the duplicate.
  */
-export function dispatchSignature(ask: ExecutorAsk): string {
+export function dispatchSignature(ask: DispatchAsk): string {
   return `${ask.tool}::${stableStringify(ask.args)}`;
 }
 
