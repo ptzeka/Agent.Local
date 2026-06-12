@@ -61,7 +61,10 @@ export class SessionManager implements SubSessionCoordinator {
     /** The owning runtime's live session. Settled children fold their token
      *  tally into these counters in memory; the parent's next persist writes
      *  the summed figure. Optional so leaf coordinators (and tests) can omit it. */
-    private readonly parentSession?: Session
+    private readonly parentSession?: Session,
+    /** Owning runtime's scope signal — children derive from it so an ancestor
+     *  cancel reaches them without this manager being told. */
+    private readonly parentSignal?: AbortSignal
   ) {}
 
   /**
@@ -134,6 +137,7 @@ export class SessionManager implements SubSessionCoordinator {
       subSessionId,
       parentSessionId: params.parentSessionId,
       intent: params.intent,
+      parentSignal: this.parentSignal,
     });
 
     this.track(sub);
@@ -300,12 +304,15 @@ export class SessionManager implements SubSessionCoordinator {
       workspaceId: params.workspace.workspaceId,
       user: params.user,
       standingContext: params.context,
+      // Chained under the sub-session's derived signal: finalize, shutdown, and
+      // the CLI root all reach the child's resources through this one link.
+      parentSignal: sub.signal,
     }).build();
 
     sub.runtime = runtime;
     sub.session = runtime.getSession();
 
-    return runtime.dispatchAsync(sub.intent, { signal: sub.abort.signal });
+    return runtime.dispatchAsync(sub.intent, { signal: sub.signal });
   }
 
   /**

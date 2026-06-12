@@ -32,6 +32,9 @@ export interface AgentRuntimeDeps {
   sandboxRoot: string;
   mcpConfigPath: string;
   credentials?: IdentityContext;
+  /** Cancellation chain link — an ancestor cancel reaches everything this
+   *  runtime owns. Omitted, the runtime is its own root. */
+  parentSignal?: AbortSignal;
 }
 
 export interface RuntimeContext {
@@ -43,6 +46,9 @@ export interface RuntimeContext {
   readonly sandboxRoot: string;
   readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
+  /** Owning runtime's scope signal — steps hand it to resources that must die
+   *  with the runtime (MCP clients, sub-session children). */
+  readonly runtimeSignal: AbortSignal;
   providerRegistry: ProvidersRegistry | undefined;
   modelsRegistry: ModelRegistry | undefined;
   configurationRegistry: ConfigurationRegistry | undefined;

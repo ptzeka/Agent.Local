@@ -48,6 +48,9 @@ export interface SubSession {
   dispatches?: number;
   /** Cancels the detached run; fired by finalize() on a still-running child. */
   abort: AbortController;
+  /** Derived signal (parent chain OR `abort`) — an ancestor cancel reaches the
+   *  child without the manager enumerating it. */
+  signal: AbortSignal;
   /**
    * Resolves when the detached run settles (done OR error — it never rejects,
    * since launch() handles both arms). Lets a caller block on a child's
@@ -140,6 +143,9 @@ export interface SubRuntimeRefs {
   workspaceId: string;
   user?: Principal;
   standingContext?: string;
+  /** Cancellation chain link: the child's scope (and its resources) dies with
+   *  the sub-session, the parent runtime, or the process root. */
+  parentSignal?: AbortSignal;
 }
 
 /**
@@ -212,14 +218,20 @@ export function makeSubSession(params: {
   subSessionId: string;
   parentSessionId: string;
   intent: string;
+  /** Ancestor chain (owning runtime's scope); omitted, `abort` stands alone. */
+  parentSignal?: AbortSignal;
 }): SubSession {
   const now = Date.now();
+  const abort = new AbortController();
   return {
     subSessionId: params.subSessionId,
     parentSessionId: params.parentSessionId,
     intent: params.intent,
     status: "running",
-    abort: new AbortController(),
+    abort,
+    signal: params.parentSignal
+      ? AbortSignal.any([params.parentSignal, abort.signal])
+      : abort.signal,
     pollRepeat: 0,
     createdAt: now,
     updatedAt: now,

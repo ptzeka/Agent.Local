@@ -34,7 +34,10 @@ export class SessionManagerMiddleware implements IMiddleware {
       this.params.subRuntimeFactory,
       this.params.maxActivePerParent,
       // Settled children fold their token tally into this session's counters.
-      ctx.session
+      ctx.session,
+      // Children chain under the runtime's scope, so a runtime/root cancel
+      // reaches every detached child without the manager being enumerated.
+      ctx.runtimeSignal
     );
     await next();
   }

@@ -190,6 +190,9 @@ export interface TurnRunnerOptions {
   maxRoundsPerTurn?: number;
   /** Lifecycle listener for rendering / telemetry. Errors are swallowed. */
   onEvent?: TurnRunnerListener;
+  /** Cancellation chain link: an ancestor cancel aborts turns exactly like a
+   *  per-turn cancel — "cancelled", never "error". */
+  parentSignal?: AbortSignal;
 }
 
 const DEFAULT_MAX_ROUNDS_PER_TURN = 8;
@@ -206,9 +209,13 @@ export class TurnRunner {
   private readonly settleResolvers = new Map<string, (snapshot: TurnSnapshot) => void>();
   private readonly settledPromises = new Map<string, Promise<TurnSnapshot>>();
   private readonly abortControllers = new Map<string, AbortController>();
+  /** Per-turn derived signal (parent OR own controller) — the single abort
+   *  truth dispatch and all status checks observe. */
+  private readonly turnSignals = new Map<string, AbortSignal>();
 
   private readonly maxRoundsPerTurn: number;
   private readonly listener?: TurnRunnerListener;
+  private readonly parentSignal?: AbortSignal;
 
   private started = false;
   private stopping = false;
@@ -221,6 +228,7 @@ export class TurnRunner {
   constructor(private readonly dispatch: RoundDispatch, options: TurnRunnerOptions = {}) {
     this.maxRoundsPerTurn = options.maxRoundsPerTurn ?? DEFAULT_MAX_ROUNDS_PER_TURN;
     this.listener = options.onEvent;
+    this.parentSignal = options.parentSignal;
   }
 
   // ------------------------------------------------------------------------
@@ -403,10 +411,9 @@ export class TurnRunner {
   }
 
   /**
-   * Run one turn to completion: dispatch rounds in order, RE-CHECKING the
-   * round list after each await so rounds appended mid-turn are picked up in
-   * the same engagement. All status transitions between awaits are synchronous,
-   * so a submit() can never observe a half-updated turn.
+   * Run one turn to completion, re-checking the round list after each await so
+   * mid-turn appends run in the same engagement. Never throws: settlement is in
+   * a finally so an unexpected escape can't kill the pump or orphan awaiters.
    */
   private async runTurn(turn: Turn): Promise<void> {
     this.currentTurn = turn;
@@ -414,73 +421,90 @@ export class TurnRunner {
     turn.startedAt = Date.now();
     this.emit({ type: "turn-start", turnId: turn.turnId, source: turn.source, rounds: turn.rounds.length });
 
-    const controller = this.abortControllers.get(turn.turnId)!;
+    // Derived signal, not the bare controller's: an ancestor cancel must read
+    // as cancellation, not as a dispatch failure.
+    const signal = this.turnSignals.get(turn.turnId)!;
     let failed = false;
 
-    for (;;) {
-      const round = turn.rounds.find((candidate) => candidate.status === "pending");
-      if (!round) break;
+    try {
+      for (;;) {
+        const round = turn.rounds.find((candidate) => candidate.status === "pending");
+        if (!round) break;
 
-      if (controller.signal.aborted) {
-        round.status = "skipped";
-        continue;
-      }
+        if (signal.aborted) {
+          round.status = "skipped";
+          continue;
+        }
 
-      round.status = "running";
-      round.startedAt = Date.now();
-      this.emit({
-        type: "round-start",
-        turnId: turn.turnId,
-        roundId: round.roundId,
-        source: round.source,
-        round: turn.rounds.indexOf(round) + 1,
-      });
+        round.status = "running";
+        round.startedAt = Date.now();
+        this.emit({
+          type: "round-start",
+          turnId: turn.turnId,
+          roundId: round.roundId,
+          source: round.source,
+          round: turn.rounds.indexOf(round) + 1,
+        });
 
-      try {
-        const result = await this.dispatch(round.content, controller.signal);
-        round.status = "done";
-        round.outcome = result.outcome;
-      } catch (err) {
-        // Distinguish a user stop from a genuine failure so a cancelled turn
-        // never renders (or persists) as a broken one.
-        if (controller.signal.aborted) {
-          round.status = "cancelled";
-        } else {
-          round.status = "error";
-          round.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
-          failed = true;
+        try {
+          const result = await this.dispatch(round.content, signal);
+          round.status = "done";
+          round.outcome = result.outcome;
+        } catch (err) {
+          // Distinguish a user stop from a genuine failure so a cancelled turn
+          // never renders (or persists) as a broken one.
+          if (signal.aborted) {
+            round.status = "cancelled";
+          } else {
+            round.status = "error";
+            round.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
+            failed = true;
+          }
+        }
+        round.endedAt = Date.now();
+        this.emit({
+          type: "round-done",
+          turnId: turn.turnId,
+          roundId: round.roundId,
+          status: round.status,
+          error: round.error,
+        });
+
+        // One failed round fails the engagement; later rounds would run against
+        // a context the failure may have corrupted, so they are skipped, not run.
+        if (failed) {
+          for (const remaining of turn.rounds) {
+            if (remaining.status === "pending") remaining.status = "skipped";
+          }
+          break;
         }
       }
-      round.endedAt = Date.now();
-      this.emit({
-        type: "round-done",
-        turnId: turn.turnId,
-        roundId: round.roundId,
-        status: round.status,
-        error: round.error,
-      });
-
-      // One failed round fails the engagement; later rounds would run against
-      // a context the failure may have corrupted, so they are skipped, not run.
-      if (failed) {
-        for (const remaining of turn.rounds) {
-          if (remaining.status === "pending") remaining.status = "skipped";
-        }
-        break;
+    } catch (err) {
+      // Scheduler-level breakage (dispatch errors are caught above): pin it on
+      // the running round and fail the turn rather than crash the pump.
+      failed = true;
+      const running = turn.rounds.find((candidate) => candidate.status === "running");
+      if (running) {
+        running.status = "error";
+        running.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        running.endedAt = Date.now();
       }
+      for (const remaining of turn.rounds) {
+        if (remaining.status === "pending") remaining.status = "skipped";
+      }
+    } finally {
+      turn.status = signal.aborted ? "cancelled" : failed ? "error" : "done";
+      turn.endedAt = Date.now();
+      this.currentTurn = null;
+      this.emit({
+        type: "turn-done",
+        turnId: turn.turnId,
+        source: turn.source,
+        status: turn.status,
+        rounds: turn.rounds.length,
+      });
+      this.settleTurn(turn);
     }
-
-    turn.status = controller.signal.aborted ? "cancelled" : failed ? "error" : "done";
-    turn.endedAt = Date.now();
-    this.currentTurn = null;
-    this.emit({
-      type: "turn-done",
-      turnId: turn.turnId,
-      source: turn.source,
-      status: turn.status,
-      rounds: turn.rounds.length,
-    });
-    this.settleTurn(turn);
   }
 
   // ------------------------------------------------------------------------
@@ -488,7 +512,12 @@ export class TurnRunner {
   // ------------------------------------------------------------------------
 
   private registerTurn(turn: Turn): void {
-    this.abortControllers.set(turn.turnId, new AbortController());
+    const controller = new AbortController();
+    this.abortControllers.set(turn.turnId, controller);
+    this.turnSignals.set(
+      turn.turnId,
+      this.parentSignal ? AbortSignal.any([this.parentSignal, controller.signal]) : controller.signal
+    );
     this.settledPromises.set(
       turn.turnId,
       new Promise<TurnSnapshot>((resolve) => {
@@ -511,6 +540,7 @@ export class TurnRunner {
     this.settleResolvers.delete(turn.turnId);
     this.settledPromises.delete(turn.turnId);
     this.abortControllers.delete(turn.turnId);
+    this.turnSignals.delete(turn.turnId);
     resolve?.(toTurnSnapshot(turn));
 
     if (!this.isBusy) {

@@ -18,6 +18,7 @@ import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeConte
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Logger } from "../../common/logger.js";
+import { CutoffScope, settledWithin } from "../../common/lifetime.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
 
@@ -92,7 +93,16 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private turnRunner: TurnRunner | null = null;
   private unsubscribeTurnWake: (() => void) | null = null;
 
-  constructor(private readonly deps: AgentRuntimeDeps) {}
+  /** This runtime's cutoff in the cancellation chain — parent of every turn,
+   *  sub-session, and MCP client it owns. */
+  private readonly scope: CutoffScope;
+  /** First shutdown() call wins; later callers join its promise. */
+  private shutdownPromise: Promise<void> | null = null;
+
+  constructor(private readonly deps: AgentRuntimeDeps) {
+    // Constructor body, not field initializer: must not race `deps` assignment.
+    this.scope = new CutoffScope(deps.parentSignal);
+  }
 
   // --------------------------------------------------------------------------
   // Fluent builder
@@ -118,6 +128,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       sandboxRoot: this.deps.sandboxRoot,
       mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
+      runtimeSignal: this.scope.signal,
       configurationRegistry: undefined,
       modelsRegistry: undefined,
       mcpRegistry: undefined,
@@ -253,7 +264,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
         const result = await this.dispatchAsync(content, { onEvent: options.onEvent, signal });
         return { outcome: result.outcome, summary: result.finalMessage.content };
       },
-      { onEvent: options.onTurnEvent }
+      // Chained under the scope so a runtime cancel reaches turns without enumeration.
+      { onEvent: options.onTurnEvent, parentSignal: this.scope.signal }
     );
 
     this.rewireTurnWake();
@@ -286,6 +298,54 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       await this.turnRunner.stop();
       this.turnRunner = null;
     }
+  }
+
+  /**
+   * Single host exit path. abort = kill now (SIGINT/pod-stop); drain = let work
+   * settle within the deadline, escalating to abort. Idempotent: first caller wins.
+   */
+  async shutdown(options: { mode: "drain" | "abort"; timeoutMs?: number }): Promise<void> {
+    if (!this.shutdownPromise) {
+      this.shutdownPromise = this.runShutdown(options);
+    }
+    return this.shutdownPromise;
+  }
+
+  private async runShutdown(options: { mode: "drain" | "abort"; timeoutMs?: number }): Promise<void> {
+    // Unhook first: a child settling mid-teardown must not enqueue a wake turn.
+    this.unsubscribeTurnWake?.();
+    this.unsubscribeTurnWake = null;
+
+    const timeoutMs = options.timeoutMs ?? (options.mode === "abort" ? 5_000 : 30_000);
+
+    const quiescence = (): Promise<void> =>
+      Promise.all([
+        this.turnRunner?.awaitIdle() ?? Promise.resolve(),
+        this.sessionManager.awaitAllActive(),
+      ]).then(() => undefined);
+
+    if (options.mode === "abort") {
+      // Sweep before scope cancel: finalize() suppresses children's report-backs.
+      this.stopAllWork();
+      this.scope.cancel("shutdown");
+      await settledWithin(quiescence(), timeoutMs);
+    } else {
+      const drained = await settledWithin(quiescence(), timeoutMs);
+      if (!drained) {
+        this.stopAllWork();
+        this.scope.cancel("shutdown-timeout");
+        await settledWithin(quiescence(), 5_000);
+      }
+    }
+
+    if (this.turnRunner) {
+      await this.turnRunner.stop();
+      this.turnRunner = null;
+    }
+
+    // Cancel even after a clean drain — releases token-holding resources (MCP clients).
+    this.scope.cancel("shutdown");
+    await this.finalize();
   }
 
   /**

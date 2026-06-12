@@ -28,11 +28,21 @@ export class McpClient {
   constructor(
     private readonly serverName: string,
     private readonly client: Client,
-    tools: ToolDescriptor[]
+    tools: ToolDescriptor[],
+    signal?: AbortSignal
   ) {
     this.tools = tools;
     for (const tool of tools) {
       this.toolIndex.set(tool.name, tool.name);
+    }
+    // Self-disposal: nobody tracks clients for teardown — holding the owning
+    // scope's signal IS the lifecycle contract.
+    if (signal) {
+      if (signal.aborted) {
+        void this.shutdown();
+      } else {
+        signal.addEventListener("abort", () => void this.shutdown(), { once: true });
+      }
     }
   }
 
@@ -85,7 +95,9 @@ export class McpClient {
 
   public static async createFromConnection(
     serverName: string,
-    client: Client
+    client: Client,
+    /** Owning scope's signal — the client closes itself when it aborts. */
+    signal?: AbortSignal
   ): Promise<McpClient> {
     const toolsResponse = await client.listTools();
     const tools: ToolDescriptor[] = toolsResponse.tools.map((tool) => ({
@@ -94,7 +106,7 @@ export class McpClient {
       inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
     }));
 
-    return new McpClient(serverName, client, tools);
+    return new McpClient(serverName, client, tools, signal);
   }
 }
 

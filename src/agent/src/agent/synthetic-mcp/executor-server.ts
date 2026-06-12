@@ -8,6 +8,7 @@ import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
+import { CutoffScope } from "../../common/lifetime.js";
 
 /**
  * A tool hosted on the executor server. Same shape as LocalMcp's LocalTool,
@@ -47,6 +48,10 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
 
   // Promise-chain mutex: each dispatch chains after the previous one settles.
   private runLock: Promise<void> = Promise.resolve();
+
+  // Bootstrap cutoff for the Mcp contract: shutdown() cancels it, killing every
+  // child this server dispatched — independent of any turn's signal.
+  private readonly scope = new CutoffScope();
 
   // Per-turn context — set by the orchestrator before each user turn.
   private turnSignal: AbortSignal | undefined = undefined;
@@ -166,7 +171,18 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
     }
   }
 
-  public async shutdown(): Promise<void> {}
+  // The Mcp contract's kill path: dispatches run under scope OR turn signal,
+  // so this reaches in-flight children even when no turn abort fires.
+  public async shutdown(): Promise<void> {
+    this.scope.cancel("executor-server-shutdown");
+  }
+
+  /** Signal handed to dispatched children: the server scope OR the turn. */
+  private dispatchSignal(): AbortSignal {
+    return this.turnSignal
+      ? AbortSignal.any([this.turnSignal, this.scope.signal])
+      : this.scope.signal;
+  }
 
   // ---------------------------------------------------------------------------
 
@@ -176,6 +192,7 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
     intent: string,
     tracker: DispatchTracker | undefined
   ): Promise<ToolExecutionResult> {
+    const signal = this.dispatchSignal();
     // Construct the canonical ask message the executor Orchestrator will receive.
     const askMessage =
       `Tool: ${tool}\n` +
@@ -207,6 +224,9 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
         parentSessionId: parentSession.sessionId,
         workspaceId: parentSession.workspaceId,
         user: parentSession.user,
+        // Chained under the turn's signal OR the server scope: a turn abort and
+        // an Mcp shutdown() both kill the child's run and resources.
+        parentSignal: signal,
       }
     );
 
@@ -220,7 +240,7 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
     try {
       runtime = await childRuntime.build();
       const result = await runtime.dispatchAsync(askMessage, {
-        signal: this.turnSignal,
+        signal,
         // Forward executor sub-run events so the REPL can render them.
         onEvent: (event) =>
           emit({ type: "executor-event", data: { ...event.data, kind: event.type } }),

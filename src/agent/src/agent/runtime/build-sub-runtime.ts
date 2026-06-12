@@ -34,7 +34,13 @@ import { ModelsMiddleware } from "./middleware/models.js";
  * awaits `.build()` then drives a single `dispatchAsync` — the headless lifecycle.
  */
 export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): AgentRuntime {
-  return new AgentRuntime(deps)
+  // The cancellation parent is the SPAWN's derived signal, not `deps`'s —
+  // that's the top-level closure, whose parentSignal is the process root.
+  const childDeps: AgentRuntimeDeps = {
+    ...deps,
+    parentSignal: refs.parentSignal ?? deps.parentSignal,
+  };
+  return new AgentRuntime(childDeps)
     .add(new LoggerMiddleware())
     .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
     .add(new ProvidersMiddleware())

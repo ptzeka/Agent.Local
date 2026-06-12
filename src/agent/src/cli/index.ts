@@ -45,6 +45,10 @@ interface Bootstrap {
   sessionsDir: string;
   configPath: string;
   mcpConfigPath: string;
+  /** Process-level cancellation root — every runtime chains under it. */
+  rootSignal: AbortSignal;
+  /** Hand the built runtime to the signal handlers, which exist before it does. */
+  registerRuntime: (runtime: AgentRuntime) => void;
   shutdown: () => Promise<void>;
 }
 
@@ -88,8 +92,24 @@ async function bootstrap(): Promise<Bootstrap> {
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const configPath = path.join(projectRoot, "models.json");
 
+  // Process-level cancellation root. Runtimes are built later (per run mode),
+  // so the handlers hold a slot the run mode fills via registerRuntime.
+  const root = new AbortController();
+  let activeRuntime: AgentRuntime | null = null;
+  const registerRuntime = (runtime: AgentRuntime): void => {
+    activeRuntime = runtime;
+  };
+
   const shutdown = async (): Promise<void> => {
-    //bye
+    // Runtime first: its sweep suppresses child report-backs before the scope
+    // cancel; aborting root first would race that sweep.
+    try {
+      await activeRuntime?.shutdown({ mode: "abort", timeoutMs: 5_000 });
+    } catch {
+      /* teardown must keep unwinding */
+    }
+    // Backstop for anything not parented under the runtime.
+    root.abort("process-shutdown");
   };
 
   process.on("SIGINT", () => {
@@ -99,7 +119,16 @@ async function bootstrap(): Promise<Bootstrap> {
     void shutdown().finally(() => process.exit(EXIT_ERROR));
   });
 
-  return { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath, shutdown };
+  return {
+    projectRoot,
+    sandboxRoot,
+    sessionsDir,
+    mcpConfigPath,
+    configPath,
+    rootSignal: root.signal,
+    registerRuntime,
+    shutdown,
+  };
 }
 
 /**
@@ -119,7 +148,8 @@ function buildRuntime(
     workspaceRoot: projectRoot,
     sandboxRoot,
     credentials: token ? { token } : {},
-    orchestratorRole: "orchestrator"
+    orchestratorRole: "orchestrator",
+    parentSignal: boot.rootSignal,
   };
   return buildRuntimeRef(deps, sessionId);
 }
@@ -136,6 +166,7 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const choice = await pickSession(saved);
 
   const runtime = await buildRuntime(boot, choice.kind === "resume" ? choice.sessionId : undefined).build();
+  boot.registerRuntime(runtime);
 
   // Drain any sub-sessions that outlive a turn before the REPL exits.
   const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
@@ -149,7 +180,9 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
     });
   } finally {
     unsubscribe();
-    await runtime.awaitAllSubSessions();
+    // Bounded drain (escalates to abort on expiry) so a hung child can't wedge
+    // the process; the scope cancel releases token-holding resources.
+    await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });
   }
 }
 
@@ -167,6 +200,7 @@ async function runHeadless(
 ): Promise<number> {
   try {
     const runtime = await buildRuntime(boot, sessionId).build();
+    boot.registerRuntime(runtime);
 
     const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
 
@@ -182,6 +216,8 @@ async function runHeadless(
       return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
     } finally {
       unsubscribe();
+      // Cancels the runtime scope so token-holding resources release before exit.
+      await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });
     }
   } catch (err) {
     process.stderr.write(chalk.red(`\n[error] runHeadless: ${(err as Error).message}\n`));

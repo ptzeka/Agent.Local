@@ -1,6 +1,10 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { TurnRunner, type RoundDispatch } from "../../src/agent/runners/turn-runner.js";
+import {
+  TurnRunner,
+  type RoundDispatch,
+  type SubmitReceipt,
+} from "../../src/agent/runners/turn-runner.js";
 
 /**
  * TurnRunner scheduling semantics.
@@ -350,5 +354,196 @@ describe("TurnRunner", () => {
     await Promise.all([running.settled, waiting.settled]);
     await runner.stop();
     expect(runner.isBusy).toBe(false);
+  });
+});
+
+describe("TurnRunner events", () => {
+  test("emits the full lifecycle in order; coalesced rounds do not re-queue the turn", async () => {
+    const events: string[] = [];
+    const runner = new TurnRunner(instantDispatch([]), {
+      onEvent: (event) => events.push(event.type),
+    });
+
+    // Build a 2-round turn before the pump starts so the round events are
+    // deterministic: the second submit coalesces, so only ONE turn-queued fires.
+    const receipt = runner.submit({ content: "r1", source: "subsession", coalesceKey: "k" });
+    runner.submit({ content: "r2", source: "subsession", coalesceKey: "k" });
+
+    runner.start();
+    await receipt.settled;
+
+    expect(events).toEqual([
+      "turn-queued",
+      "turn-start",
+      "round-start",
+      "round-done",
+      "round-start",
+      "round-done",
+      "turn-done",
+    ]);
+    await runner.stop();
+  });
+
+  test("a throwing listener does not break the pump", async () => {
+    const calls: string[] = [];
+    const runner = new TurnRunner(instantDispatch(calls), {
+      onEvent: () => {
+        throw new Error("listener exploded");
+      },
+    });
+    runner.start();
+
+    const first = runner.submit({ content: "one", source: "user" });
+    const second = runner.submit({ content: "two", source: "user" });
+    const [firstTurn, secondTurn] = await Promise.all([first.settled, second.settled]);
+
+    expect(firstTurn.status).toBe("done");
+    expect(secondTurn.status).toBe("done");
+    expect(calls).toEqual(["one", "two"]);
+    await runner.stop();
+  });
+});
+
+describe("TurnRunner end-to-end", () => {
+  test("full engagement: a child report steers the live turn while a new user request waits behind it", async () => {
+    const investigating = deferred();
+    const releaseInvestigation = deferred();
+    const calls: string[] = [];
+    const events: string[] = [];
+    const runner = new TurnRunner(
+      async (content) => {
+        calls.push(content);
+        if (content === "investigate") {
+          investigating.resolve();
+          await releaseInvestigation.promise;
+        }
+        return { outcome: "satisfied" };
+      },
+      { onEvent: (event) => events.push(event.type) }
+    );
+    runner.start();
+
+    const task = runner.submit({ content: "investigate", source: "user" });
+    await investigating.promise;
+
+    // Mid-round, two producers act at once: a child settles (meant to steer
+    // the live engagement) and the user types a brand-new request (must NOT
+    // join the running turn).
+    const report = runner.submit({
+      content: "child-report",
+      source: "subsession",
+      preferMidTurn: true,
+    });
+    const followUp = runner.submit({ content: "new question", source: "user" });
+
+    expect(report.placement).toBe("mid-turn-round");
+    expect(report.turnId).toBe(task.turnId);
+    expect(followUp.placement).toBe("new-turn");
+    expect(followUp.turnId).not.toBe(task.turnId);
+
+    releaseInvestigation.resolve();
+    const [taskTurn, followUpTurn] = await Promise.all([task.settled, followUp.settled]);
+
+    // The report ran inside the user's engagement, keeping its own source tag;
+    // the new request ran as its own turn, strictly after.
+    expect(taskTurn.status).toBe("done");
+    expect(taskTurn.rounds.map((round) => round.content)).toEqual(["investigate", "child-report"]);
+    expect(taskTurn.rounds.map((round) => round.source)).toEqual(["user", "subsession"]);
+    expect(followUpTurn.rounds.map((round) => round.content)).toEqual(["new question"]);
+    expect(calls).toEqual(["investigate", "child-report", "new question"]);
+    expect(runner.isBusy).toBe(false);
+
+    // Two engagements end-to-end, three rounds dispatched in total.
+    expect(events.filter((type) => type === "turn-done")).toHaveLength(2);
+    expect(events.filter((type) => type === "round-done")).toHaveLength(3);
+    await runner.stop();
+  });
+
+  test("a dispatch that keeps feeding itself is bounded by the round cap and spills into a follow-up turn", async () => {
+    const calls: string[] = [];
+    const feedbackReceipts: SubmitReceipt[] = [];
+    let feedbackCount = 0;
+    let runner: TurnRunner;
+    // Models the real feedback loop: every round's work spawns a child whose
+    // settle re-enters the runner as mid-turn input. Without the cap this
+    // would extend one turn forever.
+    const dispatch: RoundDispatch = async (content) => {
+      calls.push(content);
+      if (feedbackCount < 5) {
+        feedbackCount += 1;
+        feedbackReceipts.push(
+          runner.submit({
+            content: `fb-${feedbackCount}`,
+            source: "subsession",
+            preferMidTurn: true,
+          })
+        );
+      }
+      return { outcome: "satisfied" };
+    };
+    runner = new TurnRunner(dispatch, { maxRoundsPerTurn: 3 });
+    runner.start();
+
+    const task = runner.submit({ content: "task", source: "user" });
+    const firstTurn = await task.settled;
+    await runner.awaitIdle(); // the spilled turn still has to drain
+
+    // Every piece of feedback ran exactly once, in submission order.
+    expect(calls).toEqual(["task", "fb-1", "fb-2", "fb-3", "fb-4", "fb-5"]);
+
+    // The original turn absorbed feedback up to the cap…
+    expect(firstTurn.status).toBe("done");
+    expect(firstTurn.rounds.map((round) => round.content)).toEqual(["task", "fb-1", "fb-2"]);
+
+    // …and the overflow became ONE new turn that absorbed the rest mid-flight.
+    const spilled = feedbackReceipts.filter((receipt) => receipt.placement === "new-turn");
+    expect(spilled).toHaveLength(1);
+    const spilledTurn = await spilled[0].settled;
+    expect(spilledTurn.status).toBe("done");
+    expect(spilledTurn.rounds.map((round) => round.content)).toEqual(["fb-3", "fb-4", "fb-5"]);
+    await runner.stop();
+  });
+
+  test("graceful stop finishes the in-flight turn, preserves the queue, and a restart drains it", async () => {
+    const started = deferred();
+    const release = deferred();
+    const calls: string[] = [];
+    const runner = new TurnRunner(async (content) => {
+      calls.push(content);
+      if (content === "long") {
+        started.resolve();
+        await release.promise;
+      }
+      return { outcome: "satisfied" };
+    });
+    runner.start();
+
+    const inFlight = runner.submit({ content: "long", source: "user" });
+    const queued = runner.submit({ content: "queued", source: "user" });
+    await started.promise;
+
+    // Stop while a round is in flight: the turn must run to completion, but
+    // the pending turn must NOT be promoted by the dying pump.
+    const stopped = runner.stop();
+    release.resolve();
+    await stopped;
+
+    const finished = await inFlight.settled;
+    expect(finished.status).toBe("done");
+    expect(calls).toEqual(["long"]); // the queued turn was never dispatched
+
+    // The snapshot taken after the stop is the resume contract: it still
+    // carries the undispatched turn.
+    const snapshot = runner.snapshot();
+    expect(snapshot.current).toBeNull();
+    expect(snapshot.pending.map((turn) => turn.turnId)).toEqual([queued.turnId]);
+    expect(snapshot.pending[0].rounds[0].status).toBe("pending");
+
+    // Restart the same runner — the queued work resumes where it left off.
+    runner.start();
+    const resumed = await queued.settled;
+    expect(resumed.status).toBe("done");
+    expect(calls).toEqual(["long", "queued"]);
+    await runner.stop();
   });
 });
