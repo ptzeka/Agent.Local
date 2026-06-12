@@ -101,8 +101,11 @@ export class ContextLoader
    * exists (e.g. a session persisted before snapshots, or a pruned contexts dir).
    */
   public async getContextSnapshot(
-    hash: string
+    hash: string | undefined
   ): Promise<ContextSnapshot | null> {
+    // A session persisted before a role's pointer existed has no hash at all —
+    // treat that the same as a pruned snapshot rather than crashing.
+    if (!hash) return null;
     // Sanitise the hash so a malformed pointer can't escape the contexts dir.
     const safe = hash.replace(/[^a-zA-Z0-9_.-]/g, "_");
     const target = path.join(path.resolve(this.contextsDir), `${safe}.json`);

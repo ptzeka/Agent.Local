@@ -1,4 +1,4 @@
-import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
 import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
 /**
@@ -34,6 +34,10 @@ export class ModelRegistry {
         return ORCHESTRATOR_SYSTEM_PROMPT;
       case "executor":
         return EXECUTOR_SYSTEM_PROMPT;
+      case "evaluator":
+        return EVALUATOR_SYSTEM_PROMPT;
+      case "summarizer":
+        return SUMMARIZER_SYSTEM_PROMPT;
       default:
         throw new Error(`No prompt template for role "${role}".`);
     }

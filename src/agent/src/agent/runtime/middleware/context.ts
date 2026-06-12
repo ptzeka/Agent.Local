@@ -1,6 +1,7 @@
 import path from "node:path";
 import { ContextLoader } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
+import type { ToolDescriptor } from "../../providers/provider.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
@@ -65,25 +66,44 @@ export class ContextMiddleware implements IMiddleware {
       .filter((serverName) => this.params.includeSubSessions !== false || serverName !== "subsessions");
     const tools = serverNames.flatMap((serverName) => ctx.mcpRegistry!.getClient(serverName)?.listTools() ?? []);
 
+    await this.stampRoleSnapshot(ctx, role, tools);
+
+    // The summarizer and evaluator read their system prompts from the same
+    // hashed snapshots (context comes ONLY from here, never from constants at
+    // call time), so stamp a pointer for each. Both are pure text-in/text-out
+    // roles — no tools, by design.
+    await this.stampRoleSnapshot(ctx, "summarizer", []);
+    await this.stampRoleSnapshot(ctx, "evaluator", []);
+
+    await ctx.store.save(ctx.session);
+    await next();
+  }
+
+  /**
+   * Build, persist, and stamp the context snapshot for one role. The session is
+   * NOT saved here — the caller saves once after all roles are stamped, so the
+   * hashes land durably from init even if the first turn never reaches finalize().
+   */
+  private async stampRoleSnapshot(
+    ctx: RuntimeContext,
+    role: string,
+    tools: ToolDescriptor[]
+  ): Promise<void> {
     const projectTemplate = ctx.modelsRegistry?.getPromptTemplate("project");
     const agentTemplate = ctx.modelsRegistry!.getPromptTemplate(role);
     const systemPrompt = fillToolsList(agentTemplate, tools);
     const provider = ctx.providerRegistry!.getProvider(ctx.modelsRegistry!.getProviderForRole(role));
-    const context = ctx.contextLoader.buildContext(
+    const context = ctx.contextLoader!.buildContext(
       role,
       systemPrompt,
       projectTemplate || '',
       tools,
       provider.supportsNativeTools
     );
-    const hash = await ctx.contextLoader.saveContextSnapshot(context);
+    const hash = await ctx.contextLoader!.saveContextSnapshot(context);
 
-    // Stamp the pointer by role and persist now so the hash is durable from init, even
-    // if the first turn never reaches finalize().
-    ctx.session.contextHashes ??= {};
-    ctx.session.contextHashes[role] = hash;
-    await ctx.store.save(ctx.session);
-    await next();
+    ctx.session!.contextHashes ??= {};
+    ctx.session!.contextHashes[role] = hash;
   }
 
 }
