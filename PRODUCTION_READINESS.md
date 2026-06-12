@@ -82,7 +82,7 @@ tests passing. The findings below amend §2–§3; unamended findings stand.*
 - Context snapshots are now per-role (`session.contextHashes[role]`);
   `ContextLoader` reduced to pure build/save/get.
 
-### 0.2 Design decision recorded (supersedes parts of §3.1)
+### 0.2 Design decision recorded (supersedes parts of §3.1) — *superseded again 2026-06-12, see §0.5*
 
 The executor is **same-turn context separation, not a sub-agent**.
 `dispatch_executor` is an intentionally-dormant stub and must not be
@@ -149,6 +149,70 @@ the old dispatch contract — they now mislead the model and the reader.
   `contexts/*.json` were committed during the refactor.
 - **§2 capability table:** rows "Read/write segregation" and "Sub-sessions"
   should read **suspended** pending the context-separation executor design.
+  *(Restored 2026-06-12 — see §0.5.)*
+
+---
+
+## 0.5 Assessment update — 2026-06-12 (executor as child runtime)
+
+*Commits `89c558e`…`e742c2f`. Re-verified: `tsc --noEmit` clean, 29/29
+suites, 138/138 tests passing.*
+
+### 0.5.1 Executor design — final shape (supersedes §0.2)
+
+The executor is a sub-agent again, but **not** via the old
+ExecutorRegistry/synthetic-interception machinery and **not** a hacked
+partial runtime. `executor__dispatch` — a tool on the in-process `executor`
+LocalMcp (`synthetic-mcp/executor-server.ts`) — spawns a **brand-new child
+runtime per mutation** through `buildSubRuntime` with role `"executor"`:
+
+- **Own everything:** parent-linked session, own conversation + persistence,
+  own context snapshot, own registries. Nothing shared with the parent
+  besides the workspace, so dispatches cannot pollute each other or the
+  parent transcript; the child's persisted session is the resume point for
+  the sub-task.
+- **All features reused.** The child rides the identical middleware pipeline
+  (`build-sub-runtime.ts`) — sessions, evaluator gate, summarization,
+  resumability — with only the role prompt and tool whitelist differing.
+  One runner implementation serves every role.
+- **Separation is structural.** The orchestrator's whitelisted servers carry
+  no write tools; the executor child's surface resolves from its own role's
+  whitelist, and the dispatch descriptor enumerates valid executor tool names
+  dynamically (schema `enum`). Advertisement and enforcement derive from the
+  same registry lookup — §3.1's "advertisement-only" finding no longer
+  applies to the mutation path.
+- **Policy gate seam ready.** `session.user` is inherited by every child
+  (`InheritedUserMiddleware`), so the planned deterministic role checks
+  (policies.json, §3.3 / backlog M2-3/M2-4) plug in at the dispatch seam once
+  and apply uniformly at every nesting level.
+- **Cost accounting closes.** Child counters return on
+  `ToolExecutionResult.usage`; the parent folds them into its session tally.
+  The §2 "Token usage accounting" caveat (orchestrator-only) is resolved for
+  delegated work.
+
+§2 capability rows "Read/write segregation" and "Sub-sessions" read
+**working** again.
+
+### 0.5.2 §0.3 findings — scorecard
+
+| # | Finding | Status |
+|---|---|---|
+| 1 | Evaluator on summarizer's model | **Fixed** — `evaluator.ts` resolves `getProviderForRole("evaluator")` |
+| 2 | DispatchTracker inert | **Fixed** — caps, dedupe, `recordSuccess`, and a dispatch mutex are live in `executor-server.ts` |
+| 3 | Sub-session tools unreachable | **Fixed** — subsessions LocalMcp mounted (`middleware/mcp-registry.ts`), re-bound per turn |
+| 4 | External MCP disconnected | **Open** — `ConnectMcpServersMiddleware` still stubbed; `mcp.json`/codemcp unmounted |
+| 5 | `reset()` un-awaited build | **Fixed** — awaits idle, refuses mid-turn, soft-deletes transcript, awaits `build()`, rewires turn wake |
+| 6 | Dead executor code | **Fixed** — `ExecutorRegistry`/`DispatchExecutorTool`/`syntheticContext` deleted |
+| 7 | Config validation upstream | Standing decision, unchanged |
+| 8 | Duplicate `ToolExecutionResult` | **Fixed** — single definition in `mcp/mcp.ts`, re-exported |
+
+Also landed since 06-11: a **conversation layer** (`ConversationStore` +
+conversation middleware) separating the transcript from session state, with
+its own test suite.
+
+Remaining git hygiene (§3.8): `.gitignore` now covers `sessions/` and
+`contexts/`, but previously-tracked JSON files are still in the index —
+needs `git rm --cached`.
 
 ---
 

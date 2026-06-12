@@ -12,13 +12,67 @@ items M0-1 and M2-4 are *implemented inside* this design, not separately).
 
 ---
 
-## 0. Status — 2026-06-11 (after the wiring refactor)
+## 0. Status — 2026-06-12 (executor as child runtime)
+
+*Commits `89c558e`…`e742c2f`. Verified: `tsc --noEmit` clean, 29/29 suites,
+138/138 tests.*
+
+The executor design changed again — and settled. The 06-11 premise
+("same-turn context separation, dormant stub") is **superseded**: the
+executor is a sub-agent after all, but realized as a **full child runtime**,
+not as the SyntheticToolSet/ExecutorRegistry machinery this plan drew in
+§2.1/MR-3.
+
+> **Design (final shape):** `executor__dispatch` — a tool on the in-process
+> `executor` LocalMcp (`synthetic-mcp/executor-server.ts`) — spawns a
+> **brand-new child runtime per mutation** via `buildSubRuntime` with role
+> `"executor"`: its own parent-linked session, its own conversation and
+> persistence, its own context snapshot and registries. Nothing is shared
+> with the parent besides the workspace. The child rides the *identical*
+> middleware pipeline (`build-sub-runtime.ts`), so **every runtime feature is
+> reused** — sessions, evaluator gate, summarization, resumability — with
+> only the role prompt and tool whitelist differing. No second runner
+> implementation, no hacked partial runtime.
+
+Why this beats both prior shapes:
+
+- **Privilege separation is structural, not advisory.** The orchestrator's
+  whitelisted servers contain no write tools; the executor child's surface is
+  resolved from *its* role's whitelist. The dispatch descriptor enumerates
+  valid executor tool names dynamically (schema `enum`), so advertisement and
+  enforcement derive from the same registry lookup.
+- **Isolation by construction.** Dispatches cannot pollute each other or the
+  parent transcript; a failed ask is simply dispatched again. The child's
+  persisted session is the future resume point for the sub-task.
+- **Cost flows back through the tool contract.** The child's counters return
+  on `ToolExecutionResult.usage` and the parent folds them into its tally —
+  delegated usage is part of the standard tool result, not a side channel
+  (this lands the accounting half of MR-4 / BACKLOG M1-2).
+- **The future policy gate has its seam.** `session.user` is inherited by
+  every child (`InheritedUserMiddleware`), so a deterministic role check from
+  `session.user` at the dispatch seam (policies.json ∩ whitelist, M2-3/M2-4)
+  applies uniformly at every nesting level — one check, written once.
+
+DispatchTracker is live again (per-turn caps, duplicate-mutation guard,
+`recordSuccess`), and a promise-chain mutex serializes dispatches. The dead
+`ExecutorRegistry`/`DispatchExecutorTool`/`syntheticContext` code is deleted;
+`new Orchestrator(undefined as any)` is gone (acceptance item 5 ✅).
+
+**Still open from this plan:** MR-4's decomposition half (orchestrator.ts is
+~511 lines; TurnContext unbuilt), the MR-6 lint fence, policies.json
+(M2-3/M2-4), and re-mounting external MCP (`ConnectMcpServersMiddleware`
+still stubbed — codemcp/mcp.json disconnected).
+
+---
+
+## 0-prev. Status — 2026-06-11 (after the wiring refactor) *(superseded by §0 above where they conflict)*
 
 The refactor (commits `e1bd504`…`405e44a`) achieved much of this plan's
 *intent* by a **simpler route than the plan prescribed**, and one design
 premise changed underneath it:
 
-> **Design change:** the executor is now defined as *same-turn context
+> **Design change (superseded 2026-06-12, see §0):** the executor is now
+> defined as *same-turn context
 > separation*, not a sub-agent. `dispatch_executor` is an intentionally
 > dormant stub; the orchestrator dispatches every tool of its whitelisted
 > servers directly. §2.1's GATE/ROUTE layering and the `SyntheticToolSet`

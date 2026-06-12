@@ -5,7 +5,7 @@ import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import type { ModelRegistry } from "../agent/registries/model-registry.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import { renderBanner, renderEvent, renderHelp, renderSession, renderSubSessionNotification, renderTurnEvent } from "./render.js";
+import { renderBanner, renderEvent, renderHelp, renderSession, renderSubSessionNotification, renderTurnEvent, type BannerSession } from "./render.js";
 
 /**
  * Interactive REPL.
@@ -26,24 +26,7 @@ export interface ReplOptions {
 export async function runRepl(options: ReplOptions): Promise<void> {
   const { workspaceRoot, sandboxRoot, runtime, resumed } = options;
 
-  const session = runtime.getSession();
-  const firstUser = runtime.history().find((m) => m.role === "user");
-  const preview = firstUser ? previewOf(firstUser.content) : null;
-
-  renderBanner(
-    workspaceRoot,
-    sandboxRoot,
-    {
-      sessionId: session.sessionId,
-      conversationId: session.conversationId,
-      workspaceId: session.workspaceId,
-      contextHashes: session.contextHashes || {} as Record<string, string>,
-      resumed,
-      turns: session.counters.turns,
-      preview,
-    },
-    null
-  );
+  renderBanner(workspaceRoot, sandboxRoot, bannerSessionOf(runtime, resumed), null);
 
   const rl = readline.createInterface({
     input: process.stdin,
@@ -141,17 +124,26 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   unsubscribe();
   rl.close();
 
-  const finalSession = runtime.getSession();
-  const finalFirstUser = runtime.history().find((m) => m.role === "user");
-  renderSession({
-    sessionId: finalSession.sessionId,
-    conversationId: finalSession.conversationId,
-    workspaceId: finalSession.workspaceId,
-    contextHashes: finalSession.contextHashes ?? {},
+  renderSession(bannerSessionOf(runtime, resumed));
+}
+
+/**
+ * Assemble the identity line's data from a live runtime. Shared by the REPL
+ * (banner, /session, exit) and the headless run's exit summary so every mode
+ * reports the session the same way.
+ */
+export function bannerSessionOf(runtime: AgentRuntime, resumed: boolean): BannerSession {
+  const session = runtime.getSession();
+  const firstUser = runtime.history().find((m) => m.role === "user");
+  return {
+    sessionId: session.sessionId,
+    conversationId: session.conversationId,
+    workspaceId: session.workspaceId,
+    contextHashes: session.contextHashes ?? {},
     resumed,
-    turns: finalSession.counters.turns,
-    preview: finalFirstUser ? previewOf(finalFirstUser.content) : null,
-  });
+    turns: session.counters.turns,
+    preview: firstUser ? previewOf(firstUser.content) : null,
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -184,17 +176,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
       return false;
 
     case "session": {
-      const s = ctx.runtime.getSession();
-      const firstUser = ctx.runtime.history().find((m) => m.role === "user");
-      renderSession({
-        sessionId: s.sessionId,
-        conversationId: s.conversationId,
-        workspaceId: s.workspaceId,
-        contextHashes: s.contextHashes ?? {},
-        resumed: ctx.resumed,
-        turns: s.counters.turns,
-        preview: firstUser ? previewOf(firstUser.content) : null,
-      });
+      renderSession(bannerSessionOf(ctx.runtime, ctx.resumed));
       return false;
     }
 

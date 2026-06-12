@@ -28,8 +28,8 @@ import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { parseArgs } from "./args.js";
-import { runRepl } from "./repl.js";
-import { renderEvent, renderSubSessionNotification } from "./render.js";
+import { bannerSessionOf, runRepl } from "./repl.js";
+import { renderEvent, renderSession, renderSubSessionNotification } from "./render.js";
 import { pickSession } from "./session-picker.js";
 
 /** Exit codes for the headless single-run path. */
@@ -176,6 +176,9 @@ async function runHeadless(
       const result = await runtime.dispatchAsync(input, { onEvent: renderEvent });
       await runtime.awaitSubSessions();
       process.stdout.write(result.finalMessage.content + "\n");
+      // Same identity summary the REPL prints on exit; stderr keeps stdout
+      // reserved for the final answer.
+      renderSession(bannerSessionOf(runtime, sessionId !== undefined), process.stderr);
       return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
     } finally {
       unsubscribe();

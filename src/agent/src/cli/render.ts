@@ -323,8 +323,13 @@ function short(value: string): string {
   return value.slice(0, 8);
 }
 
-export function renderSession(session: BannerSession): void {
-  process.stdout.write(chalk.gray(`session:   ${sessionLine(session)}\n`));
+export function renderSession(
+  session: BannerSession,
+  // Headless runs keep stdout reserved for the final answer, so they route the
+  // summary to stderr; the REPL keeps the stdout default.
+  out: NodeJS.WritableStream = process.stdout
+): void {
+  out.write(chalk.gray(`session:   ${sessionLine(session)}\n`));
 }
 
 export function renderHelp(): void {
