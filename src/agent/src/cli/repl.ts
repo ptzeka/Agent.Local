@@ -5,9 +5,7 @@ import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import type { ModelRegistry } from "../agent/registries/model-registry.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-
 import { renderBanner, renderEvent, renderHelp, renderSession, renderSubSessionNotification, renderTurnEvent } from "./render.js";
-import type { BannerSession } from "./render.js";
 
 /**
  * Interactive REPL.

@@ -3,6 +3,7 @@ import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface OrchestratorMiddlewareParams {
   includeSubSessions?: boolean;
+  role: "orchestrator" | "executor";
 }
 
 /**
@@ -17,7 +18,7 @@ export interface OrchestratorMiddlewareParams {
  * ctx.orchestrator before calling next().
  */
 export class OrchestratorMiddleware implements IMiddleware {
-  constructor(private readonly params: OrchestratorMiddlewareParams = {}) {}
+  constructor(private readonly params: OrchestratorMiddlewareParams) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     if (!ctx.mcpRegistry) {
@@ -26,7 +27,7 @@ export class OrchestratorMiddleware implements IMiddleware {
           "Ensure the registry is set up before this middleware."
       );
     }
-    ctx.orchestrator = new Orchestrator(undefined as any);
+    ctx.orchestrator = new Orchestrator(this.params.role);
     await next();
   }
 }

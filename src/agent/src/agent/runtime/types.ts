@@ -24,6 +24,7 @@ export interface AgentRuntimeQueryable {
 
 export interface AgentRuntimeDeps {
   configPath: string;
+  orchestratorRole: "orchestrator" | "executor";
   sessionsDir: string;
   workspaceRoot: string;
   sandboxRoot: string;

@@ -1,4 +1,4 @@
-import type { Executor } from "../runners/executor.js";
+import type { Executor } from "../runners/zzz_executor.js";
 import type { OrchestratorEvent, OrchestratorListener } from "../runners/runner-events.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
@@ -6,6 +6,7 @@ import type { Session } from "../session/session.js";
 import type { SubSessionCoordinator } from "../runners/subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
+import { IdentityContext } from "../identity/types.js";
 
 /**
  * Slim context for MCP server tool handlers — only the fields tools actually need.
@@ -48,28 +49,17 @@ export interface RichToolResult extends ToolExecutionResult {
  * every synthetic dispatch, so handlers stay free of orchestrator internals.
  */
 export interface SyntheticMcpContext {
-  /** The session this turn runs against; source of the (un-spoofable) parent id. */
   readonly session: Session;
-  /** Workspace sandbox shared with any spawned executor or child session. */
   readonly workspace: Workspace;
-  /**
-   * The file-sandbox container root (AGENT_WORKSPACE) every MCP server runs
-   * against. Synthetic tools that touch disk in-process (e.g. the Excel tools)
-   * resolve under `{sandboxRoot}/{workspace.workspaceId}/` so their files land
-   * in the exact same segment fsmcp / the executor write to.
-   */
+  readonly configPath: string;
+  readonly sessionsDir: string;
+  readonly mcpConfigPath: string;
+  readonly credentials: IdentityContext;
   readonly sandboxRoot: string;
-  /** The executor sub-agent — the sole path to a mutation. */
-  readonly executor: Executor;
-  /** Hard cap on executor LLM iterations per dispatch (from orchestration config). */
   readonly executorMaxIterations: number;
-  /** Sampling temperature for the executor LLM (from orchestration config). */
   readonly executorTemperature: number;
-  /** Present only when sub-sessions are enabled for this run. */
   readonly coordinator?: SubSessionCoordinator;
-  /** Per-turn dispatch accounting (cap, duplicate guard, periodic-check gate). */
   readonly tracker: DispatchTracker;
-  /** Surface orchestrator events from inside a handler. */
   readonly emit: OrchestratorListener;
   readonly signal?: AbortSignal;
 }

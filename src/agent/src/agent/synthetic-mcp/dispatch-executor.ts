@@ -1,9 +1,11 @@
-import type { ExecutorAsk, ExecutorFeedback } from "../runners/executor.js";
-import type { ExecutorEvent } from "../runners/runner-events.js";
+import type { ExecutorAsk, ExecutorFeedback } from "../runners/zzz_executor.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import { dispatchSignature } from "./dispatch-tracker.js";
 import { toolError, toolOk, type SyntheticMcp, type SyntheticMcpContext } from "./types.js";
+import { buildRuntime } from "../runtime/build-runtime.js";
+import { AgentRuntimeDeps } from "../runtime/types.js";
+import { run } from "node:test";
 
 export const DISPATCH_TOOL_NAME = "dispatch_executor";
 
@@ -65,13 +67,25 @@ export class DispatchExecutorTool implements SyntheticMcp {
       data: { tool: ask.value.tool, intent: ask.value.intent, args: ask.value.args },
     });
 
-    const feedback = await ctx.executor.run(ask.value, {
-      signal: ctx.signal,
-      maxIterations: ctx.executorMaxIterations,
-      temperature: ctx.executorTemperature,
+    const  deps = {
+      configPath: ctx.configPath,
+      orchestratorRole: "executor",
+      sessionsDir: ctx.sessionsDir,
+      workspaceRoot: ctx.workspace.workspaceId,
+      sandboxRoot: ctx.sandboxRoot,
+      mcpConfigPath: ctx.mcpConfigPath,
+      credentials: ctx.credentials
+    } as AgentRuntimeDeps;
+    var runtime = await buildRuntime(deps, ctx.session.sessionId).build();
+    const feedback = await runtime.dispatchAsync(args["intent"], {
       onEvent: (event: any) =>
         ctx.emit({ type: "executor-event", data: { ...event.data, kind: event.type } }),
     });
+
+    if (ctx.signal)
+    {
+      ctx.signal.onabort(e => runtime.stopAllWork());
+    }
 
     ctx.emit({
       type: "dispatch-feedback",

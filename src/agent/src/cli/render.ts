@@ -173,7 +173,8 @@ export function renderTurnEvent(event: TurnRunnerEvent): void {
       // The REPL no longer awaits a turn's settle (the prompt stays live for
       // mid-turn injection), so failures must surface here or nowhere.
       if (event.status === "error") {
-        process.stdout.write(chalk.red(`\n[error] turn round failed: ${event.error ?? "unknown error"}\n`));
+        const errorDetail = event.error ?? "unknown error";
+        process.stdout.write(chalk.red(`\n[error] turn round failed:\n${errorDetail}\n`));
       }
       break;
     case "turn-done":

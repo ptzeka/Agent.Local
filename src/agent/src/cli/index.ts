@@ -24,27 +24,13 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import { buildSubRuntime } from "../agent/runtime/build-sub-runtime.js";
+
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
-import { AnonymousMiddleware } from "../agent/runtime/middleware/anonymous.js";
-import { ContextMiddleware } from "../agent/runtime/middleware/context.js";
-import { IdentityMiddleware } from "../agent/runtime/middleware/identity.js";
-import { InputInboxMiddleware } from "../agent/runtime/middleware/input-inbox.js";
-import { LoggerMiddleware } from "../agent/runtime/middleware/logger.js";
-import { OrchestratorMiddleware } from "../agent/runtime/middleware/orchestrator.js";
-import { SessionManagerMiddleware } from "../agent/runtime/middleware/session-manager.js";
-import { SessionMiddleware } from "../agent/runtime/middleware/session.js";
-import { StoreMiddleware } from "../agent/runtime/middleware/store.js";
-import { WorkspaceRegistryMiddleware } from "../agent/runtime/middleware/workspace-registry.js";
-import { McpRegistryMiddleware } from "../agent/runtime/middleware/mcp-registry.js";
-import { ConnectMcpServersMiddleware } from "../agent/runtime/middleware/connect-mcp-servers.js";
+import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { parseArgs } from "./args.js";
 import { runRepl } from "./repl.js";
 import { renderEvent, renderSubSessionNotification } from "./render.js";
 import { pickSession } from "./session-picker.js";
-import { ConfigurationMiddleware } from "../agent/runtime/middleware/configuration.js";
-import { ProvidersMiddleware } from "../agent/runtime/middleware/providers.js";
-import { ModelsMiddleware } from "../agent/runtime/middleware/models.js";
 
 /** Exit codes for the headless single-run path. */
 const EXIT_SATISFIED = 0;
@@ -119,17 +105,7 @@ async function bootstrap(): Promise<Bootstrap> {
 /**
  * Build an AgentRuntime with the standard pipeline. Every subsystem the runtime
  * owns is produced by a step here — build() constructs nothing itself:
- *   LoggerMiddleware            — initialize the logger
- *   StoreMiddleware             — open the on-disk session store
- *   WorkspaceRegistryMiddleware — create the workspace → root/context map
- *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
- *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
- *   SessionMiddleware           — open or resume the session, stamp session.user
- *   OrchestratorMiddleware      — assemble tool descriptors and build the orchestrator
- *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
- *   InputInboxMiddleware        — create the external input injection seam
- *   SessionManagerMiddleware    — build the sub-session manager
- */
+ **/
 function buildRuntime(
   boot: Bootstrap,
   sessionId?: string
@@ -143,24 +119,9 @@ function buildRuntime(
     workspaceRoot: projectRoot,
     sandboxRoot,
     credentials: token ? { token } : {},
+    orchestratorRole: "orchestrator"
   };
-  return new AgentRuntime(deps)
-  .add(new LoggerMiddleware())
-  .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
-  .add(new ProvidersMiddleware())
-  .add(new ModelsMiddleware())
-  .add(new StoreMiddleware())
-  .add(new WorkspaceRegistryMiddleware())
-  .add(new IdentityMiddleware())
-  .add(new AnonymousMiddleware())
-  .add(new SessionMiddleware({ sessionId }))
-  .add(new McpRegistryMiddleware())
-  .add(new ConnectMcpServersMiddleware())
-  .add(new OrchestratorMiddleware({ includeSubSessions: true }))
-  .add(new ContextMiddleware({ roleName: "orchestrator" }))
-  .add(new ContextMiddleware({ roleName: "executor" }))
-  .add(new InputInboxMiddleware())
-  .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
+  return buildRuntimeRef(deps, sessionId);
 }
 
 /**

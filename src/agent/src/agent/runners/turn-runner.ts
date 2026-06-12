@@ -447,7 +447,7 @@ export class TurnRunner {
           round.status = "cancelled";
         } else {
           round.status = "error";
-          round.error = err instanceof Error ? err.message : String(err);
+          round.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
           failed = true;
         }
       }

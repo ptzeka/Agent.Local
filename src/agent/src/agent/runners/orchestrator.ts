@@ -1,4 +1,4 @@
-import { Executor } from "./executor.js";
+import { Executor } from "./zzz_executor.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type {
   ChatMessage,
@@ -98,7 +98,7 @@ export interface SessionRunner {
 export class Orchestrator {
   private runtime!: AgentRuntimeQueryable;
 
-  constructor(runtime?: AgentRuntimeQueryable) {
+  constructor(private readonly role: string, runtime?: AgentRuntimeQueryable, ) {
     if (runtime) {
       this.runtime = runtime;
     }
@@ -137,14 +137,13 @@ export class Orchestrator {
       });
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
-    const orchestratorContextHash = session.contextHashes ? session.contextHashes["orchestrator"] : null;
+    const orchestratorContextHash = session.contextHashes ? session.contextHashes[this.role] : null;
     const orchestratorContext = orchestratorContextHash ? await contextLoader.getContextSnapshot(orchestratorContextHash) : null;
 
     await this.maybeSummarize(conversation, emit, options.signal);
     conversation.push({ role: "user", content: userInput });
 
-    const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("orchestrator"));
-    const executorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole("executor"));
+    const orchestratorProvider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
     // The subsessions server was registered at session setup with an undefined
     // coordinator (advertise-only). Re-bind it to THIS turn's live coordinator
@@ -178,7 +177,6 @@ export class Orchestrator {
       type: OrchestratorEventTypes.START,
       data: {
         orchestratorModel: orchestratorProvider.modelId,
-        executorModel: executorProvider.modelId,
         orchestratorTools,
         readToolCount: orchestratorTools.length,
         executorToolCount: executorTools.length,

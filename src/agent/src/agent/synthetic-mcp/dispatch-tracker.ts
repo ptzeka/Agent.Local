@@ -1,4 +1,4 @@
-import type { ExecutorAsk } from "../runners/executor.js";
+import type { ExecutorAsk } from "../runners/zzz_executor.js";
 
 /**
  * DispatchTracker — per-turn accounting for `dispatch_executor`.
