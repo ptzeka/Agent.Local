@@ -1,8 +1,8 @@
 /**
  * InputInbox — Service-layer seam for injecting prompts into a live session.
  *
- * The orchestrator is the SOLE writer of `session.conversation`; letting an
- * outside caller mutate that array directly would race the in-flight loop (the
+ * The orchestrator is the SOLE writer of the session's Conversation; letting an
+ * outside caller mutate the transcript directly would race the in-flight loop (the
  * same race the Initializer's `running` guard exists to prevent). So injection
  * is modelled as PULL, not push: external producers (a REPL command today, an
  * HTTP API tomorrow) enqueue here, and the orchestrator DRAINS the queue at a

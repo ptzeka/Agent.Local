@@ -82,7 +82,7 @@
     "executor": "qwen-coder-14b",
     "coder": "gemini-2.5-flash-lite-coder",
     "summarizer": "llama-fast",
-    "evaluator": "qwen-coder-14b"
+    "evaluator": "claude-haiku-4-5"
   },
 
   "orchestration": {

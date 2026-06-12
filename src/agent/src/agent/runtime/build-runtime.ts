@@ -4,6 +4,7 @@ import { AnonymousMiddleware } from "./middleware/anonymous.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
 import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ContextMiddleware } from "./middleware/context.js";
+import { ConversationMiddleware } from "./middleware/conversation.js";
 import { IdentityMiddleware } from "./middleware/identity.js";
 import { SessionMiddleware } from "./middleware/session.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
@@ -26,6 +27,7 @@ import { ModelsMiddleware } from "./middleware/models.js";
  *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
  *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
  *   SessionMiddleware           — open or resume the session, stamp session.user
+ *   ConversationMiddleware      — open the session's transcript (rolling JSONL file)
  *   OrchestratorMiddleware      — assemble tool descriptors and build the orchestrator
  *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
  *   InputInboxMiddleware        — create the external input injection seam
@@ -42,6 +44,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
         .add(new IdentityMiddleware())
         .add(new AnonymousMiddleware())
         .add(new SessionMiddleware({ sessionId }))
+    .add(new ConversationMiddleware())
     .add(new McpRegistryMiddleware())
     .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: true, role: deps.orchestratorRole }))

@@ -23,3 +23,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 /src/agent/workspace
+/src/agent/sessions
+/src/agent/contexts
+/src/agent/sessions

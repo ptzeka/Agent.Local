@@ -40,6 +40,7 @@ export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeCon
     workspaces: undefined,
     user: undefined,
     session: undefined,
+    conversation: undefined,
     workspace: undefined,
     orchestrator: undefined,
     inbox: undefined,

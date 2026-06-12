@@ -5,6 +5,7 @@ import path from "node:path";
 
 import type { Principal } from "../../src/agent/identity/types.js";
 import { ChildSessionMiddleware } from "../../src/agent/runtime/middleware/child-session.js";
+import { ConversationMiddleware } from "../../src/agent/runtime/middleware/conversation.js";
 import { InheritedUserMiddleware } from "../../src/agent/runtime/middleware/inherited-user.js";
 import { StoreMiddleware } from "../../src/agent/runtime/middleware/store.js";
 import { WorkspaceRegistryMiddleware } from "../../src/agent/runtime/middleware/workspace-registry.js";
@@ -47,11 +48,9 @@ describe("ChildSessionMiddleware", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  /** Run Store → WorkspaceRegistry → InheritedUser → ChildSession over a context
-   *  rooted in a temp dir, exactly as buildSubRuntime orders them. */
-  async function provision(
-    overrides: Partial<ConstructorParameters<typeof ChildSessionMiddleware>[0]> = {}
-  ) {
+  /** Run Store → WorkspaceRegistry → InheritedUser → ChildSession → Conversation
+   *  over a context rooted in a temp dir, exactly as buildSubRuntime orders them. */
+  async function provision(options: { standingContext?: string } = {}) {
     const ctx = makeContext({ workspaceRoot: root, sessionsDir: path.join(root, "sessions") });
     await new StoreMiddleware().initialize(ctx, noop);
     await new WorkspaceRegistryMiddleware().initialize(ctx, noop);
@@ -60,8 +59,11 @@ describe("ChildSessionMiddleware", () => {
       sessionId: "child-1",
       parentSessionId: "parent-1",
       workspaceId: "ws-1",
-      ...overrides,
     }).initialize(ctx, noop);
+    await new ConversationMiddleware({ standingContext: options.standingContext }).initialize(
+      ctx,
+      noop
+    );
     return ctx;
   }
 
@@ -78,14 +80,14 @@ describe("ChildSessionMiddleware", () => {
   test("seeds the standing context as a leading system message", async () => {
     const ctx = await provision({ standingContext: "be terse" });
 
-    const first = ctx.session!.conversation[0];
+    const first = ctx.conversation!.getMessages()[0];
     expect(first.role).toBe("system");
     expect(first.content).toContain("be terse");
   });
 
   test("with no standing context the conversation starts empty", async () => {
     const ctx = await provision();
-    expect(ctx.session!.conversation).toHaveLength(0);
+    expect(ctx.conversation!.length).toBe(0);
   });
 
   test("persists the child session to the store under its id", async () => {

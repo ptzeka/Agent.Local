@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ChildSessionMiddleware } from "../../src/agent/runtime/middleware/child-session.js";
+import { ConversationMiddleware } from "../../src/agent/runtime/middleware/conversation.js";
 import type { SessionStore } from "../../src/agent/session/session-store.js";
 import { SessionStore as RealSessionStore } from "../../src/agent/session/session-store.js";
 import type { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
@@ -79,7 +80,7 @@ describe("ChildSessionMiddleware", () => {
     expect(persisted?.parentSessionId).toBe("parent-1");
   });
 
-  test("seeds standing context when provided", async () => {
+  test("standing context seeds the conversation step that follows", async () => {
     const workspaceRoot = path.join(tempDir, "workspace");
     await fs.mkdir(workspaceRoot, { recursive: true });
     await workspaces.register("ws-1", workspaceRoot);
@@ -89,6 +90,7 @@ describe("ChildSessionMiddleware", () => {
       store,
       workspaces,
       workspaceRoot,
+      sessionsDir: path.join(tempDir, "sessions"),
     });
     const next = jest.fn(async () => {});
 
@@ -96,12 +98,13 @@ describe("ChildSessionMiddleware", () => {
       sessionId: "child-2",
       parentSessionId: "parent-1",
       workspaceId: "ws-1",
-      standingContext,
     }).initialize(ctx, next);
+    await new ConversationMiddleware({ standingContext }).initialize(ctx, next);
 
-    expect(ctx.session!.conversation.length).toBe(1);
-    expect(ctx.session!.conversation[0].role).toBe("system");
-    expect(ctx.session!.conversation[0].content).toContain(standingContext);
+    const messages = ctx.conversation!.getMessages();
+    expect(messages.length).toBe(1);
+    expect(messages[0].role).toBe("system");
+    expect(messages[0].content).toContain(standingContext);
   });
 
   test("ignores empty or whitespace-only standing context", async () => {
@@ -113,6 +116,7 @@ describe("ChildSessionMiddleware", () => {
       store,
       workspaces,
       workspaceRoot,
+      sessionsDir: path.join(tempDir, "sessions"),
     });
     const next = jest.fn(async () => {});
 
@@ -120,10 +124,10 @@ describe("ChildSessionMiddleware", () => {
       sessionId: "child-3",
       parentSessionId: "parent-1",
       workspaceId: "ws-1",
-      standingContext: "   \n  \t  ",
     }).initialize(ctx, next);
+    await new ConversationMiddleware({ standingContext: "   \n  \t  " }).initialize(ctx, next);
 
-    expect(ctx.session!.conversation.length).toBe(0);
+    expect(ctx.conversation!.length).toBe(0);
   });
 
   test("stamps inherited user identity onto the session", async () => {

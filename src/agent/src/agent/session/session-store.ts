@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { ConversationStore } from "../conversation/conversation-store.js";
+import type { ChatMessage } from "../providers/provider.js";
 import type { Session } from "./session.js";
 
 /**
@@ -32,7 +34,13 @@ const PREVIEW_MAX_LENGTH = 60;
  * mid-write can never corrupt an existing session file.
  */
 export class SessionStore {
-  private constructor(private readonly directory: string) {}
+  /** Sibling store for transcript previews — sessions only carry the
+   *  conversationId link, so summaries() must follow it. */
+  private readonly conversations: ConversationStore;
+
+  private constructor(private readonly directory: string) {
+    this.conversations = ConversationStore.create(directory);
+  }
 
   public static create(directory: string): SessionStore {
     return new SessionStore(path.resolve(directory));
@@ -86,11 +94,14 @@ export class SessionStore {
       const session = await this.load(id).catch(() => null);
       if (!session) continue;
       if (session.parentSessionId) continue;
+      const messages = session.conversationId
+        ? await this.conversations.load(session.conversationId).catch(() => null)
+        : null;
       summaries.push({
         sessionId: session.sessionId,
         updatedAt: session.updatedAt,
         turns: session.counters.turns,
-        preview: firstUserPreview(session),
+        preview: firstUserPreview(messages ?? []),
       });
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -107,11 +118,11 @@ export class SessionStore {
 }
 
 /**
- * First user message of a session, whitespace-collapsed and truncated, to hint
- * at what the session was about. Returns null when no user turn exists yet.
+ * First user message of a transcript, whitespace-collapsed and truncated, to
+ * hint at what the session was about. Returns null when no user turn exists yet.
  */
-function firstUserPreview(session: Session): string | null {
-  const firstUser = session.conversation.find((message) => message.role === "user");
+function firstUserPreview(messages: readonly ChatMessage[]): string | null {
+  const firstUser = messages.find((message) => message.role === "user");
   if (!firstUser) return null;
   const flat = firstUser.content.replace(/\s+/g, " ").trim();
   if (flat.length === 0) return null;

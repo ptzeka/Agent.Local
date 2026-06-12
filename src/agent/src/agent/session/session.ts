@@ -1,13 +1,12 @@
 import type { Principal } from "../identity/types.js";
-import type { ChatMessage } from "../providers/provider.js";
 
 /**
- * Session — the unit of conversational state.
+ * Session — the unit of run state (status, counters, identity, links).
  *
- * Was previously the implicit `Orchestrator.conversation` field. Lifting it
- * into a standalone value lets a single (stateless) orchestrator run turns
- * for many independent sessions, and lets the Initializer own, persist, and
- * resume them by `sessionId`.
+ * The transcript itself lives in a separate `Conversation` (rolling JSONL
+ * file), linked by `conversationId`: appending a message is then an O(1) file
+ * append instead of a full session rewrite, and the session file stays small
+ * metadata. ConversationMiddleware follows the link at init.
  *
  * `workspaceId` is deliberately separate from `sessionId`: several sessions
  * working toward a common goal can share one workspace (and therefore one
@@ -110,7 +109,12 @@ export interface Session {
   workspaceId: string;
   /** Reserved for sub-sessions; unused until the background-agent work lands. */
   parentSessionId?: string;
-  conversation: ChatMessage[];
+  /**
+   * Link to this session's transcript (a rolling JSONL file owned by the
+   * ConversationStore). Stamped at creation; sessions persisted before the
+   * conversation split lack it and get a fresh one minted on resume.
+   */
+  conversationId: string;
   status: SessionStatus;
   counters: SessionCounters;
   /** Epoch millis. */
@@ -136,6 +140,7 @@ export interface Session {
 export interface CreateSessionParams {
   sessionId: string;
   workspaceId: string;
+  conversationId: string;
   parentSessionId?: string;
 }
 
@@ -148,8 +153,8 @@ export function createSession(params: CreateSessionParams): Session {
   return {
     sessionId: params.sessionId,
     workspaceId: params.workspaceId,
+    conversationId: params.conversationId,
     parentSessionId: params.parentSessionId,
-    conversation: [],
     status: "idle",
     counters: {
       turns: 0,

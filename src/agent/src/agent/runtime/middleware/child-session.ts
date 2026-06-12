@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { createSession } from "../../session/session.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
@@ -13,8 +15,6 @@ export interface ChildSessionParams {
   parentSessionId: string;
   /** Workspace inherited from the parent, so the child shares its sandbox segment. */
   workspaceId: string;
-  /** Optional standing context seeded as a system message before the intent. */
-  standingContext?: string;
 }
 
 /**
@@ -22,9 +22,10 @@ export interface ChildSessionParams {
  *
  * Where the top-level step opens or resumes a session from disk, a sub-session
  * is born fresh and parent-fed: it mints a child Session with the given id and
- * the parent's workspaceId, seeds any standing context, stamps the inherited
- * identity (set by InheritedUserMiddleware just before), persists it, and
- * resolves the shared workspace. Sets ctx.session + ctx.workspace before next().
+ * the parent's workspaceId, stamps the inherited identity (set by
+ * InheritedUserMiddleware just before), persists it, and resolves the shared
+ * workspace. Standing-context seeding moved to ConversationMiddleware, which
+ * owns the transcript. Sets ctx.session + ctx.workspace before next().
  */
 export class ChildSessionMiddleware implements IMiddleware {
   constructor(private readonly params: ChildSessionParams) {}
@@ -44,16 +45,9 @@ export class ChildSessionMiddleware implements IMiddleware {
     const session = createSession({
       sessionId: this.params.sessionId,
       workspaceId: this.params.workspaceId,
+      conversationId: randomUUID(),
       parentSessionId: this.params.parentSessionId,
     });
-
-    const standing = this.params.standingContext?.trim();
-    if (standing && standing.length > 0) {
-      session.conversation.push({
-        role: "system",
-        content: `Sub-session standing context:\n\n${standing}`,
-      });
-    }
 
     // Inherited identity was placed on ctx.user by InheritedUserMiddleware.
     if (ctx.user) session.user = ctx.user;

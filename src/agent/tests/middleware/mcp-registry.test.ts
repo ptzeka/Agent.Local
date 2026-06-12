@@ -23,7 +23,7 @@ describe("McpRegistryMiddleware", () => {
   });
 
   test("creates the registry and registers filesystem and Excel servers", async () => {
-    const session = createSession({ sessionId: "s1", workspaceId: "ws-1" });
+    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
     const workspace: Workspace = {
       workspaceId: "ws-1",
       root: "/tmp/workspace",

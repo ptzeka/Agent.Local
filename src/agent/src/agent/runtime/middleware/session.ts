@@ -75,15 +75,8 @@ export class SessionMiddleware implements IMiddleware {
       session.status = "awaiting-input";
     }
 
-    // Drop a dangling tool_use tail: if the previous run was interrupted after
-    // the assistant's tool_use was recorded but before its result arrived, the
-    // next user message would land right after an unanswered tool_use. Trim it
-    // here so the transcript is clean on resume. (The Anthropic provider also
-    // heals this at send-time; trimming keeps the persisted file clean too.)
-    const last = session.conversation[session.conversation.length - 1];
-    if (last?.role === "assistant" && last.toolCalls && last.toolCalls.length > 0) {
-      session.conversation.pop();
-    }
+    // Transcript healing (dangling tool_use trim) happens where the transcript
+    // now lives: ConversationMiddleware, after it loads the rolling file.
 
     await ctx.workspaces!.register(session.workspaceId, ctx.workspaceRoot);
     ctx.session = session;
@@ -96,6 +89,7 @@ export class SessionMiddleware implements IMiddleware {
     const session = createSession({
       sessionId: randomUUID(),
       workspaceId,
+      conversationId: randomUUID(),
     });
 
     await ctx.store!.save(session);

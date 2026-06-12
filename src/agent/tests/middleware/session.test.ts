@@ -59,24 +59,17 @@ describe("SessionMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("resuming heals a crash-interrupted session: normalizes status and trims a dangling tool_use", async () => {
-    const crashed = createSession({ sessionId: "crashed", workspaceId: "ws-1" });
+  test("resuming heals a crash-interrupted session: normalizes the leftover running status", async () => {
+    const crashed = createSession({ sessionId: "crashed", workspaceId: "ws-1", conversationId: "c-1" });
     crashed.status = "running"; // left over from a process that died mid-turn
-    crashed.conversation.push({ role: "user", content: "do the thing" });
-    crashed.conversation.push({
-      role: "assistant",
-      content: "",
-      toolCalls: [{ id: "t1", name: "noop", arguments: {} }],
-    });
     await store.save(crashed);
 
     const ctx = makeContext({ workspaceRoot: root, store, workspaces, tools: fakeTools(root) });
     await new SessionMiddleware({ sessionId: "crashed" }).initialize(ctx, jest.fn(async () => {}));
 
     expect(ctx.session!.status).toBe("awaiting-input");
-    // The unanswered tool_use tail is dropped so the next user turn lands cleanly.
-    expect(ctx.session!.conversation).toHaveLength(1);
-    expect(ctx.session!.conversation[0].role).toBe("user");
+    // Transcript healing (dangling tool_use trim) is ConversationMiddleware's
+    // job now — covered in conversation.test.ts.
   });
 
   test("throws when the store/workspaces steps have not run", async () => {

@@ -81,7 +81,7 @@ describe("ContextMiddleware", () => {
   });
 
   function ctxWith(nativeTools = true, tools: ToolDescriptor[] = [READ_TOOL]) {
-    const session = createSession({ sessionId: "s1", workspaceId: "ws-1" });
+    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
     return makeContext({
       modelsRegistry: fakeModelsRegistry(),
       providerRegistry: fakeProvidersRegistry("gemini-x", nativeTools),

@@ -126,8 +126,13 @@ export function renderEvent(event: RunnerEvent): void {
           ? chalk.greenBright("SATISFIED")
           : state === "continue"
             ? chalk.cyanBright("CONTINUE")
-            : chalk.yellowBright("UNSATISFIED");
-      process.stdout.write(chalk.magenta("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`));
+            : state === "awaiting-input"
+              ? chalk.blueBright("AWAITING-INPUT")
+              : chalk.yellowBright(state.toUpperCase() || "UNSATISFIED");
+      // Verdicts are turn-transient (events only, never persisted to the
+      // conversation): gray label per the saved-keeps-color convention, but
+      // the verdict word stays colored — it's the line being scanned for.
+      process.stdout.write(chalk.gray("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`));
       break;
     }
 
@@ -213,32 +218,35 @@ export function renderSubSessionNotification(notification: SubSessionNotificatio
   );
 }
 
+// Executor sub-run lines render gray: they persist in the CHILD session's
+// transcript, not this conversation, so by the saved-keeps-color convention
+// they are transient here. Errors stay red — failure must remain visible.
 function renderExecutorEvent(data: Record<string, unknown>): void {
   const kind = String(data.kind ?? "");
   switch (kind) {
     // Orchestrator-style events forwarded from the executor sub-run.
     case "orchestrator-start": {
       const model = String(data.orchestratorModel ?? "");
-      process.stdout.write(chalk.magenta(`  [EXECUTOR] running (${model})\n`));
+      process.stdout.write(chalk.gray(`  [EXECUTOR] running (${model})\n`));
       return;
     }
     case "orchestrator-message": {
       const content = String(data.content ?? "").trim();
       if (content.length > 0) {
-        process.stdout.write(chalk.magenta("  [EXECUTOR] ") + content + "\n");
+        process.stdout.write(chalk.gray(`  [EXECUTOR] ${content}\n`));
       }
       return;
     }
     case "tool-call": {
       const name = String(data.name ?? "");
       const args = JSON.stringify(data.arguments ?? {}, null, 0);
-      process.stdout.write(chalk.yellow(`  [EXECUTOR] → tool: ${name} ${chalk.gray(args)}\n`));
+      process.stdout.write(chalk.gray(`  [EXECUTOR] → tool: ${name} ${args}\n`));
       return;
     }
     case "tool-result": {
       const name = String(data.name ?? "");
       const isError = Boolean(data.isError);
-      const colour = isError ? chalk.red : chalk.green;
+      const colour = isError ? chalk.red : chalk.gray;
       process.stdout.write(colour(`  [EXECUTOR] ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`));
       return;
     }
@@ -253,6 +261,8 @@ function renderExecutorEvent(data: Record<string, unknown>): void {
 /** Identity of the session this REPL drives, shown in the startup banner. */
 export interface BannerSession {
   sessionId: string;
+  /** Transcript link — the session's rolling conversation file. */
+  conversationId: string;
   /** Workspace the session is bound to. */
   workspaceId: string;
   /** Content-addressed pointer to the captured context, when one was stamped. */
@@ -287,12 +297,14 @@ export function renderBanner(
 }
 
 /**
- * "id=b1557363 · ctx=3f8a1c2b · ws=ad2f457f · new" identity line. On a resumed
- * session the origin is followed by the turn count and a description of the
- * opening message. ctx falls back to "none" when no snapshot was stamped.
+ * "id=b1557363 · conv=9c2e11d4 · ctx=3f8a1c2b · ws=ad2f457f · new" identity
+ * line. On a resumed session the origin is followed by the turn count and a
+ * description of the opening message. ctx falls back to "none" when no
+ * snapshot was stamped.
  */
 function sessionLine(session: BannerSession): string {
   const id = `id=${short(session.sessionId)}`;
+  const conv = `conv=${short(session.conversationId)}`;
   const ctx = `ctx=${session.contextHashes["orchestrator"] ? short(session.contextHashes["orchestrator"]) : "none"}`;
   const ws = `ws=${short(session.workspaceId)}`;
 
@@ -303,7 +315,7 @@ function sessionLine(session: BannerSession): string {
     origin += ` — ${turns}${desc}`;
   }
 
-  return `${id} · ${ctx} · ${ws} · ${origin}`;
+  return `${id} · ${conv} · ${ctx} · ${ws} · ${origin}`;
 }
 
 /** First 8 chars — enough to eyeball/grep an id without wrapping the banner. */

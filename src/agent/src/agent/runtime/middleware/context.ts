@@ -58,13 +58,24 @@ export class ContextMiddleware implements IMiddleware {
     // allowed to use (role → model → models.json `mcp` list). Servers that are
     // declared but not yet connected (e.g. codemcp, subsessions) resolve to
     // undefined and are skipped, so the snapshot reflects what is actually mounted.
-    const serverNames = ctx.modelsRegistry!.getValidMcpForModel(role);
+    const serverNames = ctx.modelsRegistry!
+      .getValidMcpForModel(role)
+      // A coordinator-less run never advertises the sub-session tools, so its
+      // snapshot must not record them either — the hash stays faithful.
+      .filter((serverName) => this.params.includeSubSessions !== false || serverName !== "subsessions");
     const tools = serverNames.flatMap((serverName) => ctx.mcpRegistry!.getClient(serverName)?.listTools() ?? []);
 
     const projectTemplate = ctx.modelsRegistry?.getPromptTemplate("project");
     const agentTemplate = ctx.modelsRegistry!.getPromptTemplate(role);
-    const systemPrompt = fillToolsList(agentTemplate, tools);  
-    const context = ctx.contextLoader.buildContext(role, systemPrompt, projectTemplate || '', tools);
+    const systemPrompt = fillToolsList(agentTemplate, tools);
+    const provider = ctx.providerRegistry!.getProvider(ctx.modelsRegistry!.getProviderForRole(role));
+    const context = ctx.contextLoader.buildContext(
+      role,
+      systemPrompt,
+      projectTemplate || '',
+      tools,
+      provider.supportsNativeTools
+    );
     const hash = await ctx.contextLoader.saveContextSnapshot(context);
 
     // Stamp the pointer by role and persist now so the hash is durable from init, even

@@ -4,6 +4,7 @@ import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
 import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
+import { ConversationMiddleware } from "./middleware/conversation.js";
 import { InheritedUserMiddleware } from "./middleware/inherited-user.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { LoggerMiddleware } from "./middleware/logger.js";
@@ -46,9 +47,11 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
         sessionId: refs.sessionId,
         parentSessionId: refs.parentSessionId,
         workspaceId: refs.workspaceId,
-        standingContext: refs.standingContext,
       })
     )
+    // Standing context seeds the child's FRESH conversation, so it rides on
+    // the conversation step rather than the session step.
+    .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
     .add(new McpRegistryMiddleware())
     .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: false, role: deps.orchestratorRole }))

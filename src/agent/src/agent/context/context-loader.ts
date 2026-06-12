@@ -59,16 +59,20 @@ export class ContextLoader
     return createHash("sha256").update(JSON.stringify(snapshot)).digest("hex").slice(0, 16);
   }
 
-  public buildContext(role: string, systemPrompt: string, projectTemplate: string, tools: ToolDescriptor[]) : ContextSnapshot
-  {
-    const snapshot =
-    {
-        role,
-        systemPrompt,
-        projectContext: projectTemplate,
-        tools
-    } as ContextSnapshot;
-    return snapshot;
+  public buildContext(
+    role: string,
+    systemPrompt: string,
+    projectTemplate: string,
+    tools: ToolDescriptor[],
+    nativeTools: boolean
+  ): ContextSnapshot {
+    return {
+      role,
+      systemPrompt,
+      nativeTools,
+      projectContext: projectTemplate,
+      tools,
+    };
   }
 
   public async saveContextSnapshot(

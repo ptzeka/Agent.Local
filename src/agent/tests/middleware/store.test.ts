@@ -32,7 +32,7 @@ describe("StoreMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
 
     // Round-trip through the configured directory proves it's a real, usable store.
-    await ctx.store!.save(createSession({ sessionId: "s1", workspaceId: "w1" }));
+    await ctx.store!.save(createSession({ sessionId: "s1", workspaceId: "w1", conversationId: "c1" }));
     expect((await ctx.store!.load("s1"))?.sessionId).toBe("s1");
   });
 

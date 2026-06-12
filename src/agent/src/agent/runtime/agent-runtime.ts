@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+
+import type { Conversation } from "../conversation/conversation.js";
 import { InputInbox } from "../runners/input-inbox.js";
 import { Orchestrator, type RunOptions, type RunResult } from "../runners/orchestrator.js";
 import type { ContextLoader } from "../context/context-loader.js";
@@ -56,7 +59,8 @@ export interface CompactResult {
  *
  * Ownership tree (mirrors the old Initializer tree, now per-session):
  *   AgentRuntime   (stateful session owner)
- *   ├─ Session                 the live conversation state
+ *   ├─ Session                 run state (status, counters, links)
+ *   ├─ Conversation            the live transcript (rolling JSONL file)
  *   ├─ Workspace               resolved project context
  *   ├─ Orchestrator            ONE stateless instance drives this session
  *   ├─ InputInbox              external input injection seam
@@ -70,6 +74,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Populated by build() — all required after construction
   private logger!: Logger;
   private session!: Session;
+  private conversation!: Conversation;
   private workspace!: Workspace;
   private modelsRegistry!: ModelRegistry;
   private configurationRegistry!: ConfigurationRegistry;
@@ -123,6 +128,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       workspaces: undefined,
       user: undefined,
       session: undefined,
+      conversation: undefined,
       workspace: undefined,
       orchestrator: undefined,
       inbox: undefined,
@@ -138,6 +144,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       !ctx.store && "store (StoreMiddleware)",
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
       !ctx.session && "session (SessionMiddleware)",
+      !ctx.conversation && "conversation (ConversationMiddleware)",
       !ctx.workspace && "workspace (SessionMiddleware)",
       !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
       !ctx.inbox && "inbox (InputInboxMiddleware)",
@@ -159,6 +166,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.store = ctx.store!;
     this.workspaces = ctx.workspaces!;
     this.session = ctx.session!;
+    this.conversation = ctx.conversation!;
     this.workspace = ctx.workspace!;
     this.orchestrator = ctx.orchestrator!;
     this.inbox = ctx.inbox!;
@@ -306,6 +314,9 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    */
   async finalize(): Promise<void> {
     this.session.updatedAt = Date.now();
+    // Backstop flush: rounds flush as they complete, but a turn that threw
+    // between rounds may still hold an unpersisted tail.
+    await this.conversation.flush();
     await this.store.save(this.session);
   }
 
@@ -327,11 +338,18 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot reset now.`);
     }
 
-    this.session.conversation.length = 0;
+    // Reset is a SOFT delete: the transcript is flushed, marked deleted
+    // (deletedAt stamped, file kept as <id>.deleted.json for audit), and the
+    // session relinks to a fresh conversation — the old file is never
+    // appended to again. build() below opens the new transcript.
+    await this.conversation.flush();
+    await this.conversation.markDeleted();
+    this.session.conversationId = randomUUID();
     this.session.status = "idle";
     this.session.counters.turns = 0;
     this.workspace = await this.workspaces.reload(this.session.workspaceId);
-    await this.finalize();
+    this.session.updatedAt = Date.now();
+    await this.store.save(this.session);
     await this.build();
 
     return true;
@@ -354,17 +372,16 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot compact now.`);
     }
 
-    const messages = this.session.conversation;
+    const messages = this.conversation.getMessages();
     if (messages.length === 0 || (messages.length === 1 && isSummaryMessage(messages[0]))) {
       return { summarizedCount: 0, skipped: true, summary: null };
     }
-    
+
     const summarizer = new Summarizer(this);
-    const summaryText = await summarizer.summarize(messages, { signal: options.signal });
+    const summaryText = await summarizer.summarize([...messages], { signal: options.signal });
     const summarizedCount = messages.length;
 
-    this.session.conversation.length = 0;
-    this.session.conversation.push(buildSummaryMessage(summaryText, summarizedCount));
+    await this.conversation.replaceAll([buildSummaryMessage(summaryText, summarizedCount)]);
     await this.finalize();
 
     return { summarizedCount, skipped: false, summary: summaryText };
@@ -406,12 +423,16 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.session;
   }
 
+  getConversation(): Conversation {
+    return this.conversation;
+  }
+
   getWorkspace(): Workspace {
     return this.workspace;
   }
 
   history(): readonly ChatMessage[] {
-    return this.session.conversation;
+    return this.conversation.getMessages();
   }
 
   getContextLoader(): ContextLoader {

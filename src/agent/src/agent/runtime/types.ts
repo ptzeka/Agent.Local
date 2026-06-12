@@ -1,3 +1,4 @@
+import type { Conversation } from "../conversation/conversation.js";
 import type { IdentityContext, Principal } from "../identity/types.js";
 import type { InputInbox } from "../runners/input-inbox.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
@@ -13,6 +14,7 @@ import { ContextLoader } from "../context/context-loader.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
+  getConversation(): Conversation;
   getWorkspace(): Workspace;
   getModelsRegistry(): ModelRegistry;
   getConfigurationRegistry(): ConfigurationRegistry;
@@ -50,6 +52,7 @@ export interface RuntimeContext {
   workspaces: WorkspaceRegistry | undefined;
   user: Principal | undefined;
   session: Session | undefined;
+  conversation: Conversation | undefined;
   workspace: Workspace | undefined;
   orchestrator: Orchestrator | undefined;
   inbox: InputInbox | undefined;

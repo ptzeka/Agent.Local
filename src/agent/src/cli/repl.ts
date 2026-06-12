@@ -27,7 +27,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   const { workspaceRoot, sandboxRoot, runtime, resumed } = options;
 
   const session = runtime.getSession();
-  const firstUser = session.conversation.find((m) => m.role === "user");
+  const firstUser = runtime.history().find((m) => m.role === "user");
   const preview = firstUser ? previewOf(firstUser.content) : null;
 
   renderBanner(
@@ -35,6 +35,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     sandboxRoot,
     {
       sessionId: session.sessionId,
+      conversationId: session.conversationId,
       workspaceId: session.workspaceId,
       contextHashes: session.contextHashes || {} as Record<string, string>,
       resumed,
@@ -141,9 +142,10 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   rl.close();
 
   const finalSession = runtime.getSession();
-  const finalFirstUser = finalSession.conversation.find((m) => m.role === "user");
+  const finalFirstUser = runtime.history().find((m) => m.role === "user");
   renderSession({
     sessionId: finalSession.sessionId,
+    conversationId: finalSession.conversationId,
     workspaceId: finalSession.workspaceId,
     contextHashes: finalSession.contextHashes ?? {},
     resumed,
@@ -183,9 +185,10 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
 
     case "session": {
       const s = ctx.runtime.getSession();
-      const firstUser = s.conversation.find((m) => m.role === "user");
+      const firstUser = ctx.runtime.history().find((m) => m.role === "user");
       renderSession({
         sessionId: s.sessionId,
+        conversationId: s.conversationId,
         workspaceId: s.workspaceId,
         contextHashes: s.contextHashes ?? {},
         resumed: ctx.resumed,

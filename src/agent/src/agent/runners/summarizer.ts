@@ -1,6 +1,5 @@
 import type { ChatMessage } from "../providers/provider.js";
 import { AgentRuntimeQueryable } from "../runtime/types.js";
-import { SUMMARIZER_SYSTEM_PROMPT } from "../context/system-prompt.js";
 
 /**
  * Summarizer.
@@ -15,6 +14,7 @@ import { SUMMARIZER_SYSTEM_PROMPT } from "../context/system-prompt.js";
  */
 
 const DEFAULT_TEMPERATURE = 0.2;
+const ROLE_NAME = "summarizer";
 
 export interface SummarizeOptions {
   signal?: AbortSignal;
@@ -24,18 +24,21 @@ export interface SummarizeOptions {
 export class Summarizer {
  constructor(private readonly runtime: AgentRuntimeQueryable) {}
   public async summarize(
-    prefix: ChatMessage[],
+    prefix: readonly ChatMessage[],
     options: SummarizeOptions = {}
   ): Promise<string> {
     const modelsRegistry = this.runtime.getModelsRegistry();
     const provider = this.runtime.getProvidersRegistry().getProvider(modelsRegistry.getProviderForRole("summarizer"));
+    const contextLoader = this.runtime.getContextLoader();
+    const session = this.runtime.getSession();
     const transcript = prefix.map(formatMessageForSummary).join("\n\n");
-
+    const hash = session.contextHashes![ROLE_NAME];
+    const content = await contextLoader.getContextSnapshot(hash)
     let response;
     try {
       response = await provider.chat(
         [
-          { role: "system", content: SUMMARIZER_SYSTEM_PROMPT },
+          { role: "system", content: content?.systemPrompt || '' },
           { role: "user", content: transcript },
         ],
         {

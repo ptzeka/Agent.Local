@@ -1,3 +1,4 @@
+import type { Conversation } from "../conversation/conversation.js";
 import type { ToolExecutionResult } from "../mcp/mcp-client.js";
 import type {
   ChatMessage,
@@ -6,7 +7,6 @@ import type {
   ToolCall,
   ToolDescriptor,
 } from "../providers/provider.js";
-import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
@@ -104,8 +104,10 @@ export class Orchestrator {
 
   /**
    * Run one user turn end-to-end for the session in the runtime.
-   * Mutates `session.conversation` in place (the turn's work product); holds
-   * no reference to it afterward.
+   * Appends to the runtime's Conversation (the turn's work product); holds
+   * no reference to it afterward. The transcript is flushed to its rolling
+   * file at the end of every round; the runtime's finalize() backstops the
+   * tail on every exit path.
    */
   public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
@@ -114,7 +116,7 @@ export class Orchestrator {
     const modelsRegistry = this.runtime.getModelsRegistry();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
     const providersRegistry = this.runtime.getProvidersRegistry();
-    const conversation = session.conversation;
+    const conversation = this.runtime.getConversation();
 
     // Resolve a role's tool servers (role → model → models.json `mcp` list),
     // skipping any that are declared but not mounted (e.g. codemcp before
@@ -127,11 +129,20 @@ export class Orchestrator {
 
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
+    // The snapshot stamped by ContextMiddleware is the ONLY source of the
+    // system prompt and project direction — the runner never assembles
+    // context itself, so what ran is always exactly what the hash records.
     const contextHash = session.contextHashes ? session.contextHashes[this.role] : null;
     const context = contextHash ? await contextLoader.getContextSnapshot(contextHash) : null;
+    if (!context) {
+      throw new Error(
+        `Orchestrator: no context snapshot for role "${this.role}" ` +
+          `(hash: ${contextHash ?? "unstamped"}). ContextMiddleware must run before any turn.`
+      );
+    }
 
     await this.maybeSummarize(conversation, emit, options.signal);
-    conversation.push({ role: "user", content: userInput });
+    conversation.append({ role: "user", content: userInput });
 
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
@@ -182,7 +193,7 @@ export class Orchestrator {
     });
 
     const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
-    const workingMessages: ChatMessage[] = [...systemMessages, ...conversation];
+    const workingMessages: ChatMessage[] = [...systemMessages, ...conversation.getMessages()];
 
     const turnStartIndex = workingMessages.length - 1;
 
@@ -214,7 +225,7 @@ export class Orchestrator {
       const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
       for (const text of injectedPrompts) {
         const injected: ChatMessage = { role: "user", content: text };
-        conversation.push(injected);
+        conversation.append(injected);
         workingMessages.push(injected);
         emit({ type: OrchestratorEventTypes.INJECTED_INPUT, data: { iteration, content: text } });
       }
@@ -249,7 +260,7 @@ export class Orchestrator {
         },
       });
 
-      conversation.push(assistantMessage);
+      conversation.append(assistantMessage);
       workingMessages.push(assistantMessage);
 
       if (toolCalls.length === 0) {
@@ -295,8 +306,9 @@ export class Orchestrator {
                 "Stop repeating what isn't working and change your approach. Re-check this " +
                 "request and the current workspace state, then take a different next action.",
         };
-        conversation.push(nudge);
+        conversation.append(nudge);
         workingMessages.push(nudge);
+        await conversation.flush();
         continue;
       }
 
@@ -317,7 +329,7 @@ export class Orchestrator {
         );
       }
 
-      conversation.push(...toolMessages);
+      conversation.append(...toolMessages);
       workingMessages.push(...toolMessages);
 
       // Periodic progress gate (orchestrator only). Every N successful dispatches,
@@ -339,10 +351,14 @@ export class Orchestrator {
               "Stop repeating what isn't working and change your approach. Re-check this " +
               "request and the current workspace state, then take a different next action.",
           };
-          conversation.push(nudge);
+          conversation.append(nudge);
           workingMessages.push(nudge);
         }
       }
+
+      // End of round: persist this iteration's appends to the rolling file so
+      // a crash mid-turn loses at most the round in flight.
+      await conversation.flush();
     }
 
     const truncationNotice: ChatMessage = {
@@ -351,7 +367,7 @@ export class Orchestrator {
         `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
         "Try a narrower request or raise maxOrchestratorIterations in models.json.",
     };
-    conversation.push(truncationNotice);
+    conversation.append(truncationNotice);
     emit({
       type: OrchestratorEventTypes.WARNING,
       data: { message: `${this.role} hit iteration cap`, iterations: maxIterations },
@@ -367,20 +383,21 @@ export class Orchestrator {
   // --------------------------------------------------------------------------
 
   private async maybeSummarize(
-    conversation: ChatMessage[],
+    conversation: Conversation,
     emit: RunnerListener,
     signal?: AbortSignal
   ): Promise<void> {
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
     const threshold = config.orchestration.summarizeAtMessages!;
-    if (conversation.length <= threshold) return;
+    const messages = conversation.getMessages();
+    if (messages.length <= threshold) return;
 
     const desiredKeep = config.orchestration.summarizerKeepLastN!;
-    const tailStart = findCleanTailStart(conversation, desiredKeep);
+    const tailStart = findCleanTailStart(messages, desiredKeep);
     if (tailStart === 0) return;
 
-    const prefix = conversation.slice(0, tailStart);
-    const tail = conversation.slice(tailStart);
+    const prefix = messages.slice(0, tailStart);
+    const tail = messages.slice(tailStart);
 
     emit({
       type: OrchestratorEventTypes.SUMMARIZATION_START,
@@ -401,8 +418,7 @@ export class Orchestrator {
 
     const summaryMessage = buildSummaryMessage(summaryText, prefix.length);
 
-    conversation.length = 0;
-    conversation.push(summaryMessage, ...tail);
+    await conversation.replaceAll([summaryMessage, ...tail]);
 
     emit({
       type: OrchestratorEventTypes.SUMMARIZATION,
@@ -448,11 +464,11 @@ export class Orchestrator {
   private buildSystemMessages(
     provider: LLMProvider,
     visibleTools: ToolDescriptor[],
-    context?: ContextSnapshot | null
+    context: ContextSnapshot
   ): ChatMessage[] {
     const messages: ChatMessage[] = [];
 
-    if (context) {
+    if (context.projectContext) {
       messages.push({
         role: "system",
         content:
@@ -462,15 +478,15 @@ export class Orchestrator {
       });
     }
 
-    const basePrompt =
-      this.role === "executor" ? EXECUTOR_SYSTEM_PROMPT : ORCHESTRATOR_SYSTEM_PROMPT;
+    // Prompted-JSON instructions stay per-turn: the live tool set can differ
+    // from the snapshot's (the subsessions server is rebound each turn).
     const promptedInstructions = provider.supportsNativeTools
       ? ""
       : buildPromptedToolInstructions(visibleTools);
 
     messages.push({
       role: "system",
-      content: basePrompt + promptedInstructions,
+      content: context.systemPrompt + promptedInstructions,
     });
 
     return messages;
@@ -546,7 +562,7 @@ function wrapToolResult(call: ToolCall, content: string): ChatMessage {
  *     functionCall turn, which Gemini rejects unless it immediately follows a
  *     user turn or a functionResponse.
  */
-function findCleanTailStart(messages: ChatMessage[], desiredTailLen: number): number {
+function findCleanTailStart(messages: readonly ChatMessage[], desiredTailLen: number): number {
   const initial = Math.max(0, messages.length - desiredTailLen);
   for (let i = initial; i < messages.length; i += 1) {
     const message = messages[i];
