@@ -16,11 +16,31 @@
  */
 
 import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
-import { createExcelTools } from "./excel-tools/excel-tools.js";
-import type { ToolContext } from "./types.js";
+import {
+  createExcelTools,
+  GET_EXCEL_COLUMNS_TOOL,
+  LIST_EXCEL_SHEETS_TOOL,
+  QUERY_EXCEL_ROWS_TOOL,
+  READ_EXCEL_SHEET_TOOL,
+} from "./excel-tools/excel-tools.js";
+import type { SyntheticMcp, ToolContext } from "./types.js";
 
 /** The MCP server name this module mounts under (tools namespace as `excel__*`). */
 export const EXCEL_SERVER_NAME = "excel";
+
+/** The read-only Excel mount (tools namespace as `excelreadonly__*`). */
+export const EXCEL_READONLY_SERVER_NAME = "excelreadonly";
+
+/**
+ * ALLOWLIST, not a denylist: a mutating tool added to `createExcelTools`
+ * later stays out of the read-only mount unless deliberately listed here.
+ */
+const READ_ONLY_EXCEL_TOOL_NAMES = new Set([
+  LIST_EXCEL_SHEETS_TOOL,
+  GET_EXCEL_COLUMNS_TOOL,
+  READ_EXCEL_SHEET_TOOL,
+  QUERY_EXCEL_ROWS_TOOL,
+]);
 
 /**
  * Build an Excel `LocalMcp` for a specific turn's context.
@@ -32,13 +52,26 @@ export const EXCEL_SERVER_NAME = "excel";
  * the orchestrator no longer routes Excel through the synthetic event path).
  */
 export function createExcelLocalMcp(toolCtx: ToolContext): LocalMcp {
-  const tools: LocalTool[] = createExcelTools().map((tool) => ({
+  return new LocalMcp(EXCEL_SERVER_NAME, bindToolContext(createExcelTools(), toolCtx));
+}
+
+/**
+ * Inspection-only Excel mount for coordinator roles — same enforcement story
+ * as `createFsReadonlyLocalMcp`: the orchestrator's read-only contract holds
+ * because append/insert/delete are not mounted, not because the prompt asks
+ * nicely.
+ */
+export function createExcelReadonlyLocalMcp(toolCtx: ToolContext): LocalMcp {
+  const readOnlyTools = createExcelTools().filter((tool) => READ_ONLY_EXCEL_TOOL_NAMES.has(tool.name));
+  return new LocalMcp(EXCEL_READONLY_SERVER_NAME, bindToolContext(readOnlyTools, toolCtx));
+}
+
+function bindToolContext(tools: SyntheticMcp[], toolCtx: ToolContext): LocalTool[] {
+  return tools.map((tool) => ({
     descriptor: tool.descriptor,
     invoke: async (args) => {
       const result = await tool.callTool(args ?? {}, toolCtx);
       return { isError: result.isError, content: result.content };
     },
   }));
-
-  return new LocalMcp(EXCEL_SERVER_NAME, tools);
 }

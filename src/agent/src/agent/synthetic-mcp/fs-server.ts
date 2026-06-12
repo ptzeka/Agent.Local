@@ -188,3 +188,29 @@ export function createFsLocalMcp(workspaceRoot: string): LocalMcp {
   const tools = createFsTools().map((tool) => toLocalTool(tool, workspace));
   return new LocalMcp(FS_SERVER_NAME, tools);
 }
+
+/** The read-only filesystem mount (tools namespace as `fsreadonly__*`). */
+export const FS_READONLY_SERVER_NAME = "fsreadonly";
+
+/**
+ * ALLOWLIST, not a denylist: a mutating tool added to `createFsTools` later
+ * stays out of the read-only mount unless deliberately listed here — the safe
+ * failure mode for an enforcement boundary.
+ */
+const READ_ONLY_FS_TOOL_NAMES = new Set(["read_file", "list_dir", "glob", "grep"]);
+
+/**
+ * The read-only filesystem mount for coordinator roles. The orchestrator's
+ * "read-only" contract was previously prompt-level only — its models.json
+ * whitelist granted the whole fsmcp server, mutations included. Mounting an
+ * inspection-only subset under its own server name turns that contract into
+ * an enforced boundary: write/edit/delete are not advertised AND not callable,
+ * regardless of what the model decides to try.
+ */
+export function createFsReadonlyLocalMcp(workspaceRoot: string): LocalMcp {
+  const workspace = createWorkspace(workspaceRoot);
+  const tools = createFsTools()
+    .filter((tool) => READ_ONLY_FS_TOOL_NAMES.has(tool.name))
+    .map((tool) => toLocalTool(tool, workspace));
+  return new LocalMcp(FS_READONLY_SERVER_NAME, tools);
+}

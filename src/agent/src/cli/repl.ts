@@ -6,7 +6,8 @@ import type { ModelRegistry } from "../agent/registries/model-registry.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 
-import { renderBanner, renderEvent, renderHelp, renderSubSessionNotification, renderTurnEvent } from "./render.js";
+import { renderBanner, renderEvent, renderHelp, renderSession, renderSubSessionNotification, renderTurnEvent } from "./render.js";
+import type { BannerSession } from "./render.js";
 
 /**
  * Interactive REPL.
@@ -50,15 +51,51 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     output: process.stdout,
   });
 
+  // Activity indicator + prompt repaint are CLI concerns: they hang off the
+  // runner's lifecycle events here, not inside the runtime. Every writer
+  // interrupts the spinner first so log lines never land on a half-drawn
+  // star line.
+  const spinner = new TurnSpinner(() => rl.line.length > 0);
+
   // Sub-session completions fire out-of-band (after the parent turn that
   // spawned them has ended). Surface them as they arrive.
-  const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
+  const unsubscribe = runtime.onSubSessionEvent((notification) => {
+    spinner.interrupt();
+    renderSubSessionNotification(notification);
+  });
 
   // All turns flow through the runner's single pump: the REPL SUBMITS user
   // input and awaits the turn's settle, and settling sub-sessions auto-wake
   // the session through the same queue — no producer ever races the
   // dispatchAsync running-guard.
-  const turnRunner = runtime.startTurnLoop({ onEvent: renderEvent, onTurnEvent: renderTurnEvent });
+  let runnerRef: TurnRunner | null = null;
+  const turnRunner = runtime.startTurnLoop({
+    onEvent: (event) => {
+      spinner.interrupt();
+      renderEvent(event);
+    },
+    onTurnEvent: (event) => {
+      if (event.type === "turn-start") {
+        spinner.start();
+        renderTurnEvent(event);
+        return;
+      }
+      if (event.type === "turn-done") {
+        spinner.stop();
+        renderTurnEvent(event);
+        // The pending readline question is intact — only its visual line
+        // scrolled away under the turn's output. Repaint it so the user sees
+        // they have the floor again; skip when another turn is about to start.
+        if ((runnerRef?.pendingCount ?? 0) === 0) {
+          redrawPrompt(rl);
+        }
+        return;
+      }
+      spinner.interrupt();
+      renderTurnEvent(event);
+    },
+  });
+  runnerRef = turnRunner;
 
   while (true) {
     let input: string;
@@ -85,6 +122,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         turnRunner,
         registry: runtime.getModelsRegistry(),
         mcpRegistry: runtime.getMcpClientRegistry(),
+        resumed,
       });
       if (exitRequested) break;
       continue;
@@ -103,6 +141,17 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   await runtime.stopTurnLoop();
   unsubscribe();
   rl.close();
+
+  const finalSession = runtime.getSession();
+  const finalFirstUser = finalSession.conversation.find((m) => m.role === "user");
+  renderSession({
+    sessionId: finalSession.sessionId,
+    workspaceId: finalSession.workspaceId,
+    contextHashes: finalSession.contextHashes ?? {},
+    resumed,
+    turns: finalSession.counters.turns,
+    preview: finalFirstUser ? previewOf(finalFirstUser.content) : null,
+  });
 }
 
 // ----------------------------------------------------------------------------
@@ -114,6 +163,7 @@ interface SlashContext {
   turnRunner: TurnRunner;
   registry: ModelRegistry;
   mcpRegistry: McpClientRegistry;
+  resumed: boolean;
 }
 
 async function handleSlashCommand(command: string, ctx: SlashContext): Promise<boolean> {
@@ -132,6 +182,20 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     case "help":
       renderHelp();
       return false;
+
+    case "session": {
+      const s = ctx.runtime.getSession();
+      const firstUser = s.conversation.find((m) => m.role === "user");
+      renderSession({
+        sessionId: s.sessionId,
+        workspaceId: s.workspaceId,
+        contextHashes: s.contextHashes ?? {},
+        resumed: ctx.resumed,
+        turns: s.counters.turns,
+        preview: firstUser ? previewOf(firstUser.content) : null,
+      });
+      return false;
+    }
 
     case "reset": {
       // The runtime stops and drains in-flight work itself; this pre-pass
@@ -260,6 +324,53 @@ function handleHistoryCommand(ctx: SlashContext): void {
     process.stdout.write(`  ${colour(label)} ${message.content}\n`);
   }
   process.stdout.write("\n");
+}
+
+/**
+ * In-place activity indicator: cycles "*" → "****" on the current line while
+ * a turn is in flight, so silent stretches (model thinking, long tool calls)
+ * read as "working" rather than hung. Ticks are suppressed while the user is
+ * mid-keystroke — the spinner must never clobber a line someone is typing on.
+ */
+class TurnSpinner {
+  private timer: NodeJS.Timeout | null = null;
+  private step = 0;
+
+  constructor(private readonly userIsTyping: () => boolean) {}
+
+  start(): void {
+    if (this.timer) return;
+    this.step = 0;
+    this.timer = setInterval(() => {
+      if (this.userIsTyping()) return;
+      this.step = (this.step % 4) + 1;
+      process.stdout.write("\r" + chalk.gray("*".repeat(this.step).padEnd(5)));
+    }, 300);
+    this.timer.unref(); // never the reason the process stays alive
+  }
+
+  /** Wipe the spinner off the current line so real output starts clean. */
+  interrupt(): void {
+    if (!this.timer) return;
+    process.stdout.write("\r     \r");
+  }
+
+  stop(): void {
+    if (!this.timer) return;
+    clearInterval(this.timer);
+    this.timer = null;
+    process.stdout.write("\r     \r");
+  }
+}
+
+/**
+ * Repaint the prompt after out-of-band output. The readline question asked at
+ * the top of the REPL loop is still pending — only its visual line scrolled
+ * away — so this redraws the prompt plus whatever the user had already typed
+ * (readline keeps the in-progress buffer on `rl.line`).
+ */
+function redrawPrompt(rl: readline.Interface): void {
+  process.stdout.write(chalk.bold.cyan("you> ") + rl.line);
 }
 
 function writeStopResult(result: { cancelledTurns: number; cancelledSubSessions: number }): void {

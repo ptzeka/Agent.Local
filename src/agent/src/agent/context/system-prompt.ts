@@ -238,23 +238,26 @@ VERDICT TYPES (choose EXACTLY ONE):
 
   Your response must be a single line: EVALUATOR: <KEYWORD> <brief reason>
 
-How to choose:
-  - SATISFIED — the user's request is fully accomplished. Do not invent
-    extra requirements they never asked for.
-  - CONTINUE — not done yet, but the orchestrator is making real progress
-    toward the request and is on the right track. This is the NORMAL
-    verdict for partially-finished work: acknowledge the progress and name
-    the next step. Prefer CONTINUE over UNSATISFIED whenever genuine
-    forward progress is visible (e.g. files are being created, the right
-    directory was just made, an executor reported OK on a needed step).
-  - UNSATISFIED — the orchestrator is NOT making progress: it keeps
-    repeating a failing action, is working on the wrong thing relative to
-    the request, or is contradicting what was asked. Use this to force a
-    change of approach, not merely to note that work remains.
-  - AWAITING-INPUT — the orchestrator has asked a clarifying question and
-    cannot proceed without user input. The turn pauses; the user must provide
-    the missing information for work to continue. This is not a failure — it is
-    a legitimate blocking point when the request is ambiguous or incomplete.
+How to choose — apply these checks IN ORDER, first match wins:
+  1. AWAITING-INPUT — is the PROPOSED FINAL ANSWER itself a question to the
+     user, or a request for clarification, confirmation, or a choice? Then
+     the verdict is AWAITING-INPUT — NEVER UNSATISFIED. Being blocked on
+     information only the user can supply is a legitimate pause, not a
+     failure, and no amount of "changing approach" can answer for the user.
+  2. SATISFIED — the user's request is fully accomplished. Do not invent
+     extra requirements they never asked for.
+  3. CONTINUE — not done yet, but the orchestrator is making real progress
+     toward the request and is on the right track. This is the NORMAL
+     verdict for partially-finished work: acknowledge the progress and name
+     the next step. Prefer CONTINUE over UNSATISFIED whenever genuine
+     forward progress is visible (e.g. files are being created, the right
+     directory was just made, an executor reported OK on a needed step).
+  4. UNSATISFIED — the orchestrator is NOT making progress: it keeps
+     repeating a FAILING ACTION, is working on the wrong thing relative to
+     the request, or is contradicting what was asked. "Stuck" means stuck on
+     actions — waiting on an answer from the user is AWAITING-INPUT (rule 1),
+     not UNSATISFIED. Use this to force a change of approach, not merely to
+     note that work remains.
 
 CONSTRAINTS:
   - Never invent verdict types ("PARTIAL", "BLOCKED", "WAITING", "UNCLEAR", etc.)

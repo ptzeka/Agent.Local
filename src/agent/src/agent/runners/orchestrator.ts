@@ -165,8 +165,8 @@ export class Orchestrator {
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
     }
 
-    const scopedExecutorClient = new ScopedToolClient(clientsFor("executor"), workspace.workspaceId, emit);
-    const scopedOrchestratorClient = new ScopedToolClient(clientsFor("orchestrator"), workspace.workspaceId, emit);
+    const scopedExecutorClient = new ScopedToolClient(clientsFor("executor"), emit);
+    const scopedOrchestratorClient = new ScopedToolClient(clientsFor("orchestrator"), emit);
 
     const executorTools = scopedExecutorClient.listTools();
     const orchestratorTools = scopedOrchestratorClient.listTools();

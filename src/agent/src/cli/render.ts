@@ -330,6 +330,10 @@ function short(value: string): string {
   return value.slice(0, 8);
 }
 
+export function renderSession(session: BannerSession): void {
+  process.stdout.write(chalk.gray(`session:   ${sessionLine(session)}\n`));
+}
+
 export function renderHelp(): void {
   const lines = [
     "",
@@ -339,6 +343,7 @@ export function renderHelp(): void {
     "  /stop                       stop everything: current turn, queued turns, sub-sessions (typing \"stop\" works too)",
     "  /reset                      stop everything, then clear conversation history",
     "  /compact                    stop everything, then fold the conversation into a summary checkpoint",
+    "  /session                    print current session info (id, ctx hash, workspace, turns)",
     "  /models                     list configured models and current role assignments",
     "  /model <role>=<model-id>    reassign a role (orchestrator, executor, …)",
     "  /tools                      list every tool exposed by connected MCP servers",

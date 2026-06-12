@@ -33,6 +33,14 @@ export function createWorkspace(rawRoot: string): Workspace {
   const root = path.resolve(rawRoot);
 
   function resolveSafe(userPath: string): string {
+    // Reject parent-traversal segments before any OS-level resolution. The
+    // containment check below would catch escapes too, but an early explicit
+    // reject makes hostile input fail fast and surfaces the offending path
+    // directly rather than a resolved-absolute one.
+    if (/(^|[/\\])\.\.($|[/\\])/.test(userPath)) {
+      throw new WorkspaceViolationError(userPath, root);
+    }
+
     // Treat a bare "." or "" as "the workspace root itself".
     const candidate = userPath === "" || userPath === "." ? root : userPath;
 

@@ -10,7 +10,6 @@ import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,
 } from "../tool-adapter.js";
-import { EXECUTOR_SYSTEM_PROMPT, fillToolsList } from "../context/system-prompt.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { ScopedToolClient } from "../scoped-tool-client.js";
 import { ExecutorEventTypes, type ExecutorEvent, type RunnerListener } from "./runner-events.js";
@@ -79,7 +78,6 @@ export class Executor {
     const temperature = options.temperature ?? DEFAULT_TEMPERATURE;
     const registry = this.runtime.getModelsRegistry();
     const providersRegistry = this.runtime.getProvidersRegistry();
-    const workspace = this.runtime.getWorkspace();
     const mcpRegistry = this.runtime.getMcpClientRegistry();
     // Resolve the executor's tool servers (role → model → models.json `mcp` list),
     // skipping any not currently mounted, and front them with one scoped client.
@@ -89,7 +87,7 @@ export class Executor {
     });
 
     this.provider = providersRegistry.getProvider(registry.getProviderForRole("executor"));
-    this.tools = new ScopedToolClient(clients, workspace.workspaceId, emit);
+    this.tools = new ScopedToolClient(clients, emit);
     this.availableTools = this.tools.listTools();
 
     emit({
@@ -276,8 +274,7 @@ export class Executor {
   // --------------------------------------------------------------------------
 
   private buildSystemMessages(): ChatMessage[] {
-    const template = this.runtime?.getModelsRegistry().getPromptTemplate("executor") ?? EXECUTOR_SYSTEM_PROMPT;
-    const basePrompt = fillToolsList(template, this.availableTools!);
+    const basePrompt = this.runtime?.getModelsRegistry().getPromptTemplate("executor");
     const messages: ChatMessage[] = [{ role: "system", content: basePrompt }];
 
     if (!this.provider?.supportsNativeTools) {

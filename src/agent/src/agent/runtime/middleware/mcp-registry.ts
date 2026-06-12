@@ -1,6 +1,7 @@
+import path from "node:path";
 import { McpClientRegistry } from "../../registries/index.js";
-import { createFsLocalMcp } from "../../synthetic-mcp/fs-server.js";
-import { createExcelLocalMcp } from "../../synthetic-mcp/excel-server.js";
+import { createFsLocalMcp, createFsReadonlyLocalMcp } from "../../synthetic-mcp/fs-server.js";
+import { createExcelLocalMcp, createExcelReadonlyLocalMcp } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp } from "../../synthetic-mcp/subsessions-server.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 
@@ -29,20 +30,28 @@ export class McpRegistryMiddleware implements IMiddleware {
     const sandboxRoot = ctx.sandboxRoot;
     ctx.mcpRegistry = new McpClientRegistry(sandboxRoot);
 
-    // Filesystem/search server — bound to the container sandbox root.
-    ctx.mcpRegistry.registerClient(createFsLocalMcp(sandboxRoot));
+    // Filesystem/search servers — bound to the session's workspace segment
+    // (sandboxRoot/workspaceId) so the Workspace guard in each server enforces
+    // confinement at the source: paths the model supplies are resolved relative
+    // to this root, and anything that escapes it is rejected before disk access.
+    // No path rewriting at the client layer is needed or present.
+    const fsRoot = path.join(sandboxRoot, session.workspaceId);
+    ctx.mcpRegistry.registerClient(createFsLocalMcp(fsRoot));
+    ctx.mcpRegistry.registerClient(createFsReadonlyLocalMcp(fsRoot));
 
     // Excel server — bound to this session's tool context. Per-turn fields
     // (coordinator, signal) are absent at session setup, matching prior behavior.
-    ctx.mcpRegistry.registerClient(
-      createExcelLocalMcp({
-        session,
-        workspace,
-        sandboxRoot,
-        coordinator: undefined,
-        signal: undefined,
-      })
-    );
+    // Mounted twice for the same reason as the filesystem: full set for the
+    // executor, inspection-only set for coordinator models.
+    const excelToolContext = {
+      session,
+      workspace,
+      sandboxRoot,
+      coordinator: undefined,
+      signal: undefined,
+    };
+    ctx.mcpRegistry.registerClient(createExcelLocalMcp(excelToolContext));
+    ctx.mcpRegistry.registerClient(createExcelReadonlyLocalMcp(excelToolContext));
 
     // Subsessions server — same in-process LocalMcp pattern as Excel. Per-turn
     // fields (coordinator, signal) are absent at session setup: the tools

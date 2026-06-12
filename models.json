@@ -11,7 +11,10 @@
     "`mcp` is an optional per-model list of MCP server names (e.g. `fsmcp`, `codemcp`)",
     "the model can access. It layers on top of the role split: a model only sees",
     "tools from servers that are both role-appropriate AND listed here. Omit the key",
-    "for no restriction; an empty array advertises zero tools."
+    "for no restriction; an empty array advertises zero tools.",
+    "`fsreadonly`/`excelreadonly` are inspection-only mounts of the same servers:",
+    "give them to orchestrator-role models so the read-only contract is ENFORCED",
+    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor models."
   ],
 
   "models": {
@@ -35,7 +38,7 @@
       "supportsTools": false,
       "reasoning": true,
       "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff.",
-      "mcp": ["fsmcp", "codemcp"]
+      "mcp": ["fsreadonly", "codemcp"]
     },
     "llama-fast": {
       "provider": "ollama",
@@ -49,28 +52,35 @@
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"]
     },
     "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
       "supportsTools": true,
       "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"]
     },
-    "gemini-2.5-flash-lite": {
+    "gemini-2.5-flash-lite-coder": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"]
+      "mcp": ["fsmcp", "codemcp", "excel", "dispatch_executor", "subsessions"]
+    },
+    "gemini-2.5-flash-lite-orchestrator": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "supportsTools": true,
+      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "dispatch_executor", "subsessions"]
     }
   },
 
   "roles": {
-    "orchestrator": "gemini-2.5-flash-lite",
+    "orchestrator": "gemini-2.5-flash-lite-orchestrator",
     "executor": "qwen-coder-14b",
-    "coder": "gemini-2.5-flash-lite",
+    "coder": "gemini-2.5-flash-lite-coder",
     "summarizer": "llama-fast",
     "evaluator": "qwen-coder-14b"
   },

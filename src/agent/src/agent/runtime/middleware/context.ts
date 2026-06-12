@@ -1,5 +1,5 @@
 import path from "node:path";
-import { ContextLoader, ContextSnapshot } from "../../context/context-loader.js";
+import { ContextLoader } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 

@@ -14,5 +14,6 @@
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox
 # .\scripts\publish-codeindex.ps1  -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox
 
-npm run start -- --run "create hello world txt as background task" --session 57c64770-8208-4a4b-9cda-111b723b3f22
-npm run start -- --run "remove hello world txt as background task" --session 57c64770-8208-4a4b-9cda-111b723b3f22
+npm run start -- --run "create hello world txt as background task" --session 6538c999-82f1-467f-8378-f30528d3f40c
+npm run start -- --run "read me hello world txt content" --session 6538c999-82f1-467f-8378-f30528d3f40c
+npm run start -- --run "remove hello world txt as background task" --session 6538c999-82f1-467f-8378-f30528d3f40c
