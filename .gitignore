@@ -26,3 +26,5 @@ Thumbs.db
 /src/agent/sessions
 /src/agent/contexts
 /src/agent/sessions
+/src/codeindex/data
+/src/codemcp/data
