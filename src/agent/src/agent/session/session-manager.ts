@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { foldDelegatedUsage, type Session } from "./session.js";
 import {
   makeSubSession,
   toSnapshot,
@@ -56,7 +57,11 @@ export class SessionManager implements SubSessionCoordinator {
      *  parent-fed steps. Undefined on a leaf coordinator (cap 0), which never
      *  spawns and so never calls it. */
     private readonly subRuntimeFactory: SubRuntimeFactory | undefined,
-    private readonly maxActivePerParent: number = DEFAULT_MAX_ACTIVE_PER_PARENT
+    private readonly maxActivePerParent: number = DEFAULT_MAX_ACTIVE_PER_PARENT,
+    /** The owning runtime's live session. Settled children fold their token
+     *  tally into these counters in memory; the parent's next persist writes
+     *  the summed figure. Optional so leaf coordinators (and tests) can omit it. */
+    private readonly parentSession?: Session
   ) {}
 
   /**
@@ -363,6 +368,14 @@ export class SessionManager implements SubSessionCoordinator {
     // just moved it to a terminal state.
     const settledStatus = sub.status as SubSessionStatus;
     if (settledStatus === "done" || settledStatus === "error") {
+      // Fold the child's whole-run token tally into the parent's in-memory
+      // *Tallied counters (dependency spend, kept apart from the parent's own
+      // chat usage); the parent's next finalize() persists the summed figure.
+      // Done here (not on a tool result) because a detached child settles
+      // after the parent's turn has already returned.
+      if (this.parentSession && sub.session) {
+        foldDelegatedUsage(this.parentSession.counters, sub.session.counters);
+      }
       // The child's runtime owns persistence; stamp the terminal sub-session
       // status onto its session and let it write. A run that errored before the
       // runtime came up has neither — there is nothing to persist, but we still

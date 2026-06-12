@@ -1,8 +1,16 @@
 import type { ToolDescriptor } from "../providers/provider.js";
+import type { TokenUsage } from "../session/session.js";
 
 export interface ToolExecutionResult {
   isError: boolean;
   content: string;
+  /**
+   * Token cost the tool itself incurred (e.g. an executor dispatch running a
+   * child model loop). The orchestrator folds this into the calling session's
+   * counters, so delegated usage is part of the standard tool contract rather
+   * than a side channel. Omitted by tools that consume no model tokens.
+   */
+  usage?: TokenUsage;
 }
 
 /**

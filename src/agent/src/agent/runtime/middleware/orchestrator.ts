@@ -27,7 +27,8 @@ export class OrchestratorMiddleware implements IMiddleware {
           "Ensure the registry is set up before this middleware."
       );
     }
-    ctx.orchestrator = new Orchestrator(this.params.role);
+    const role = this.params.role ?? "orchestrator";
+    ctx.orchestrator = new Orchestrator(role);
     await next();
   }
 }

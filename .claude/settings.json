@@ -11,7 +11,11 @@
       "Bash(rm -f /c/www/Agent.Local/src/agent/src/agent/_scope_check.ts && echo removed)",
       "Bash(echo \"exit: $?\")",
       "Bash(npx tsx *)",
-      "Bash(Remove-Item \"c:\\\\www\\\\Agent.Local\\\\agent.ai\")"
+      "Bash(Remove-Item \"c:\\\\www\\\\Agent.Local\\\\agent.ai\")",
+      "PowerShell(git -C c:\\\\www\\\\Agent.Local diff --stat)",
+      "PowerShell(git -C c:\\\\www\\\\Agent.Local diff)",
+      "mcp__codemcp__find_symbol",
+      "mcp__codemcp__search_code"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"

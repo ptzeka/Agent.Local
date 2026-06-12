@@ -45,8 +45,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
     .add(new McpRegistryMiddleware())
     .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: true, role: deps.orchestratorRole }))
-    .add(new ContextMiddleware({ roleName: "orchestrator" }))
-    .add(new ContextMiddleware({ roleName: "executor" }))
+    .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
 }

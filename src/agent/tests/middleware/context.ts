@@ -30,6 +30,7 @@ export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeCon
     workspaceRoot: "/tmp/agent-mw-test-workspace",
     sandboxRoot: "/tmp/agent-mw-test-sandbox",
     mcpConfigPath: "/tmp/mcp.json",
+    configPath: "/tmp/models.json",
     credentials: {},
     providerRegistry: undefined,
     modelsRegistry: undefined,

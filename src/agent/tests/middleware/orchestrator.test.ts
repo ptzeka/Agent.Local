@@ -12,8 +12,8 @@ describe("OrchestratorMiddleware", () => {
   test("seeds ctx.orchestrator with an Orchestrator and advances", async () => {
     const ctx = makeContext({ toolDescriptors: [] });
     const next = jest.fn(async () => {});
-
-    await new OrchestratorMiddleware().initialize(ctx, next);
+    
+    await new OrchestratorMiddleware({ role: "orchestrator"}).initialize(ctx, next);
 
     expect(ctx.orchestrator).toBeInstanceOf(Orchestrator);
     expect(next).toHaveBeenCalledTimes(1);
@@ -25,7 +25,7 @@ describe("OrchestratorMiddleware", () => {
   test("builds from a bare context with no identity/session populated", async () => {
     const ctx = makeContext({ toolDescriptors: [] }); // user, session, workspace all undefined
 
-    await new OrchestratorMiddleware().initialize(ctx, jest.fn(async () => {}));
+    await new OrchestratorMiddleware({ role: "orchestrator"}).initialize(ctx, jest.fn(async () => {}));
 
     expect(ctx.orchestrator).toBeInstanceOf(Orchestrator);
   });

@@ -38,6 +38,7 @@ export type AuthenticateResult =
 export interface IdentityContext {
   /** Bearer token, API key, or any opaque credential string. */
   token?: string;
+  userId?: string;
 }
 
 /**

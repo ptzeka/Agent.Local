@@ -14,7 +14,7 @@ import {
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { ScopedToolClient } from "../scoped-tool-client.js";
-import type { SessionCounters } from "../session/session.js";
+import { foldCounters, foldDelegatedUsage } from "../session/session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
@@ -235,7 +235,7 @@ export class Orchestrator {
         );
       }
 
-      accumulateUsage(session.counters, response.usage);
+      foldCounters(session.counters, response.usage);
 
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, emit);
 
@@ -308,6 +308,10 @@ export class Orchestrator {
         }
 
         const execution: ToolExecutionResult = await scopedClient.callTool(call.name, call.arguments);
+        // Tools that ran a model of their own (executor dispatch) report the
+        // delegated cost on the result; it lands in the *Tallied counters so
+        // own chat spend and dependency spend stay separately readable.
+        foldDelegatedUsage(session.counters, execution.usage);
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
         );
@@ -516,20 +520,6 @@ export class Orchestrator {
       toolCalls,
     };
   }
-}
-
-// ---------------------------------------------------------------------------
-// Fold one chat response's token usage into the session's running tally.
-// ---------------------------------------------------------------------------
-
-function accumulateUsage(counters: SessionCounters, usage: ChatResponse["usage"]): void {
-  if (!usage) return;
-  counters.inputTokens = (counters.inputTokens ?? 0) + (usage.inputTokens ?? 0);
-  counters.outputTokens = (counters.outputTokens ?? 0) + (usage.outputTokens ?? 0);
-  counters.cacheReadInputTokens =
-    (counters.cacheReadInputTokens ?? 0) + (usage.cacheReadInputTokens ?? 0);
-  counters.cacheCreationInputTokens =
-    (counters.cacheCreationInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
 }
 
 // ---------------------------------------------------------------------------

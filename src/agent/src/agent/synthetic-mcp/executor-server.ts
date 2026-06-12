@@ -2,19 +2,21 @@ import { randomUUID } from "node:crypto";
 
 import type { Mcp, ToolExecutionResult } from "../mcp/mcp.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import type { AgentRuntimeQueryable, RuntimeContext } from "../runtime/types.js";
-import type { Session } from "../session/session.js";
+import type { RuntimeContext } from "../runtime/types.js";
 import type { OrchestratorListener } from "../runners/runner-events.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
-import { Orchestrator } from "../runners/orchestrator.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
+import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 
 /**
  * ExecutorLocalMcp — in-process MCP server that exposes a single tool:
- * `executor__dispatch`. The orchestrator calls this instead of the old
- * hybrid intercept; internally it runs a full `Orchestrator` sub-loop with
- * role "executor", giving the executor its own model, tools, and system prompt.
+ * `executor__dispatch`. Each dispatch builds a BRAND-NEW child runtime from
+ * scratch with role "executor" — its own session (parent-linked), context
+ * snapshot, registries, and persistence. Nothing is shared with the parent
+ * runtime besides the workspace, so dispatches cannot pollute each other or
+ * the parent; an executor child is ephemeral, sized to one tool-call-shaped
+ * ask, and its persisted session is the future resume point for the sub-task.
  *
  * Constructed ONCE at middleware startup with a `RuntimeContext` reference.
  * All context fields are resolved lazily at call time (the ctx object is fully
@@ -129,35 +131,39 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
       data: { tool, intent, args: toolArgs },
     });
 
-    // Ephemeral session: fresh conversation in the same workspace, not persisted.
+    // Brand-new child runtime per dispatch: own session (parent-linked, fresh
+    // id), own registries and context snapshot, persisted by its own store.
+    // Deliberately built from scratch — no parent state leaks in, no dispatch
+    // sees another's transcript; a failed ask is simply dispatched again.
     const parentSession = this.ctx.session!;
-    const ephemeralSession: Session = {
-      sessionId: `${parentSession.sessionId}-exec-${randomUUID().slice(0, 8)}`,
-      workspaceId: parentSession.workspaceId,
-      conversation: [],
-      status: "running",
-      counters: {
-        turns: 0,
-        inputTokens: 0,
-        outputTokens: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
+    const childRuntime = buildSubRuntime(
+      {
+        configPath: this.ctx.configPath,
+        orchestratorRole: "executor",
+        sessionsDir: this.ctx.sessionsDir,
+        workspaceRoot: this.ctx.workspaceRoot,
+        sandboxRoot: this.ctx.sandboxRoot,
+        mcpConfigPath: this.ctx.mcpConfigPath,
+        credentials: this.ctx.credentials,
       },
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    };
-
-    const runtimeView = new EphemeralRuntimeView(this.ctx, ephemeralSession);
-    const executorOrch = new Orchestrator("executor");
-    executorOrch.setRuntime(runtimeView);
+      {
+        sessionId: randomUUID(),
+        parentSessionId: parentSession.sessionId,
+        workspaceId: parentSession.workspaceId,
+        user: parentSession.user,
+      }
+    );
 
     const emit = this.turnEmit;
     let content: string;
     let ok: boolean;
     let iterations = 0;
+    let usage: ToolExecutionResult["usage"];
+    let runtime: Awaited<ReturnType<typeof childRuntime.build>> | undefined;
 
     try {
-      const result = await executorOrch.run(askMessage, {
+      runtime = await childRuntime.build();
+      const result = await runtime.dispatchAsync(askMessage, {
         signal: this.turnSignal,
         // Forward executor sub-run events so the REPL can render them.
         onEvent: (event) =>
@@ -171,6 +177,11 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
       content = `[executor-error] ${msg}`;
       ok = false;
     }
+
+    // The child accumulated its own model usage while running; expose it on
+    // the tool result so the parent folds the delegated cost into its tally.
+    // A failed dispatch still burned tokens, so this sits outside the try.
+    if (runtime) usage = { ...runtime.getSession().counters };
 
     if (tracker && ok) {
       tracker.recordSuccess(dispatchSignature({ tool, args: toolArgs, intent }));
@@ -187,30 +198,8 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
       },
     });
 
-    return { isError: !ok, content };
+    return { isError: !ok, content, usage };
   }
-}
-
-// ---------------------------------------------------------------------------
-// EphemeralRuntimeView — wraps a RuntimeContext but swaps in an ephemeral
-// session so the executor sub-run has a clean transcript. All other facets
-// (providers, models, MCP registry, workspace) come from the shared context.
-// ---------------------------------------------------------------------------
-
-class EphemeralRuntimeView implements AgentRuntimeQueryable {
-  constructor(
-    private readonly ctx: RuntimeContext,
-    private readonly session: Session
-  ) {}
-
-  getSession() { return this.session; }
-  getWorkspace() { return this.ctx.workspace!; }
-  getModelsRegistry() { return this.ctx.modelsRegistry!; }
-  getConfigurationRegistry() { return this.ctx.configurationRegistry!; }
-  getProvidersRegistry() { return this.ctx.providerRegistry!; }
-  getMcpClientRegistry() { return this.ctx.mcpRegistry!; }
-  getContextLoader() { return this.ctx.contextLoader!; }
-  getLogger() { return this.ctx.logger!; }
 }
 
 // ---------------------------------------------------------------------------

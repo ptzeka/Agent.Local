@@ -17,18 +17,6 @@ export const FINALIZE_SUBSESSION_TOOL = "finalize_subsession";
  * a coordinator is wired in, which enforces the one-level-deep guard at source.
  */
 
-/**
- * Build subsession tool descriptors for advertisement (without creating handlers).
- * Used to include subsession tools in the visible tools list at turn setup.
- */
-export function getSubsessionToolDescriptors(): ToolDescriptor[] {
-  return createSubSessionTools().map((tool) => ({
-    name: tool.name,
-    description: tool.descriptor.description,
-    inputSchema: tool.descriptor.inputSchema,
-  }));
-}
-
 export function createSubSessionTools(): SyntheticMcp[] {
   return [
     {

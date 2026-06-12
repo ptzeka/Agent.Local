@@ -1,11 +1,9 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 import type { ToolDescriptor } from "../providers/provider.js";
+import type { ToolExecutionResult } from "./mcp.js";
 
-export interface ToolExecutionResult {
-  isError: boolean;
-  content: string;
-}
+export type { ToolExecutionResult } from "./mcp.js";
 
 /**
  * Minimal tool-dispatch surface. Both the concrete `McpClient` and the

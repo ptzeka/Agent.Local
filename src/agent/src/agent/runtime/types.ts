@@ -35,6 +35,7 @@ export interface AgentRuntimeDeps {
 export interface RuntimeContext {
 
   mcpRegistry: McpClientRegistry | undefined;
+  readonly configPath: string;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
   readonly sandboxRoot: string;

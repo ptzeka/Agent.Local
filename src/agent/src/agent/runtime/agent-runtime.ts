@@ -107,6 +107,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    */
   async build(): Promise<this> {
     const ctx: RuntimeContext = {
+      configPath: this.deps.configPath,
       sessionsDir: this.deps.sessionsDir,
       workspaceRoot: this.deps.workspaceRoot,
       sandboxRoot: this.deps.sandboxRoot,

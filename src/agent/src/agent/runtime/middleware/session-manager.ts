@@ -32,7 +32,9 @@ export class SessionManagerMiddleware implements IMiddleware {
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     ctx.sessionManager = new SessionManager(
       this.params.subRuntimeFactory,
-      this.params.maxActivePerParent
+      this.params.maxActivePerParent,
+      // Settled children fold their token tally into this session's counters.
+      ctx.session
     );
     await next();
   }
