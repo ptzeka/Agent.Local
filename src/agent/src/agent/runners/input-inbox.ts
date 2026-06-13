@@ -12,14 +12,28 @@
  * Keyed by `sessionId` so one shared inbox serves the top-level session and
  * every detached sub-session. In-memory only — pending prompts do not survive
  * a restart, which is acceptable: they are transient steering, not state.
+ *
+ * As the SINGLE injection interface, the inbox is also the wake source: a push
+ * fires `onPush` so the scheduler knows there is work to run, instead of each
+ * producer driving the turn scheduler directly.
  */
 export class InputInbox {
   private readonly queues = new Map<string, string[]>();
 
-  /** Enqueue a prompt for `sessionId`. The `source` tag is reserved for future
-   *  provenance (e.g. "api", "parent"); unused today but kept in the signature
-   *  so producers can start passing it without a later breaking change. */
-  public push(sessionId: string, content: string, _source?: string): void {
+  /** Fired after a successful non-empty push so the host can schedule a turn.
+   *  Carries the push `source` so the wake can tag the turn it starts. In-memory
+   *  wake seam — set by the runtime, never serialized. */
+  private onPush: ((source?: string) => void) | null = null;
+
+  /** Register the wake callback. The runtime points this at the turn runner so
+   *  pushing content is what un-parks a drained-and-idle session. */
+  public setOnPush(listener: ((source?: string) => void) | null): void {
+    this.onPush = listener;
+  }
+
+  /** Enqueue a prompt for `sessionId`. The `source` tag flows to the wake
+   *  listener so the scheduled turn knows who produced it (user vs subsession). */
+  public push(sessionId: string, content: string, source?: string): void {
     const trimmed = content.trim();
     if (trimmed.length === 0) return;
     const queue = this.queues.get(sessionId);
@@ -28,6 +42,8 @@ export class InputInbox {
     } else {
       this.queues.set(sessionId, [trimmed]);
     }
+    // Wake AFTER the content is queued so the scheduler always finds it on drain.
+    this.onPush?.(source);
   }
 
   /**

@@ -85,7 +85,7 @@ export interface RunResult {
  * keeping the orchestrator ⇄ manager construction acyclic.
  */
 export interface SessionRunner {
-  run(userInput: string, options?: RunOptions): Promise<RunResult>;
+  run(options?: RunOptions): Promise<RunResult>;
 }
 
 export class Orchestrator {
@@ -109,7 +109,7 @@ export class Orchestrator {
    * file at the end of every round; the runtime's finalize() backstops the
    * tail on every exit path.
    */
-  public async run(userInput: string, options: RunOptions = {}): Promise<RunResult> {
+  public async run(options: RunOptions = {}): Promise<RunResult> {
     const emit = options.onEvent ?? (() => {});
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();
@@ -142,7 +142,8 @@ export class Orchestrator {
     }
 
     await this.maybeSummarize(conversation, emit, options.signal);
-    conversation.append({ role: "user", content: userInput });
+    // No opening append: every user message for this turn — including the first —
+    // arrives through the inbox drain inside the loop (the single injection path).
 
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
@@ -195,17 +196,13 @@ export class Orchestrator {
     const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation.getMessages()];
 
-    const turnStartIndex = workingMessages.length - 1;
+    // The turn's user input arrives via the inbox drain below; capture where its
+    // first message will land so the evaluator sees the request onward.
+    const turnStartIndex = workingMessages.length;
 
-    // Anchor parity with the evaluator. The judge is re-told the ORIGINAL
-    // REQUEST verbatim on every call — that is why it stays grounded — while
-    // the orchestrator only had the request as one aging line in a transcript
-    // dominated by finished goals. Re-assert it as the LAST message of every
-    // chat call, transient (never pushed to the conversation).
-    const requestAnchor: ChatMessage = {
-      role: "system",
-      content: modelsRegistry.getAnchorText(userInput),
-    };
+    // The request that anchors the evaluator is the FIRST drained batch — set on
+    // the opening iteration, then held for the rest of the turn.
+    let turnRequest: string | null = null;
 
     const maxIterations =
       this.role === "executor"
@@ -221,7 +218,8 @@ export class Orchestrator {
         throw new Error("turn aborted: user requested stop");
       }
 
-      // Drain any externally-injected prompts before asking the model.
+      // The inbox is the sole source of user input — drain it before asking the
+      // model. The first non-empty drain is THIS turn's request (the anchor).
       const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
       for (const text of injectedPrompts) {
         const injected: ChatMessage = { role: "user", content: text };
@@ -229,8 +227,30 @@ export class Orchestrator {
         workingMessages.push(injected);
         emit({ type: OrchestratorEventTypes.INJECTED_INPUT, data: { iteration, content: text } });
       }
+      if (turnRequest === null && injectedPrompts.length > 0) {
+        turnRequest = injectedPrompts.join("\n");
+      }
+
+      // A wake with nothing queued (the scheduling turn already drained it):
+      // no request to act on, so settle cleanly without calling the model.
+      if (turnRequest === null) {
+        return {
+          finalMessage: { role: "assistant", content: "" },
+          iterations: 0,
+          dispatches: tracker.count,
+          outcome: "satisfied",
+        };
+      }
 
       emit({ type: OrchestratorEventTypes.ITERATION, data: { iteration, max: maxIterations } });
+
+      // Re-assert the request as the LAST message of every chat call (transient,
+      // never pushed) so the model stays anchored as the transcript grows — the
+      // same verbatim re-grounding the evaluator gets.
+      const requestAnchor: ChatMessage = {
+        role: "system",
+        content: modelsRegistry.getAnchorText(turnRequest),
+      };
 
       let response: ChatResponse;
       try {
@@ -276,7 +296,7 @@ export class Orchestrator {
 
         // Orchestrator: gate through the evaluator.
         const verdict = await this.evaluateCompletion(
-          userInput,
+          turnRequest,
           assistantMessage.content,
           workingMessages.slice(turnStartIndex),
           emit,
@@ -298,11 +318,11 @@ export class Orchestrator {
           content:
             verdict.state === "continue"
               ? `EVALUATOR: on track — ${verdict.reason}\n` +
-                `The request for THIS turn is exactly: «${userInput}»\n` +
+                `The request for THIS turn is exactly: «${turnRequest}»\n` +
                 "Keep going: take the next concrete action toward fulfilling it. " +
                 "Do not stop until it is complete."
               : `EVALUATOR: off track — ${verdict.reason}\n` +
-                `The request for THIS turn is exactly: «${userInput}»\n` +
+                `The request for THIS turn is exactly: «${turnRequest}»\n` +
                 "Stop repeating what isn't working and change your approach. Re-check this " +
                 "request and the current workspace state, then take a different next action.",
         };
@@ -336,7 +356,7 @@ export class Orchestrator {
       // run the validator mid-flight to catch no-progress loops before they cap.
       if (this.role !== "executor" && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
-          userInput,
+          turnRequest,
           "(in-progress checkpoint — no final answer yet)",
           workingMessages.slice(turnStartIndex),
           emit,
@@ -347,7 +367,7 @@ export class Orchestrator {
             role: "user",
             content:
               `EVALUATOR: off track — ${verdict.reason}\n` +
-              `The request for THIS turn is exactly: «${userInput}»\n` +
+              `The request for THIS turn is exactly: «${turnRequest}»\n` +
               "Stop repeating what isn't working and change your approach. Re-check this " +
               "request and the current workspace state, then take a different next action.",
           };

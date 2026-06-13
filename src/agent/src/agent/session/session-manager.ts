@@ -18,7 +18,7 @@ import {
 
 /** Default ceiling on concurrently-active children per parent. Configurable via
  *  the constructor; intentionally small while sub-sessions are new. */
-const DEFAULT_MAX_ACTIVE_PER_PARENT = 2;
+const DEFAULT_MAX_ACTIVE_PER_PARENT = 4;
 
 /** Poll backoff: delay applied the 2nd time the same status comes back, doubling
  *  each further repeat, capped. Throttles a tight get_status loop in wall-clock

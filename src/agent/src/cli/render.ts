@@ -137,28 +137,18 @@ export function formatEvent(event: RunnerEvent): string {
  */
 export function formatTurnEvent(event: TurnRunnerEvent): string {
   switch (event.type) {
-    case "turn-queued":
-      return event.source !== "user"
-        ? chalk.gray(`\n(queued ${event.source} turn — ${event.queueDepth} waiting)\n`)
-        : "";
     case "turn-start":
+      // A turn the user did not type (a settling sub-session woke the session)
+      // is the only one worth announcing — own input already shows the spinner.
       return event.source !== "user"
         ? chalk.gray(`\n(auto-wake: processing ${event.source} report)\n`)
         : "";
-    case "round-start":
-      // Rounds beyond the first mean mid-turn feedback was folded in.
-      return event.round > 1
-        ? chalk.gray(`\n(round ${event.round}: ${event.source} feedback folded into this turn)\n`)
-        : "";
-    case "round-done":
-      // The REPL no longer awaits a turn's settle (the prompt stays live for
-      // mid-turn injection), so failures must surface here or nowhere.
-      if (event.status === "error") {
-        const errorDetail = event.error ?? "unknown error";
-        return chalk.red(`\n[error] turn round failed:\n${errorDetail}\n`);
-      }
-      return "";
     case "turn-done":
+      // The REPL never awaits a turn's settle (the prompt stays live for
+      // mid-turn injection), so a failure must surface here or nowhere.
+      if (event.status === "error") {
+        return chalk.red(`\n[error] turn failed\n`);
+      }
       return event.status === "cancelled" ? chalk.yellowBright("\n(turn cancelled)\n") : "";
     default:
       return "";

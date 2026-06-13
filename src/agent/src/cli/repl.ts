@@ -1,5 +1,5 @@
 import readline from "node:readline/promises";
-import { clearLine, cursorTo, moveCursor } from "node:readline";
+import { clearLine, cursorTo } from "node:readline";
 import chalk from "chalk";
 
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
@@ -125,13 +125,14 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         return;
       }
 
-      // Fire-and-forget so the prompt stays live: typing while a turn runs is
-      // how the user steers it — the input folds into the running turn as a
-      // round rather than waiting behind it. Completion and failures are
-      // reported by the turn-event renderer, so nothing here needs to block.
-      const receipt = turnRunner.submit({ content: input, source: "user", preferMidTurn: true });
-      if (receipt.placement === "mid-turn-round") {
-        ui.write(chalk.gray("(added to the running turn)\n"));
+      // The inbox is the single injection interface: push the line and let the
+      // pump wake. Typing while a turn runs folds the input into that turn at its
+      // next iteration; typing while idle starts a fresh turn. Completion and
+      // failures surface through the turn-event renderer, so nothing blocks here.
+      const wasBusy = turnRunner.isBusy;
+      runtime.injectInput(input, "user");
+      if (wasBusy) {
+        ui.write(chalk.gray("(queued — runs at the next step)\n"));
       }
       rl.prompt(true);
     };
@@ -333,54 +334,52 @@ function handleHistoryCommand(ctx: SlashContext): void {
 
 /**
  * Owns terminal layout so the `you>` prompt stays pinned to the bottom row.
- * The invariant: the cursor rests on the prompt row, and at most one transient
- * status line (the spinner) sits on the row directly above it. Both `write`
- * (completed output) and `status` (spinner) clear that region first, emit their
- * text where the region was, then repaint the prompt + in-progress input
- * beneath — so streamed output scrolls up and the input line never gets smeared.
+ * The prompt is ALWAYS a two-row block — a status line (blank when idle) above
+ * `you> ` — carried as readline's own multi-line prompt string. Reserving the
+ * row permanently means the prompt never shifts up/down as the spinner comes
+ * and goes, and every `rl.prompt(true)` — even the direct ones in the line
+ * handler — repaints the whole block, so the status row is never orphaned.
  */
 class PromptUI {
-  private statusVisible = false;
+  private spinnerText = "";
 
-  constructor(private readonly rl: readline.Interface) {}
+  constructor(private readonly rl: readline.Interface) {
+    this.rl.setPrompt(this.composePrompt());
+  }
 
   /** Emit completed output above the prompt. No-op on empty strings so the
    *  many "renders nothing" event cases don't churn the prompt. */
   write(text: string): void {
     if (text.length === 0) return;
-    this.clearRegion();
-    process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+    // Collapse to an empty prompt first so readline erases exactly the two rows
+    // it drew — manual row math desyncs across the block. Then scroll the
+    // output up and re-expand the block beneath it.
+    this.rl.setPrompt("");
     this.rl.prompt(true);
-  }
-
-  /** Draw/refresh the transient status line directly above the prompt. */
-  status(text: string): void {
-    this.clearRegion();
-    process.stdout.write(text + "\n");
-    this.statusVisible = true;
-    this.rl.prompt(true);
-  }
-
-  /** Remove the status line, if any, and repaint the prompt. */
-  clearStatus(): void {
-    if (!this.statusVisible) return;
-    this.clearRegion();
-    this.rl.prompt(true);
-  }
-
-  /**
-   * Clear the prompt row and, when a status line is showing on the row above,
-   * that row too — leaving the cursor at column 0 of the topmost cleared row,
-   * ready for fresh content. Callers always repaint the prompt afterwards.
-   */
-  private clearRegion(): void {
     cursorTo(process.stdout, 0);
     clearLine(process.stdout, 0);
-    if (this.statusVisible) {
-      moveCursor(process.stdout, 0, -1);
-      clearLine(process.stdout, 0);
-      this.statusVisible = false;
-    }
+    process.stdout.write(text.endsWith("\n") ? text : text + "\n");
+    this.rl.setPrompt(this.composePrompt());
+    this.rl.prompt(true);
+  }
+
+  /** Show/update the spinner on the reserved status line. */
+  setSpinner(text: string): void {
+    this.spinnerText = text;
+    this.rl.setPrompt(this.composePrompt());
+    this.rl.prompt(true);
+  }
+
+  /** Blank the status line, keeping the row reserved so the prompt stays put. */
+  clearSpinner(): void {
+    if (this.spinnerText === "") return;
+    this.spinnerText = "";
+    this.rl.setPrompt(this.composePrompt());
+    this.rl.prompt(true);
+  }
+
+  private composePrompt(): string {
+    return `${this.spinnerText}\n${PROMPT}`;
   }
 }
 
@@ -406,7 +405,7 @@ class TurnSpinner {
     this.timer = setInterval(() => {
       if (this.userIsTyping()) return;
       this.step = (this.step % 4) + 1;
-      this.ui.status(chalk.gray("*".repeat(this.step)));
+      this.ui.setSpinner(chalk.gray("*".repeat(this.step)));
     }, 300);
     this.timer.unref(); // never the reason the process stays alive
   }
@@ -415,7 +414,7 @@ class TurnSpinner {
     if (!this.timer) return;
     clearInterval(this.timer);
     this.timer = null;
-    this.ui.clearStatus();
+    this.ui.clearSpinner();
   }
 }
 

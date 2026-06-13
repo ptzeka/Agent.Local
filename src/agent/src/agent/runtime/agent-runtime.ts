@@ -10,7 +10,7 @@ import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
 import type { SubSessionNotification, SubSessionNotificationListener } from "../runners/subsession.js";
-import { TurnRunner, type TurnRunnerListener } from "../runners/turn-runner.js";
+import { TurnRunner, type TurnRunnerListener, type TurnSource } from "../runners/turn-runner.js";
 import type { RunnerListener } from "../runners/runner-events.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import { WorkspaceRegistry } from "../registries/workspace-registry.js";
@@ -203,9 +203,17 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    * counter, and calls finalize() in the finally block so every exit path
    * (clean, capped, thrown) persists the session.
    */
-  async dispatchAsync(input: string, options: RunOptions = {}): Promise<RunResult> {
+  async dispatchAsync(input?: string, options: RunOptions = {}): Promise<RunResult> {
     if (this.session.status === "running") {
       throw new Error(`Session "${this.session.sessionId}" is already running a turn.`);
+    }
+
+    // Seed the opening prompt through the inbox — the single injection conduit —
+    // so even a direct dispatch hands the orchestrator no separate first message.
+    // Hosts with a turn loop never pass `input`; they injectInput() and let the
+    // pump drive (so this never wakes a second concurrent turn).
+    if (input !== undefined && input.trim().length > 0) {
+      this.inbox.push(this.session.sessionId, input);
     }
 
     this.session.status = "running";
@@ -217,7 +225,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     };
 
     try {
-      const result = await this.orchestrator.run(input, runOptions);
+      const result = await this.orchestrator.run(runOptions);
       this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
       this.session.counters.turns += 1;
       return result;
@@ -260,12 +268,19 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     if (this.turnRunner) return this.turnRunner;
 
     this.turnRunner = new TurnRunner(
-      async (content, signal) => {
-        const result = await this.dispatchAsync(content, { onEvent: options.onEvent, signal });
-        return { outcome: result.outcome, summary: result.finalMessage.content };
+      async (signal) => {
+        // Contentless: the dispatch drains the inbox itself for this turn's input.
+        const result = await this.dispatchAsync(undefined, { onEvent: options.onEvent, signal });
+        return { outcome: result.outcome };
       },
-      // Chained under the scope so a runtime cancel reaches turns without enumeration.
-      { onEvent: options.onTurnEvent, parentSignal: this.scope.signal }
+      {
+        onEvent: options.onTurnEvent,
+        // Chained under the scope so a runtime cancel reaches turns without enumeration.
+        parentSignal: this.scope.signal,
+        // Run a turn only when the inbox holds input — a wake whose content the
+        // running turn already drained settles without spawning an empty turn.
+        shouldRun: () => this.inbox.hasPending(this.session.sessionId),
+      }
     );
 
     this.rewireTurnWake();
@@ -358,13 +373,17 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.unsubscribeTurnWake = null;
     if (!this.turnRunner || !this.sessionManager) return;
 
+    // The inbox is the wake source: pushing content un-parks the pump. Wired
+    // here (not just in startTurnLoop) because reset() rebuilds the inbox, so a
+    // fresh one must be re-pointed at the live runner. shouldRun reads
+    // this.inbox dynamically, so it already tracks the swap.
+    this.inbox.setOnPush((source) => this.turnRunner?.wake(source as TurnSource | undefined));
+
+    // A settled child reports back through the ONE interface: push its report to
+    // the inbox tagged "subsession" so the wake (and the auto-wake notice) carry
+    // the right source. Several reports pile up and drain together next turn.
     this.unsubscribeTurnWake = this.sessionManager.onNotification((notification) => {
-      this.turnRunner?.submit({
-        content: formatSubSessionReport(notification),
-        source: "subsession",
-        preferMidTurn: true,
-        coalesceKey: "subsession-report",
-      });
+      this.injectInput(formatSubSessionReport(notification), "subsession");
     });
   }
 

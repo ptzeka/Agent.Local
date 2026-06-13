@@ -3,6 +3,7 @@ import { McpClientRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp } from "../../synthetic-mcp/subsessions-server.js";
+import { createDelayLocalMcp } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp } from "../../synthetic-mcp/executor-server.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 
@@ -67,6 +68,10 @@ export class McpRegistryMiddleware implements IMiddleware {
         signal: undefined,
       })
     );
+
+    // Delay server — a dummy long-running tool for testing. Bound to the runtime
+    // signal so a shutdown cancels any pending wait instead of leaving it dangling.
+    ctx.mcpRegistry.registerClient(createDelayLocalMcp(ctx.runtimeSignal));
 
     // Executor server — constructed once with the full RuntimeContext by reference.
     // Per-turn fields (signal, emit, tracker) are injected lazily via bindTurn()
