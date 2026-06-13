@@ -2,8 +2,17 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import { McpRegistryMiddleware } from "../../src/agent/runtime/middleware/mcp-registry.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
+import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import { makeContext } from "./context.js";
 import { createSession } from "../../src/agent/session/session.js";
+
+// Stub the lookups the middleware reads to mount the role's servers and wire
+// each server's injected tool timeout.
+const stubModelsRegistry = {
+  getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
+  getValidMcpServersForRole: () => ["fsmcp", "excel"],
+  getTimeoutForModel: () => 60000,
+} as unknown as ModelRegistry;
 
 /**
  * McpRegistryMiddleware business logic.
@@ -18,7 +27,7 @@ describe("McpRegistryMiddleware", () => {
     const next = jest.fn(async () => {});
 
     await expect(
-      new McpRegistryMiddleware().initialize(ctx, next)
+      new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, next)
     ).rejects.toThrow("workspace and session must be available");
   });
 
@@ -35,15 +44,18 @@ describe("McpRegistryMiddleware", () => {
       workspace,
       sandboxRoot: "/tmp/sandbox",
       mcpRegistry: undefined,
+      modelsRegistry: stubModelsRegistry,
     });
     const next = jest.fn(async () => {});
 
-    await new McpRegistryMiddleware().initialize(ctx, next);
+    await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, next);
 
     expect(ctx.mcpRegistry).toBeDefined();
     expect(ctx.mcpRegistry!.sandboxRoot).toBe("/tmp/sandbox");
     expect(ctx.mcpRegistry!.getClient("fsmcp")).toBeDefined();
     expect(ctx.mcpRegistry!.getClient("excel")).toBeDefined();
+    // The role scope is wired through: the factory fronts the whitelisted mounts.
+    expect(ctx.mcpRegistry!.createScopedClient().listTools().length).toBeGreaterThan(0);
     expect(next).toHaveBeenCalledTimes(1);
   });
 });

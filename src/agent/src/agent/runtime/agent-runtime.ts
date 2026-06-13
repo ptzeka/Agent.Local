@@ -18,7 +18,7 @@ import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeConte
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Logger } from "../../common/logger.js";
-import { CutoffScope, settledWithin } from "../../common/lifetime.js";
+import { CancellationToken, settledWithin } from "../../common/lifetime.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
 
@@ -95,13 +95,13 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
   /** This runtime's cutoff in the cancellation chain — parent of every turn,
    *  sub-session, and MCP client it owns. */
-  private readonly scope: CutoffScope;
+  private readonly scope: CancellationToken;
   /** First shutdown() call wins; later callers join its promise. */
   private shutdownPromise: Promise<void> | null = null;
 
   constructor(private readonly deps: AgentRuntimeDeps) {
     // Constructor body, not field initializer: must not race `deps` assignment.
-    this.scope = new CutoffScope(deps.parentSignal);
+    this.scope = new CancellationToken(deps.parentSignal);
   }
 
   // --------------------------------------------------------------------------

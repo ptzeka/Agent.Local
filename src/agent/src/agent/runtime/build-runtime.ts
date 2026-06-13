@@ -48,7 +48,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
         .add(new AnonymousMiddleware())
         .add(new SessionMiddleware({ sessionId }))
     .add(new ConversationMiddleware())
-    .add(new McpRegistryMiddleware())
+    .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
     .add(new OrchestratorMiddleware({ includeSubSessions: true, role: deps.orchestratorRole }))
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware())

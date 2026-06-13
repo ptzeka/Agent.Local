@@ -1,6 +1,6 @@
 import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
-import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
+import { ModelsFile, ModelDefinition, DEFAULT_TOOL_TIMEOUT_MS } from "./configuration-registry.js";
 /**
  * Model registry.
  *
@@ -72,10 +72,24 @@ export class ModelRegistry {
      return result;
   }
     
-  public getValidMcpForModel(role: string): string[] {
+  public getValidModelForRole(role: string): string {
+    return this.roleAssignments[role];
+  }
+
+  public getValidMcpServersForRole(role: string): string[] {
     var modelName = this.roleAssignments[role];
     var model = this.definitions[modelName];
     return model.mcp || [];
+  }
+
+  public getTimeoutForModel(name: string): number {
+    const model = this.definitions[name];
+    return model.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
+  }
+
+  /** Per-model iteration cap, or undefined when the model defers to the role default. */
+  public getIterationCapForModel(name: string): number | undefined {
+    return this.definitions[name]?.iterationCap;
   }
 
   public assignRole(role: string, modelId: string): void {

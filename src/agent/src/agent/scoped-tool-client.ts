@@ -20,7 +20,7 @@ import type { ToolDescriptor } from "./providers/provider.js";
 export class ScopedToolClient implements ToolInvoker {
   private readonly clientsByServer: Map<string, Mcp>;
 
-  constructor(clients: Mcp[], private readonly emit?: RunnerListener) {
+  constructor(clients: Mcp[]) {
     this.clientsByServer = new Map(clients.map((c) => [c.name, c]));
   }
 
@@ -34,7 +34,9 @@ export class ScopedToolClient implements ToolInvoker {
 
   public async callTool(
     name: string,
-    args: Record<string, unknown>
+    args: Record<string, unknown>,
+    emit?: RunnerListener,
+    signal?: AbortSignal
   ): Promise<ToolExecutionResult> {
     const resolved = this.resolve(name);
     if ("error" in resolved) {
@@ -43,9 +45,11 @@ export class ScopedToolClient implements ToolInvoker {
 
     const { client, toolTail } = resolved;
 
-    this.emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
-    const result = await client.callTool(toolTail, args);
-    this.emit?.({
+    emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
+    // Timeout policy lives in the server (it wraps this signal in its own
+    // CancellationToken); the client only routes and forwards the turn's signal.
+    const result = await client.callTool(toolTail, args, signal);
+    emit?.({
       type: OrchestratorEventTypes.TOOL_RESULT,
       data: { id: "", name, isError: result.isError, contentPreview: result.content.slice(0, 400) },
     });

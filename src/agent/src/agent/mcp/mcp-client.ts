@@ -1,7 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
+import { CancellationToken } from "../../common/lifetime.js";
 import type { ToolDescriptor } from "../providers/provider.js";
-import type { ToolExecutionResult } from "./mcp.js";
+import type { Mcp, ToolExecutionResult } from "./mcp.js";
 
 export type { ToolExecutionResult } from "./mcp.js";
 
@@ -25,13 +26,16 @@ export interface ToolInvoker {
 export class McpClient {
   private tools: ToolDescriptor[];
   private readonly toolIndex = new Map<string, string>();
+  private timeout?: number;
   constructor(
     private readonly serverName: string,
     private readonly client: Client,
     tools: ToolDescriptor[],
+    timeout?: number,
     signal?: AbortSignal
   ) {
     this.tools = tools;
+    this.timeout = timeout;
     for (const tool of tools) {
       this.toolIndex.set(tool.name, tool.name);
     }
@@ -50,6 +54,13 @@ export class McpClient {
     return this.serverName;
   }
 
+  // Chainable per-model timeout injection, mirroring LocalMcp so both server
+  // kinds satisfy the same Mcp wiring contract.
+  public setTimeout(t: number): Mcp {
+    this.timeout = t;
+    return this as unknown as Mcp;
+  }
+
   public listTools(): ToolDescriptor[] {
     return this.tools.map((tool) => ({
       name: `${this.serverName}__${tool.name}`,
@@ -58,7 +69,11 @@ export class McpClient {
     }));
   }
 
-  public async callTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult> {
+  public async callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<ToolExecutionResult> {
     if (!this.toolIndex.has(toolName)) {
       return {
         isError: true,
@@ -66,11 +81,23 @@ export class McpClient {
       };
     }
 
+    // Derive this call's cutoff from the caller's signal and add the injected
+    // timeout, so a cancel from above OR a local timeout aborts the RPC.
+    const cutoff = new CancellationToken(signal);
+    let timer: NodeJS.Timeout | null = null;
     try {
-      const response = await this.client.callTool({
-        name: toolName,
-        arguments: args,
-      });
+      if (this.timeout && this.timeout > 0) {
+        timer = setTimeout(() => {
+          if (!cutoff.cancelled) {
+            cutoff.cancel(`Tool "${this.serverName}__${toolName}" timed out after ${this.timeout}ms.`);
+          }
+        }, this.timeout);
+      }
+      const response = await this.client.callTool(
+        { name: toolName, arguments: args },
+        undefined,
+        { signal: cutoff.signal }
+      );
 
       const text = extractTextContent(response.content);
       return {
@@ -82,6 +109,8 @@ export class McpClient {
         isError: true,
         content: `Tool "${toolName}" threw: ${(err as Error).message}`,
       };
+    } finally {
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -106,7 +135,7 @@ export class McpClient {
       inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
     }));
 
-    return new McpClient(serverName, client, tools, signal);
+    return new McpClient(serverName, client, tools, undefined, signal);
   }
 }
 

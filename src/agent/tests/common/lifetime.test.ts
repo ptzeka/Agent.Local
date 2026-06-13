@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { CutoffScope, settledWithin } from "../../src/common/lifetime.js";
+import { CancellationToken, settledWithin } from "../../src/common/lifetime.js";
 
 /**
  * The cancellation chain semantics: right-cutting (a cancel reaches every
@@ -9,10 +9,10 @@ import { CutoffScope, settledWithin } from "../../src/common/lifetime.js";
  */
 describe("CutoffScope", () => {
   test("cancel propagates to descendants only", () => {
-    const root = new CutoffScope();
-    const middle = new CutoffScope(root.signal);
-    const sibling = new CutoffScope(root.signal);
-    const leaf = new CutoffScope(middle.signal);
+    const root = new CancellationToken();
+    const middle = new CancellationToken(root.signal);
+    const sibling = new CancellationToken(root.signal);
+    const leaf = new CancellationToken(middle.signal);
 
     middle.cancel("stop");
 
@@ -23,9 +23,9 @@ describe("CutoffScope", () => {
   });
 
   test("root cancel reaches every layer", () => {
-    const root = new CutoffScope();
-    const middle = new CutoffScope(root.signal);
-    const leaf = new CutoffScope(middle.signal);
+    const root = new CancellationToken();
+    const middle = new CancellationToken(root.signal);
+    const leaf = new CancellationToken(middle.signal);
 
     root.cancel();
 
@@ -35,16 +35,16 @@ describe("CutoffScope", () => {
   });
 
   test("a scope created under a cancelled parent is born aborted", () => {
-    const root = new CutoffScope();
+    const root = new CancellationToken();
     root.cancel();
 
-    const lateChild = new CutoffScope(root.signal);
+    const lateChild = new CancellationToken(root.signal);
     expect(lateChild.cancelled).toBe(true);
   });
 
   test("signal fires abort listeners down the chain", () => {
-    const root = new CutoffScope();
-    const child = new CutoffScope(root.signal);
+    const root = new CancellationToken();
+    const child = new CancellationToken(root.signal);
 
     let fired = false;
     child.signal.addEventListener("abort", () => {
@@ -56,7 +56,7 @@ describe("CutoffScope", () => {
   });
 
   test("cancel is idempotent and sticky", () => {
-    const scope = new CutoffScope();
+    const scope = new CancellationToken();
     scope.cancel("first");
     scope.cancel("second");
     expect(scope.cancelled).toBe(true);
@@ -73,13 +73,13 @@ describe("CutoffScope", () => {
     const DEPTH = 5;
 
     interface Node {
-      scope: CutoffScope;
+      scope: CancellationToken;
       depth: number;
       aborted: boolean;
     }
 
     const buildTree = (): { root: Node; all: Node[] } => {
-      const root: Node = { scope: new CutoffScope(), depth: 0, aborted: false };
+      const root: Node = { scope: new CancellationToken(), depth: 0, aborted: false };
       const all: Node[] = [root];
       let frontier = [root];
       for (let depth = 1; depth <= DEPTH; depth += 1) {
@@ -87,7 +87,7 @@ describe("CutoffScope", () => {
         for (const parent of frontier) {
           for (let i = 0; i < FAN_OUT; i += 1) {
             const node: Node = {
-              scope: new CutoffScope(parent.scope.signal),
+              scope: new CancellationToken(parent.scope.signal),
               depth,
               aborted: false,
             };

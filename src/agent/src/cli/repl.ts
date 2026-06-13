@@ -1,5 +1,5 @@
 import readline from "node:readline/promises";
-import { clearLine, cursorTo } from "node:readline";
+import { clearLine, cursorTo, moveCursor } from "node:readline";
 import chalk from "chalk";
 
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
@@ -100,27 +100,23 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     const onLine = (raw: string) => {
       const input = raw.trim();
-      if (input === "") {
-        rl.prompt(true);
-        return;
-      }
+      // Enter froze the previous reserved row into history; lay a fresh one
+      // under the committed line before any output or spinner touches the rows
+      // above it.
+      ui.reserve();
+      if (input === "") return;
 
       // "stop" is an interrupt, not a prompt: with the input line always live,
       // it must never enter the queue (where it would be LLM-interpreted after
       // the very work it was meant to halt).
       if (input.toLowerCase() === "stop") {
         ui.write(stopResultText(runtime.stopAllWork()));
-        rl.prompt(true);
         return;
       }
 
       if (input.startsWith("/")) {
         void handleSlashCommand(input.slice(1).trim(), ctx).then((exitRequested) => {
-          if (exitRequested) {
-            finish();
-            return;
-          }
-          rl.prompt(true);
+          if (exitRequested) finish();
         });
         return;
       }
@@ -134,7 +130,6 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       if (wasBusy) {
         ui.write(chalk.gray("(queued — runs at the next step)\n"));
       }
-      rl.prompt(true);
     };
 
     rl.on("line", onLine);
@@ -333,53 +328,80 @@ function handleHistoryCommand(ctx: SlashContext): void {
 }
 
 /**
- * Owns terminal layout so the `you>` prompt stays pinned to the bottom row.
- * The prompt is ALWAYS a two-row block — a status line (blank when idle) above
- * `you> ` — carried as readline's own multi-line prompt string. Reserving the
- * row permanently means the prompt never shifts up/down as the spinner comes
- * and goes, and every `rl.prompt(true)` — even the direct ones in the line
- * handler — repaints the whole block, so the status row is never orphaned.
+ * Owns the bottom two terminal rows: a permanently reserved status line (blank
+ * when idle, spinner while a turn runs) sitting directly above the `you> `
+ * prompt. Reserving the row means the prompt never shifts as the spinner comes
+ * and goes.
+ *
+ * readline only ever sees a SINGLE-line prompt; the status row is drawn here
+ * with explicit cursor moves, never through readline. Keeping readline's prompt
+ * one row tall is what makes this reliable — a multi-row readline prompt forces
+ * its refresh to move several rows, which desynced against the manual scroll
+ * writes and left stray blank lines between events.
+ *
+ * Invariant: between calls the cursor rests on the prompt row, with the status
+ * row physically just above it.
  */
 class PromptUI {
-  private spinnerText = "";
+  private statusText = "";
 
   constructor(private readonly rl: readline.Interface) {
-    this.rl.setPrompt(this.composePrompt());
+    this.reserve();
   }
 
-  /** Emit completed output above the prompt. No-op on empty strings so the
-   *  many "renders nothing" event cases don't churn the prompt. */
+  /**
+   * Lay down a fresh reserved status row, then the prompt beneath it, at the
+   * cursor's current row. Called at startup and after each submitted line —
+   * readline freezes the prior reserved row into history on Enter, so a new one
+   * must be drawn under the committed input before any output scrolls above it.
+   */
+  reserve(): void {
+    process.stdout.write(this.statusText + "\n");
+    this.rl.prompt(true);
+  }
+
+  /** Emit completed output above the prompt block. No-op on empty strings so
+   *  the many "renders nothing" event cases don't churn the prompt. */
   write(text: string): void {
     if (text.length === 0) return;
-    // Collapse to an empty prompt first so readline erases exactly the two rows
-    // it drew — manual row math desyncs across the block. Then scroll the
-    // output up and re-expand the block beneath it.
-    this.rl.setPrompt("");
-    this.rl.prompt(true);
+    const body = text.endsWith("\n") ? text : text + "\n";
+    // Clear the prompt row, then the status row above it; the cursor lands on
+    // the status row, where the scrolled output begins. Redraw status + prompt
+    // beneath it so the reserved block ends up back at the bottom.
     cursorTo(process.stdout, 0);
     clearLine(process.stdout, 0);
-    process.stdout.write(text.endsWith("\n") ? text : text + "\n");
-    this.rl.setPrompt(this.composePrompt());
+    moveCursor(process.stdout, 0, -1);
+    cursorTo(process.stdout, 0);
+    clearLine(process.stdout, 0);
+    process.stdout.write(body);
+    process.stdout.write(this.statusText + "\n");
     this.rl.prompt(true);
   }
 
   /** Show/update the spinner on the reserved status line. */
   setSpinner(text: string): void {
-    this.spinnerText = text;
-    this.rl.setPrompt(this.composePrompt());
-    this.rl.prompt(true);
+    this.statusText = text;
+    this.redrawStatus();
   }
 
   /** Blank the status line, keeping the row reserved so the prompt stays put. */
   clearSpinner(): void {
-    if (this.spinnerText === "") return;
-    this.spinnerText = "";
-    this.rl.setPrompt(this.composePrompt());
-    this.rl.prompt(true);
+    if (this.statusText === "") return;
+    this.statusText = "";
+    this.redrawStatus();
   }
 
-  private composePrompt(): string {
-    return `${this.spinnerText}\n${PROMPT}`;
+  /**
+   * Repaint the status row in place. Save/restore cursor (DECSC/DECRC) brackets
+   * the move so an in-progress prompt + input below is left exactly as it was.
+   */
+  private redrawStatus(): void {
+    process.stdout.write("\x1b7");
+    moveCursor(process.stdout, 0, -1);
+    cursorTo(process.stdout, 0);
+    clearLine(process.stdout, 0);
+    process.stdout.write(this.statusText);
+    process.stdout.write("\x1b8");
   }
 }
 

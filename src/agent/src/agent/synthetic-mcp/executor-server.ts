@@ -9,7 +9,7 @@ import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
-import { CutoffScope } from "../../common/lifetime.js";
+import { CancellationToken } from "../../common/lifetime.js";
 
 /**
  * ExecutorLocalMcp — in-process MCP server for executor coordination:
@@ -30,13 +30,15 @@ import { CutoffScope } from "../../common/lifetime.js";
  * Only one executor dispatch can run at a time: a promise-chain mutex ensures
  * sequential execution without blocking the caller's microtask queue.
  */
+
+
 export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   // Promise-chain mutex: each dispatch chains after the previous one settles.
   private runLock: Promise<void> = Promise.resolve();
 
   // Bootstrap cutoff for the Mcp contract: shutdown() cancels it, killing every
   // child this server dispatched — independent of any turn's signal.
-  private readonly scope = new CutoffScope();
+  private readonly scope = new CancellationToken();
 
   // Per-turn context — set by the orchestrator before each user turn.
   private turnSignal: AbortSignal | undefined = undefined;
@@ -98,7 +100,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     const mcpRegistry = this.ctx.mcpRegistry;
     if (!modelsRegistry || !mcpRegistry) return [];
     return modelsRegistry
-      .getValidMcpForModel(EXECUTOR_ROLE)
+      .getValidMcpServersForRole(EXECUTOR_ROLE)
       // A dispatch must never target dispatch itself.
       .filter((serverName) => serverName !== this.name)
       .flatMap((serverName) => mcpRegistry.getClient(serverName)?.listTools() ?? []);
@@ -264,10 +266,10 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
 // listTools() call so it tracks live server mounts.
 // ---------------------------------------------------------------------------
 
-const EXECUTOR_ROLE = "executor" as const;
+export const EXECUTOR_ROLE = "executor" as const;
 
 // Server mount name — same string as the role, but a distinct concept.
-const EXECUTOR_SERVER_NAME = "executor";
+export const EXECUTOR_SERVER_NAME = "executor";
 
 // Read-only safety net beside the dispatch enum: when the orchestrator is
 // unsure of a target tool's exact name or argument shape, it can fetch the

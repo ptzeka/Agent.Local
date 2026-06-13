@@ -60,7 +60,7 @@ export class ContextMiddleware implements IMiddleware {
     // declared but not yet connected (e.g. codemcp, subsessions) resolve to
     // undefined and are skipped, so the snapshot reflects what is actually mounted.
     const serverNames = ctx.modelsRegistry!
-      .getValidMcpForModel(role)
+      .getValidMcpServersForRole(role)
       // A coordinator-less run never advertises the sub-session tools, so its
       // snapshot must not record them either — the hash stays faithful.
       .filter((serverName) => this.params.includeSubSessions !== false || serverName !== "subsessions");

@@ -14,7 +14,9 @@
     "for no restriction; an empty array advertises zero tools.",
     "`fsreadonly`/`excelreadonly` are inspection-only mounts of the same servers:",
     "give them to orchestrator-role models so the read-only contract is ENFORCED",
-    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor models."
+    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor models.",
+    "`iterationCap` is an optional per-model override of the role's iteration cap;",
+    "omit it to fall back to maxExecutorIterationsPerAsk / maxOrchestratorIterations."
   ],
 
   "models": {
@@ -23,14 +25,18 @@
       "model": "qwen3-coder:30b-a3b-q4_K_M",
       "supportsTools": true,
       "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available.",
-      "mcp": ["fsmcp", "codemcp", "excel"]
+      "mcp": ["fsmcp", "codemcp", "excel"],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 6
     },
     "qwen-coder-14b": {
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
       "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU.",
-      "mcp": ["fsmcp", "codemcp", "excel"]
+      "mcp": ["fsmcp", "codemcp", "excel", "delaymcp"],
+      "toolTimeoutMs": 600000,
+      "iterationCap": 6
     },
     "deepseek-r1": {
       "provider": "ollama",
@@ -38,42 +44,54 @@
       "supportsTools": false,
       "reasoning": true,
       "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff.",
-      "mcp": ["fsreadonly", "codemcp"]
+      "mcp": ["fsreadonly", "codemcp"],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
     },
     "llama-fast": {
       "provider": "ollama",
       "model": "gemma3:4b",
       "supportsTools": true,
       "description": "Small, quick model for summarization and lightweight follow-ups.",
-      "mcp": []
+      "mcp": [],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
     },
     "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
       "supportsTools": true,
       "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
     },
     "gemini-2.5-flash-lite-coder": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"]
+      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
+      "toolTimeoutMs": 600000,
+      "iterationCap": 6
     },
     "gemini-2.5-flash-lite-orchestrator": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "executor", "subsessions", "delaymcp"]
+      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "executor", "subsessions", "delaymcp"],
+      "toolTimeoutMs": 600000,
+      "iterationCap": 16
     }
   },
 

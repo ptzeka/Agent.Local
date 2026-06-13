@@ -13,7 +13,10 @@ import type { ModelsFile } from "../../src/agent/registries/configuration-regist
 const base = { provider: "ollama", model: "x", supportsTools: true };
 
 function makeRegistry(
-  models: Record<string, { provider: string; model: string; supportsTools: boolean; mcp?: string[] }>,
+  models: Record<
+    string,
+    { provider: string; model: string; supportsTools: boolean; mcp?: string[]; toolTimeoutMs?: number; iterationCap?: number }
+  >,
   roles: Record<string, string> = { orchestrator: "m-orch", executor: "m-exec" }
 ): ModelRegistry {
   const modelsFile: ModelsFile = { models, roles, orchestration: {} };
@@ -27,18 +30,36 @@ describe("ModelRegistry", () => {
     expect(registry.getProviderForRole("executor")).toBe("m-exec");
   });
 
-  test("getValidMcpForModel returns the role model's MCP whitelist", () => {
+  test("getValidMcpServersForRole returns the role model's MCP whitelist", () => {
     const registry = makeRegistry({
       "m-orch": { ...base, mcp: ["fsmcp"] },
       "m-exec": { ...base, mcp: ["codemcp"] },
     });
-    expect(registry.getValidMcpForModel("orchestrator")).toEqual(["fsmcp"]);
-    expect(registry.getValidMcpForModel("executor")).toEqual(["codemcp"]);
+    expect(registry.getValidMcpServersForRole("orchestrator")).toEqual(["fsmcp"]);
+    expect(registry.getValidMcpServersForRole("executor")).toEqual(["codemcp"]);
   });
 
-  test("getValidMcpForModel defaults to an empty list when mcp is omitted", () => {
+  test("getValidMcpServersForRole defaults to an empty list when mcp is omitted", () => {
     const registry = makeRegistry({ "m-orch": { ...base }, "m-exec": { ...base } });
-    expect(registry.getValidMcpForModel("orchestrator")).toEqual([]);
+    expect(registry.getValidMcpServersForRole("orchestrator")).toEqual([]);
+  });
+
+  test("getTimeoutForModel returns the model value, or the default when omitted", () => {
+    const registry = makeRegistry({
+      "m-orch": { ...base, toolTimeoutMs: 600000 },
+      "m-exec": { ...base },
+    });
+    expect(registry.getTimeoutForModel("m-orch")).toBe(600000);
+    expect(registry.getTimeoutForModel("m-exec")).toBe(60000); // DEFAULT_TOOL_TIMEOUT_MS
+  });
+
+  test("getIterationCapForModel returns the model value, or undefined when omitted", () => {
+    const registry = makeRegistry({
+      "m-orch": { ...base, iterationCap: 24 },
+      "m-exec": { ...base },
+    });
+    expect(registry.getIterationCapForModel("m-orch")).toBe(24);
+    expect(registry.getIterationCapForModel("m-exec")).toBeUndefined();
   });
 
   test("getRoles lists every assigned role", () => {

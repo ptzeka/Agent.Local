@@ -13,7 +13,6 @@ import {
 } from "../tool-adapter.js";
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
-import { ScopedToolClient } from "../scoped-tool-client.js";
 import { foldCounters, foldDelegatedUsage } from "../session/session.js";
 import type { SubSessionCoordinator } from "./subsession.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
@@ -118,15 +117,6 @@ export class Orchestrator {
     const providersRegistry = this.runtime.getProvidersRegistry();
     const conversation = this.runtime.getConversation();
 
-    // Resolve a role's tool servers (role → model → models.json `mcp` list),
-    // skipping any that are declared but not mounted (e.g. stdio servers from
-    // mcp.json until spawning lands), so a single scoped client fronts the whole set.
-    const clientsFor = (role: string) =>
-      modelsRegistry.getValidMcpForModel(role).flatMap((serverName) => {
-        const client = mcpRegistry.getClient(serverName);
-        return client ? [client] : [];
-      });
-
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
     // The snapshot stamped by ContextMiddleware is the ONLY source of the
@@ -162,7 +152,10 @@ export class Orchestrator {
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
     }
 
-    const scopedClient = new ScopedToolClient(clientsFor(this.role), emit);
+    // The MCP layer owns scoping: the registry hands back a client already
+    // fronting this role's server whitelist with the role's tool timeout, built
+    // after the per-turn subsessions rebind above so it sees the live mounts.
+    const scopedClient = mcpRegistry.createScopedClient();
     const visibleTools = scopedClient.listTools();
 
     const maxDispatches = config.orchestration.maxExecutorDispatchesPerTurn!;
@@ -204,10 +197,14 @@ export class Orchestrator {
     // the opening iteration, then held for the rest of the turn.
     let turnRequest: string | null = null;
 
-    const maxIterations =
+    // The model's own iterationCap wins; absent it, fall back to the role default.
+    const roleIterationDefault =
       this.role === "executor"
         ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
         : (config.orchestration.maxOrchestratorIterations ?? 16);
+    const modelName = modelsRegistry.getProviderForRole(this.role);
+    const maxIterations =
+      modelsRegistry.getIterationCapForModel(modelName) ?? roleIterationDefault;
 
     const orchestratorTemperature = config.orchestration.orchestratorTemperature;
     const executorTemperature = config.orchestration.executorTemperature;
@@ -339,7 +336,12 @@ export class Orchestrator {
           throw new Error("turn aborted: user requested stop");
         }
 
-        const execution: ToolExecutionResult = await scopedClient.callTool(call.name, call.arguments);
+        const execution: ToolExecutionResult = await scopedClient.callTool(
+          call.name,
+          call.arguments,
+          emit,
+          options.signal
+        );
         // Tools that ran a model of their own (executor dispatch) report the
         // delegated cost on the result; it lands in the *Tallied counters so
         // own chat spend and dependency spend stay separately readable.

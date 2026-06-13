@@ -71,7 +71,7 @@ export class DelayLocalMcp extends LocalMcp {
   private delayTool(): LocalTool {
     return {
       descriptor: DELAY_TOOL_DESCRIPTOR,
-      invoke: async (args): Promise<ToolExecutionResult> => {
+      invoke: async (args, cutoffscope): Promise<ToolExecutionResult> => {
         const time = (args ?? {}).time;
         if (typeof time !== "number" || !Number.isFinite(time) || time < 0) {
           return { isError: true, content: "`time` must be a non-negative number of milliseconds." };
@@ -79,12 +79,18 @@ export class DelayLocalMcp extends LocalMcp {
 
         const controller = new AbortController();
         this.active.add(controller);
+        // The call's cutoff (a parent cancel OR the server's timeout) ends this
+        // wait the same way `stop` does — the tool only ever observes the abort.
+        const callerSignal = cutoffscope.signal;
+        const onCallerAbort = (): void => controller.abort();
+        callerSignal.addEventListener("abort", onCallerAbort, { once: true });
         try {
           await this.wait(time, controller.signal);
           return { isError: false, content: "done" };
         } catch (err) {
           return { isError: true, content: (err as Error).message };
         } finally {
+          callerSignal.removeEventListener("abort", onCallerAbort);
           this.active.delete(controller);
         }
       },

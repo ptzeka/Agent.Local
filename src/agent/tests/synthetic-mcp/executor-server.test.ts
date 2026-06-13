@@ -16,7 +16,7 @@ import { makeContext } from "../middleware/context.js";
 describe("ExecutorLocalMcp.listTools", () => {
   const makeRegistries = () => {
     const modelsRegistry = {
-      getValidMcpForModel: (role: string) =>
+      getValidMcpServersForRole: (role: string) =>
         role === "executor" ? ["fsmcp", "codemcp", "executor"] : [],
     } as unknown as ModelRegistry;
 
@@ -56,7 +56,7 @@ describe("ExecutorLocalMcp.listTools", () => {
   test("omits the enum when no executor tools are mounted", () => {
     const ctx = makeContext({
       modelsRegistry: {
-        getValidMcpForModel: () => [],
+        getValidMcpServersForRole: () => [],
       } as unknown as ModelRegistry,
     });
 
@@ -81,7 +81,7 @@ describe("ExecutorLocalMcp.listTools", () => {
 describe("ExecutorLocalMcp.callTool list_tools", () => {
   test("returns the executor's tool descriptors as JSON without dispatching", async () => {
     const modelsRegistry = {
-      getValidMcpForModel: (role: string) => (role === "executor" ? ["fsmcp"] : []),
+      getValidMcpServersForRole: (role: string) => (role === "executor" ? ["fsmcp"] : []),
     } as unknown as ModelRegistry;
     const mcpRegistry = {
       getClient: () => ({

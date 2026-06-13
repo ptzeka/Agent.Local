@@ -1,5 +1,6 @@
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Mcp } from "../mcp/mcp.js";
+import { ScopedToolClient } from "../scoped-tool-client.js";
 
 export class McpClientRegistry {
   private clients = new Map<string, Mcp>();
@@ -26,5 +27,12 @@ export class McpClientRegistry {
       flattened.push(...client.listTools());
     }
     return flattened;
+  }
+
+  // The middleware already mounts only this role's whitelisted servers, so the
+  // scoped client simply fronts every registered mount. Built per turn so it
+  // sees live rebinds (e.g. the subsessions server swapped for the coordinator).
+  public createScopedClient(): ScopedToolClient {
+    return new ScopedToolClient([...this.clients.values()]);
   }
 }

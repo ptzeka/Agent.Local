@@ -41,3 +41,21 @@ Triple-line headers group related members within a file:
 
 - Headers are for **grouping areas** (e.g. "Producer API", "Lifecycle", "Queries") — never for annotating a single piece of code.
 - When a file uses headers, **respect them**: new members go under the matching header; add a new header section rather than appending out of place.
+
+## Cancellation & timeouts: one signal from the source, wrapped downward
+
+There is exactly **one root signal per request**, minted at the source — the CLI's
+root `AbortController` (`cli/index.ts`) / the start of a request — and threaded
+down as `deps.parentSignal`. Never mint a fresh root signal partway down the chain.
+
+- **Propagate, don't replace.** A scope that needs its own cutoff wraps the
+  incoming signal in a `CancellationToken` (`common/lifetime.ts`), which is
+  `AbortSignal.any([parent, own])`. Cancelling cuts that scope **and everything
+  below it**, never the parent — so the whole downward chain collapses on cancel.
+- **A timeout is just a cancel.** Don't race promises for deadlines. Start a timer
+  that calls `token.cancel(...)`; hand `token.signal` further down. The MCP servers
+  own their per-model tool timeout (injected once at construction via the chainable
+  `Mcp.setTimeout`); `ScopedToolClient` only routes and forwards the turn's signal.
+- **Tools observe, never originate.** A `LocalTool.invoke` receives a
+  `CancellationToken` (`cutoffscope`); honour `cutoffscope.signal` to stop early.
+  A tool must not create its own root cutoff.

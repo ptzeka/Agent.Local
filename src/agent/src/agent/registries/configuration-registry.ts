@@ -8,7 +8,16 @@ export interface ModelDefinition {
   reasoning?: boolean;
   description?: string;
   mcp?: string[];
+  /** Upper bound, in ms, on any single tool call made by this model's loop.
+   *  Omitted → DEFAULT_TOOL_TIMEOUT_MS; <= 0 disables the bound. */
+  toolTimeoutMs?: number;
+  /** Per-model override of the role's iteration cap. Omitted → fall back to
+   *  the role default (maxExecutorIterationsPerAsk / maxOrchestratorIterations). */
+  iterationCap?: number;
 }
+
+/** Fallback tool-call timeout when a model omits `toolTimeoutMs`. */
+export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 
 
 export interface OrchestrationConfig {

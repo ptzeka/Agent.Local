@@ -2,7 +2,7 @@
  * One cutoff in the cancellation chain: cancelling cuts this scope and everything
  * below it, never the parent — signal holders can observe but not initiate.
  */
-export class CutoffScope {
+export class CancellationToken {
   private readonly controller = new AbortController();
 
   /** The derived signal to hand downward: parent chain OR own controller. */

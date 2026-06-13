@@ -41,6 +41,18 @@ export interface ToolInvoker {
 export interface Mcp {
   readonly name: string;
   listTools(): ToolDescriptor[];
-  callTool(toolName: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
+  /** Inject this server's per-model tool timeout; chainable for inline wiring. */
+  setTimeout(t: number): Mcp;
+  /**
+   * Invoke a tool. `signal` is the caller's cutoff (rooted at the request's
+   * source signal). The server wraps it in its own CancellationToken and adds
+   * the injected timeout, so a cancel from above OR a local timeout collapses
+   * the call. The tool only ever observes the resulting abort.
+   */
+  callTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    signal?: AbortSignal
+  ): Promise<ToolExecutionResult>;
   shutdown(): Promise<void>;
 }

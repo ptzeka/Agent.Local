@@ -39,7 +39,8 @@ describe("ScopedToolClient routing", () => {
     const result = await client.callTool("excel__append_rows", { rows: [] });
 
     expect(result.isError).toBe(false);
-    expect(excel.callTool).toHaveBeenCalledWith("append_rows", { rows: [] });
+    // No timeout set → the server is called with an undefined cancellation signal.
+    expect(excel.callTool).toHaveBeenCalledWith("append_rows", { rows: [] }, undefined);
     expect(fs.callTool).not.toHaveBeenCalled();
   });
 
@@ -50,7 +51,18 @@ describe("ScopedToolClient routing", () => {
     const result = await client.callTool("append_rows", { rows: [] });
 
     expect(result.isError).toBe(false);
-    expect(excel.callTool).toHaveBeenCalledWith("append_rows", { rows: [] });
+    expect(excel.callTool).toHaveBeenCalledWith("append_rows", { rows: [] }, undefined);
+  });
+
+  test("forwards the turn's signal to the server (timeout lives in the server)", async () => {
+    const excel = fakeMcp("excel", ["append_rows"]);
+    const client = new ScopedToolClient([excel.mcp]);
+    const controller = new AbortController();
+
+    await client.callTool("excel__append_rows", { rows: [] }, undefined, controller.signal);
+
+    // The client only routes and forwards; the server wraps this into its own cutoff.
+    expect(excel.callTool).toHaveBeenCalledWith("append_rows", { rows: [] }, controller.signal);
   });
 
   test("an unknown bare name returns a corrective error naming mounted servers", async () => {
