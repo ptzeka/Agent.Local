@@ -2,7 +2,6 @@ import { buildSubRuntime } from "./build-sub-runtime.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AnonymousMiddleware } from "./middleware/anonymous.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
-import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { ConversationMiddleware } from "./middleware/conversation.js";
 import { IdentityMiddleware } from "./middleware/identity.js";
@@ -32,6 +31,10 @@ import { ModelsMiddleware } from "./middleware/models.js";
  *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
  *   InputInboxMiddleware        — create the external input injection seam
  *   SessionManagerMiddleware    — build the sub-session manager
+ *
+ * Host-agnostic by design: no step may assume a CLI (or any other host). Every
+ * entry point — CLI today, single-task job or a cloud RuntimeManager routing by
+ * session directory later — composes the same pipeline; hosts stay thin wrappers.
  */
 export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentRuntime {
     return new AgentRuntime(deps)
@@ -46,7 +49,6 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
         .add(new SessionMiddleware({ sessionId }))
     .add(new ConversationMiddleware())
     .add(new McpRegistryMiddleware())
-    .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: true, role: deps.orchestratorRole }))
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware())

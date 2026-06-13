@@ -119,8 +119,8 @@ export class Orchestrator {
     const conversation = this.runtime.getConversation();
 
     // Resolve a role's tool servers (role → model → models.json `mcp` list),
-    // skipping any that are declared but not mounted (e.g. codemcp before
-    // ConnectMcpServers lands), so a single scoped client fronts the whole set.
+    // skipping any that are declared but not mounted (e.g. stdio servers from
+    // mcp.json until spawning lands), so a single scoped client fronts the whole set.
     const clientsFor = (role: string) =>
       modelsRegistry.getValidMcpForModel(role).flatMap((serverName) => {
         const client = mcpRegistry.getClient(serverName);

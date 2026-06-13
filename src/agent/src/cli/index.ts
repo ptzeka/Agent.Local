@@ -29,7 +29,7 @@ import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { parseArgs } from "./args.js";
 import { bannerSessionOf, runRepl } from "./repl.js";
-import { renderEvent, renderSession, renderSubSessionNotification } from "./render.js";
+import { formatEvent, formatSubSessionNotification, renderSession } from "./render.js";
 import { pickSession } from "./session-picker.js";
 
 /** Exit codes for the headless single-run path. */
@@ -169,7 +169,9 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   boot.registerRuntime(runtime);
 
   // Drain any sub-sessions that outlive a turn before the REPL exits.
-  const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
+  const unsubscribe = runtime.onSubSessionEvent((notification) =>
+    process.stdout.write(formatSubSessionNotification(notification))
+  );
   try {
     await runRepl({
       workspaceRoot: projectRoot,
@@ -202,17 +204,23 @@ async function runHeadless(
     const runtime = await buildRuntime(boot, sessionId).build();
     boot.registerRuntime(runtime);
 
-    const unsubscribe = runtime.onSubSessionEvent(renderSubSessionNotification);
+    const unsubscribe = runtime.onSubSessionEvent((notification) =>
+    process.stdout.write(formatSubSessionNotification(notification))
+  );
 
     process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 
     try {
-      const result = await runtime.dispatchAsync(input, { onEvent: renderEvent });
+      const result = await runtime.dispatchAsync(input, {
+        onEvent: (event) => process.stdout.write(formatEvent(event)),
+      });
       await runtime.awaitSubSessions();
       process.stdout.write(result.finalMessage.content + "\n");
       // Same identity summary the REPL prints on exit; stderr keeps stdout
       // reserved for the final answer.
-      renderSession(bannerSessionOf(runtime, sessionId !== undefined), process.stderr);
+      renderSession(bannerSessionOf(runtime, sessionId !== undefined), (text) =>
+        void process.stderr.write(text)
+      );
       return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
     } finally {
       unsubscribe();

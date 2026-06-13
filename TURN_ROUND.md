@@ -290,7 +290,71 @@ and why a graceful `stop()` leaves pending turns in the queue.
 
 ---
 
-## 10. Invariants (the contract in one list)
+## 10. Scaling: durable, shardable turns (future consideration)
+
+Not built — a direction the data model was shaped to allow. The TurnRunner is
+**two halves wearing one coat**, and only one half ever moves off-process:
+
+| Half | What it is | Where it can live |
+|---|---|---|
+| Queue | `pendingTurns` — serializable turn/round records | durable store (DB / log) |
+| Live | the running turn: pump, `runTurn`, mid-turn append, abort, `settled` | in-memory, on the owning process, always |
+
+The split is sharp: **the store owns a turn until it is claimed; the
+in-memory runner owns it from claim to settle.** Mid-turn rounds, coalescing
+onto the running turn, abort chains, and parent/child settlement all need the
+live turn — you cannot `SELECT` your way into appending a round to a dispatch
+already in flight in another process's RAM. So durability is a swap of the
+queue endpoints only: `pendingTurns.shift()` → an atomic claim query,
+`pendingTurns.push()` → insert, `settleTurn()` → terminal-row write. The pump
+and `runTurn` are untouched, because they were always about the live half.
+
+**Why it shards cleanly.** The session is already the consistency boundary —
+there are **zero cross-session transactions** — so `sessionId` is the shard
+key: disjoint sets, no cross-shard joins, no distributed transactions. The
+contended global work-queue (every worker polling one table) never forms,
+because ownership is per-session and a single session is serial by
+construction. Throughput is bound by LLM dispatch (seconds–minutes per turn →
+a handful of row writes per minute per session), never by the queue.
+
+**Steady state never polls.** The owning process holds the session live and
+`submit()` kicks the in-memory pump (write-through to the store for
+durability); the claim query runs only on the cold paths — **placement**
+(first turn for a session lands somewhere) and **failover** (a process dies,
+another claims its sessions):
+
+```sql
+UPDATE turns SET runtime_id = :rid, status = 'running'
+WHERE turn_id = (
+  SELECT turn_id FROM turns
+  WHERE runtime_id IS NULL AND session_id = :sid AND status = 'pending'
+  ORDER BY created_at LIMIT 1
+  FOR UPDATE SKIP LOCKED
+) RETURNING turn_id;
+```
+
+The `runtime_id` column **is** the ownership lease / fencing token: it is what
+enforces single-writer-per-session when the in-process "one pump per runner"
+convention no longer spans the cluster. A routing directory (`sessionId →
+process`) is an optimization; the lease is the safety mechanism.
+
+**The seam to build:** a `TurnStore` interface (`claimNext` / `append` /
+`settle`) that the in-memory array implements today and a durable backend
+implements later — keeping `build-runtime.ts` host-agnostic (CLI injects
+in-memory, a cloud host injects the durable store). The lease substrate is an
+ops choice, not a throughput one: sharded Postgres (`UPDATE … RETURNING`),
+Kafka (`key = sessionId` → one consumer per partition = the lease for free),
+or a Durable-Object / virtual-actor grain (the object *is* the single-writer —
+collapsing directory + lease + live runner into one primitive). Because rounds
+carry their own terminal status, **round-granular checkpointing** falls out for
+free: write each round's status inside `runTurn`'s loop and a crash resumes
+replaying only the in-flight round, not the whole turn. The real risk at scale
+is not the queue but **failover storms** — a dead process dumping thousands of
+claims at once — mitigated by leased TTLs that stagger reclamation.
+
+---
+
+## 11. Invariants (the contract in one list)
 
 1. Exactly one pump per session ever calls `dispatchAsync`; producers only
    ever enqueue.

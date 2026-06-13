@@ -1,6 +1,6 @@
 /**
  * Shape of a single dispatch ask — tool name, args, and one-line intent.
- * Defined here (not imported from zzz_executor) so the tracker has no runner dependency.
+ * Defined here so the tracker has no runner dependency.
  */
 export interface DispatchAsk {
   tool: string;

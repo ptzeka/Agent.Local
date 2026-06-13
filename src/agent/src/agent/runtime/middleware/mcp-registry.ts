@@ -13,9 +13,10 @@ import type { RuntimeContext, IMiddleware } from "../types.js";
  * Owns the registry's lifecycle: it constructs `McpClientRegistry` bound to the
  * container sandbox root, then registers the synthetic servers. Both are
  * `LocalMcp` instances — plain in-process tool dispatch, no SDK server or
- * transport. They are registered and immediately usable; the (currently
- * stubbed) ConnectMcpServersMiddleware is reserved for spawning real stdio
- * servers declared in mcp.json.
+ * transport. They are registered and immediately usable. Spawning real stdio
+ * servers declared in mcp.json is not implemented yet; when it lands, each
+ * spawned client must receive ctx.runtimeSignal so it self-disposes — there
+ * is no registry-side teardown by design.
  *
  * Runs after SessionMiddleware so workspace and session are available for the
  * Excel server's tool context.

@@ -155,4 +155,9 @@ nesting level.
 
 External MCP remount, policies.json enforcement, real JWT verification,
 orchestrator decomposition (MR-4), turn-snapshot persistence, service mode.
-Tracked in [BACKLOG.md](BACKLOG.md) and [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).
+The path to multi-process service mode is a durable, **session-sharded**
+`TurnStore` behind the same runner — `sessionId` is the shard key and the
+ownership lease, the queue half goes to storage while the live turn stays
+in-memory, and steady state never polls (see
+[TURN_ROUND.md §10](TURN_ROUND.md)). Tracked in [BACKLOG.md](BACKLOG.md) and
+[PRODUCTION_READINESS.md](PRODUCTION_READINESS.md).

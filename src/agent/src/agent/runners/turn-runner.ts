@@ -42,6 +42,11 @@ import { randomUUID } from "node:crypto";
  * Architecture role: Service layer. The runner knows nothing about providers,
  * MCP, or the orchestrator — it drives an injected `RoundDispatch` function,
  * which the runtime binds to `dispatchAsync`.
+ *
+ * Scope of the guarantee: single-writer is per RUNNER, not per session — one
+ * runner per session is the host's contract. A distributed host must enforce it
+ * with an ownership lease; a directory/cache that routes to a runtime is an
+ * optimization, never the safety mechanism.
  */
 
 // ---------------------------------------------------------------------------
@@ -168,7 +173,7 @@ export type RoundDispatch = (
 ) => Promise<{ outcome: string; summary?: string }>;
 
 // ---------------------------------------------------------------------------
-// Observability events
+// OUTSIDE Observability events
 // ---------------------------------------------------------------------------
 
 export type TurnRunnerEvent =
@@ -201,17 +206,25 @@ const DEFAULT_MAX_ROUNDS_PER_TURN = 8;
 // TurnRunner
 // ---------------------------------------------------------------------------
 
+/**
+ * The live, non-serializable side of a turn — kept OUT of the `Turn` record so
+ * `Turn`/`Round` stay JSON-friendly (the persistence contract). One handle per
+ * unsettled turn; created on register, deleted on settle.
+ */
+interface TurnHandle {
+  controller: AbortController;
+  /** Derived signal (parent OR own controller) — the single abort truth
+   *  dispatch and every status check observe. */
+  signal: AbortSignal;
+  settled: Promise<TurnSnapshot>;
+  resolve: (snapshot: TurnSnapshot) => void;
+}
+
 export class TurnRunner {
   private readonly pendingTurns: Turn[] = [];
   private currentTurn: Turn | null = null;
 
-  /** One resolver + abort controller per unsettled turn, keyed by turnId. */
-  private readonly settleResolvers = new Map<string, (snapshot: TurnSnapshot) => void>();
-  private readonly settledPromises = new Map<string, Promise<TurnSnapshot>>();
-  private readonly abortControllers = new Map<string, AbortController>();
-  /** Per-turn derived signal (parent OR own controller) — the single abort
-   *  truth dispatch and all status checks observe. */
-  private readonly turnSignals = new Map<string, AbortSignal>();
+  private readonly handles = new Map<string, TurnHandle>();
 
   private readonly maxRoundsPerTurn: number;
   private readonly listener?: TurnRunnerListener;
@@ -248,32 +261,47 @@ export class TurnRunner {
   public submit(params: SubmitParams): SubmitReceipt {
     const round = makeRound(params);
 
-    // 1. Same-engagement feedback lands on the live turn.
+    // Append to an existing turn when one fits; otherwise start a new one.
+    const midTurn = this.findMidTurnTarget(params);
+    if (midTurn) {
+      midTurn.rounds.push(round);
+      return this.receiptFor(midTurn, round, "mid-turn-round");
+    }
+    const coalesce = this.findCoalesceTarget(params);
+    if (coalesce) {
+      coalesce.rounds.push(round);
+      return this.receiptFor(coalesce, round, "coalesced-round");
+    }
+    return this.enqueueNewTurn(params, round);
+  }
+
+  /** The live turn, when this submission may steer it and it has capacity. */
+  private findMidTurnTarget(params: SubmitParams): Turn | null {
     if (
       params.preferMidTurn &&
       this.currentTurn &&
       this.currentTurn.status === "running" &&
       this.currentTurn.rounds.length < this.maxRoundsPerTurn
     ) {
-      this.currentTurn.rounds.push(round);
-      return this.receiptFor(this.currentTurn, round, "mid-turn-round");
+      return this.currentTurn;
     }
+    return null;
+  }
 
-    // 2. Collapse onto a pending turn with the same coalesce key.
-    if (params.coalesceKey) {
-      const target = this.pendingTurns.find(
+  /** A pending turn sharing this submission's coalesce key, with capacity. */
+  private findCoalesceTarget(params: SubmitParams): Turn | null {
+    if (!params.coalesceKey) return null;
+    return (
+      this.pendingTurns.find(
         (turn) =>
           turn.coalesceKey === params.coalesceKey &&
           turn.status === "pending" &&
           turn.rounds.length < this.maxRoundsPerTurn
-      );
-      if (target) {
-        target.rounds.push(round);
-        return this.receiptFor(target, round, "coalesced-round");
-      }
-    }
+      ) ?? null
+    );
+  }
 
-    // 3. New engagement.
+  private enqueueNewTurn(params: SubmitParams, round: Round): SubmitReceipt {
     const turn = makeTurn(params, round);
     this.registerTurn(turn);
     this.pendingTurns.push(turn);
@@ -303,26 +331,21 @@ export class TurnRunner {
       return true;
     }
     if (this.currentTurn?.turnId === turnId) {
-      this.abortControllers.get(turnId)?.abort();
+      this.handles.get(turnId)?.controller.abort();
       return true;
     }
     return false;
   }
 
   /**
-   * Abort whatever turn is in flight — the host's "stop" affordance, saving
-   * callers from fishing the live turnId out of a snapshot. Best-effort by
-   * nature: the active round unwinds as soon as the dispatch honours its
-   * signal (worst case, at the round boundary); remaining rounds are skipped.
+   * Abort whatever turn is in flight — the host's "stop" affordance
    */
   public cancelCurrent(): boolean {
     return this.currentTurn ? this.cancel(this.currentTurn.turnId) : false;
   }
 
   /**
-   * Complete stoppage: flush PENDING turns first — so the pump cannot promote
-   * one while the in-flight turn unwinds — then abort the current turn.
-   * Returns how many turns were cancelled.
+   * Complete stoppage: flush PENDING turns first
    */
   public cancelAll(): number {
     let cancelled = 0;
@@ -410,20 +433,12 @@ export class TurnRunner {
     }
   }
 
-  /**
-   * Run one turn to completion, re-checking the round list after each await so
-   * mid-turn appends run in the same engagement. Never throws: settlement is in
-   * a finally so an unexpected escape can't kill the pump or orphan awaiters.
-   */
-  private async runTurn(turn: Turn): Promise<void> {
-    this.currentTurn = turn;
-    turn.status = "running";
-    turn.startedAt = Date.now();
-    this.emit({ type: "turn-start", turnId: turn.turnId, source: turn.source, rounds: turn.rounds.length });
+  // ------------------------------------------------------------------------
+  // Run one turn to completion
+  // ------------------------------------------------------------------------
 
-    // Derived signal, not the bare controller's: an ancestor cancel must read
-    // as cancellation, not as a dispatch failure.
-    const signal = this.turnSignals.get(turn.turnId)!;
+  private async runTurn(turn: Turn): Promise<void> {
+    const signal = this.beginTurn(turn);
     let failed = false;
 
     try {
@@ -436,52 +451,17 @@ export class TurnRunner {
           continue;
         }
 
-        round.status = "running";
-        round.startedAt = Date.now();
-        this.emit({
-          type: "round-start",
-          turnId: turn.turnId,
-          roundId: round.roundId,
-          source: round.source,
-          round: turn.rounds.indexOf(round) + 1,
-        });
-
-        try {
-          const result = await this.dispatch(round.content, signal);
-          round.status = "done";
-          round.outcome = result.outcome;
-        } catch (err) {
-          // Distinguish a user stop from a genuine failure so a cancelled turn
-          // never renders (or persists) as a broken one.
-          if (signal.aborted) {
-            round.status = "cancelled";
-          } else {
-            round.status = "error";
-            round.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
-            failed = true;
-          }
-        }
-        round.endedAt = Date.now();
-        this.emit({
-          type: "round-done",
-          turnId: turn.turnId,
-          roundId: round.roundId,
-          status: round.status,
-          error: round.error,
-        });
-
-        // One failed round fails the engagement; later rounds would run against
-        // a context the failure may have corrupted, so they are skipped, not run.
-        if (failed) {
-          for (const remaining of turn.rounds) {
-            if (remaining.status === "pending") remaining.status = "skipped";
-          }
+        // One failed round fails the engagement: later rounds would run against
+        // a context the failure may have corrupted, so they are skipped.
+        if ((await this.executeRound(turn, round, signal)) === "failed") {
+          failed = true;
+          this.skipRemainingRounds(turn);
           break;
         }
       }
     } catch (err) {
-      // Scheduler-level breakage (dispatch errors are caught above): pin it on
-      // the running round and fail the turn rather than crash the pump.
+      // Scheduler-level breakage (dispatch errors are caught in executeRound):
+      // pin it on the running round and fail the turn rather than crash the pump.
       failed = true;
       const running = turn.rounds.find((candidate) => candidate.status === "running");
       if (running) {
@@ -489,59 +469,116 @@ export class TurnRunner {
         running.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
         running.endedAt = Date.now();
       }
-      for (const remaining of turn.rounds) {
-        if (remaining.status === "pending") remaining.status = "skipped";
-      }
+      this.skipRemainingRounds(turn);
     } finally {
-      turn.status = signal.aborted ? "cancelled" : failed ? "error" : "done";
-      turn.endedAt = Date.now();
-      this.currentTurn = null;
-      this.emit({
-        type: "turn-done",
-        turnId: turn.turnId,
-        source: turn.source,
-        status: turn.status,
-        rounds: turn.rounds.length,
-      });
-      this.settleTurn(turn);
+      this.finalizeTurn(turn, signal, failed);
     }
   }
 
+  /** Mark the turn running and return its derived abort signal. */
+  private beginTurn(turn: Turn): AbortSignal {
+    this.currentTurn = turn;
+    turn.status = "running";
+    turn.startedAt = Date.now();
+    this.emit({ type: "turn-start", turnId: turn.turnId, source: turn.source, rounds: turn.rounds.length });
+    return this.handles.get(turn.turnId)!.signal;
+  }
+
+  /** Dispatch one round. Returns "failed" only for a genuine error — a user
+   *  abort settles as "cancelled" and does NOT fail the turn. */
+  private async executeRound(turn: Turn, round: Round, signal: AbortSignal): Promise<"ok" | "failed"> {
+    round.status = "running";
+    round.startedAt = Date.now();
+    this.emit({
+      type: "round-start",
+      turnId: turn.turnId,
+      roundId: round.roundId,
+      source: round.source,
+      round: turn.rounds.indexOf(round) + 1,
+    });
+
+    let failed = false;
+    try {
+      const result = await this.dispatch(round.content, signal);
+      round.status = "done";
+      round.outcome = result.outcome;
+    } catch (err) {
+      // A user stop must never render (or persist) as a broken turn.
+      if (signal.aborted) {
+        round.status = "cancelled";
+      } else {
+        round.status = "error";
+        round.error = err instanceof Error ? (err.stack ?? err.message) : String(err);
+        failed = true;
+      }
+    }
+    round.endedAt = Date.now();
+    this.emit({
+      type: "round-done",
+      turnId: turn.turnId,
+      roundId: round.roundId,
+      status: round.status,
+      error: round.error,
+    });
+    return failed ? "failed" : "ok";
+  }
+
+  /** Pending rounds left after a failure or cancel never dispatch. */
+  private skipRemainingRounds(turn: Turn): void {
+    for (const round of turn.rounds) {
+      if (round.status === "pending") round.status = "skipped";
+    }
+  }
+
+  /** Stamp terminal status, announce, and settle the receipt. */
+  private finalizeTurn(turn: Turn, signal: AbortSignal, failed: boolean): void {
+    turn.status = signal.aborted ? "cancelled" : failed ? "error" : "done";
+    turn.endedAt = Date.now();
+    this.currentTurn = null;
+    this.emit({
+      type: "turn-done",
+      turnId: turn.turnId,
+      source: turn.source,
+      status: turn.status,
+      rounds: turn.rounds.length,
+    });
+    this.settleTurn(turn);
+  }
+
   // ------------------------------------------------------------------------
-  // Internals
+  // ACTIONS
   // ------------------------------------------------------------------------
 
   private registerTurn(turn: Turn): void {
     const controller = new AbortController();
-    this.abortControllers.set(turn.turnId, controller);
-    this.turnSignals.set(
-      turn.turnId,
-      this.parentSignal ? AbortSignal.any([this.parentSignal, controller.signal]) : controller.signal
-    );
-    this.settledPromises.set(
-      turn.turnId,
-      new Promise<TurnSnapshot>((resolve) => {
-        this.settleResolvers.set(turn.turnId, resolve);
-      })
-    );
+    let resolve!: (snapshot: TurnSnapshot) => void;
+    const settled = new Promise<TurnSnapshot>((res) => {
+      resolve = res;
+    });
+    this.handles.set(turn.turnId, {
+      controller,
+      signal: this.parentSignal
+        ? AbortSignal.any([this.parentSignal, controller.signal])
+        : controller.signal,
+      settled,
+      resolve,
+    });
   }
 
   private receiptFor(turn: Turn, round: Round, placement: SubmitReceipt["placement"]): SubmitReceipt {
-  return {
+    return {
       turnId: turn.turnId,
       roundId: round.roundId,
       placement,
-      settled: this.settledPromises.get(turn.turnId)!,
+      settled: this.handles.get(turn.turnId)!.settled,
     };
   }
 
+  // end of turn
   private settleTurn(turn: Turn): void {
-    const resolve = this.settleResolvers.get(turn.turnId);
-    this.settleResolvers.delete(turn.turnId);
-    this.settledPromises.delete(turn.turnId);
-    this.abortControllers.delete(turn.turnId);
-    this.turnSignals.delete(turn.turnId);
-    resolve?.(toTurnSnapshot(turn));
+    const handle = this.handles.get(turn.turnId);
+    this.handles.delete(turn.turnId);
+    handle?.resolve(toTurnSnapshot(turn));
 
     if (!this.isBusy) {
       const waiters = this.idleWaiters.splice(0);
@@ -549,19 +586,21 @@ export class TurnRunner {
     }
   }
 
-  /** Block the pump until submit()/stop() kicks it. */
+  // sleep pump until next event
   private parkPump(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.wakePump = resolve;
     });
   }
 
+  // restart pump
   private kickPump(): void {
     const wake = this.wakePump;
     this.wakePump = null;
     wake?.();
   }
 
+  // EMIT event for outside listener
   private emit(event: TurnRunnerEvent): void {
     try {
       this.listener?.(event);
@@ -571,6 +610,8 @@ export class TurnRunner {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Record factories & snapshot projections (stateless)
 // ---------------------------------------------------------------------------
 
 function makeRound(params: SubmitParams): Round {
@@ -598,7 +639,7 @@ function toRoundSnapshot(round: Round): RoundSnapshot {
   return {
     roundId: round.roundId,
     source: round.source,
-    content: round.content,
+    content: round.content, 
     status: round.status,
     createdAt: round.createdAt,
     startedAt: round.startedAt,

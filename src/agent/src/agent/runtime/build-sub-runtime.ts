@@ -1,7 +1,6 @@
 import type { SubRuntimeRefs } from "../runners/subsession.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
-import { ConnectMcpServersMiddleware } from "./middleware/connect-mcp-servers.js";
 import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { ConversationMiddleware } from "./middleware/conversation.js";
@@ -59,7 +58,6 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     // the conversation step rather than the session step.
     .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
     .add(new McpRegistryMiddleware())
-    .add(new ConnectMcpServersMiddleware())
     .add(new OrchestratorMiddleware({ includeSubSessions: false, role: deps.orchestratorRole }))
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole, includeSubSessions: false }))
     .add(new InputInboxMiddleware())

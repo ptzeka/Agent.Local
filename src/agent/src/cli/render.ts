@@ -16,37 +16,34 @@ import type { TurnRunnerEvent } from "../agent/runners/turn-runner.js";
  *   EXECUTOR     — magenta, ack/execute/validate/report inside one dispatch.
  */
 
-export function renderEvent(event: RunnerEvent): void {
+/**
+ * Format a runner event into a display string (empty when the event renders
+ * nothing). Returns rather than writes so the REPL can emit it through the
+ * single "write above the pinned prompt" path — see writeAbovePrompt.
+ */
+export function formatEvent(event: RunnerEvent): string {
   switch (event.type) {
     case "orchestrator-start": {
       const orch = String(event.data.orchestratorModel ?? "");
       const reads = Number(event.data.readToolCount ?? 0);
-      process.stdout.write(
-        chalk.cyanBright(`\n[ORCHESTRATOR] ${orch} — ${reads} tools\n`)
-      );
-      break;
+      return chalk.cyanBright(`\n[ORCHESTRATOR] ${orch} — ${reads} tools\n`);
     }
 
     case "orchestrator-iteration": {
       const iteration = Number(event.data.iteration ?? 0);
       const max = Number(event.data.max ?? 0);
-      process.stdout.write(chalk.gray(`  ── orchestrator turn ${iteration}/${max}\n`));
-      break;
+      return chalk.gray(`  ── orchestrator turn ${iteration}/${max}\n`);
     }
 
     case "orchestrator-message": {
       const content = String(event.data.content ?? "").trim();
-      if (content.length > 0) {
-        process.stdout.write(chalk.cyan("[ORCHESTRATOR] ") + content + "\n");
-      }
-      break;
+      return content.length > 0 ? chalk.cyan("[ORCHESTRATOR] ") + content + "\n" : "";
     }
 
     case "tool-call": {
       const name = String(event.data.name ?? "");
       const args = JSON.stringify(event.data.arguments ?? {}, null, 0);
-      process.stdout.write(chalk.yellow(`  → tool: ${name} ${chalk.gray(args)}\n`));
-      break;
+      return chalk.yellow(`  → tool: ${name} ${chalk.gray(args)}\n`);
     }
 
     case "tool-result": {
@@ -55,20 +52,17 @@ export function renderEvent(event: RunnerEvent): void {
       const preview = String(event.data.contentPreview ?? "");
       const colour = isError ? chalk.red : chalk.green;
       const label = isError ? "tool-error" : "tool-ok";
-      process.stdout.write(colour(`  ← ${label}: ${name}\n`));
+      let out = colour(`  ← ${label}: ${name}\n`);
       if (preview.length > 0) {
-        process.stdout.write(indent(preview, "    " + chalk.gray("│ ")) + "\n");
+        out += indent(preview, "    " + chalk.gray("│ ")) + "\n";
       }
-      break;
+      return out;
     }
 
     case "dispatch-start": {
       const tool = String(event.data.tool ?? "");
       const intent = String(event.data.intent ?? "");
-      process.stdout.write(
-        chalk.magentaBright(`\n[DISPATCH] → ${tool}\n`) + chalk.gray(`           intent: ${intent}\n`)
-      );
-      break;
+      return chalk.magentaBright(`\n[DISPATCH] → ${tool}\n`) + chalk.gray(`           intent: ${intent}\n`);
     }
 
     case "dispatch-feedback": {
@@ -78,44 +72,34 @@ export function renderEvent(event: RunnerEvent): void {
       const det = String(event.data.deterministicVerdict ?? "");
       const iterations = Number(event.data.iterations ?? 0);
       const stamp = ok ? chalk.greenBright("OK") : chalk.redBright("FAIL");
-      process.stdout.write(
+      return (
         chalk.magentaBright(`[DISPATCH] ← ${stamp}`) +
-          chalk.gray(
-            ` (ack=${ack}, deterministic=${det}, executor turns=${iterations})\n`
-          ) +
-          chalk.gray(`           evidence: ${evidence}\n`)
+        chalk.gray(` (ack=${ack}, deterministic=${det}, executor turns=${iterations})\n`) +
+        chalk.gray(`           evidence: ${evidence}\n`)
       );
-      break;
     }
 
     case "executor-event": {
-      renderExecutorEvent(event.data);
-      break;
+      return formatExecutorEvent(event.data);
     }
 
     case "final-message": {
       const content = String(event.data.content ?? "").trim();
       const iterations = Number(event.data.iterations ?? 0);
-      process.stdout.write(chalk.greenBright(`\n[answer] (after ${iterations} orchestrator turn(s))\n`));
-      process.stdout.write(content + "\n");
-      break;
+      return chalk.greenBright(`\n[answer] (after ${iterations} orchestrator turn(s))\n`) + content + "\n";
     }
 
     case "summarization": {
       const summarized = Number(event.data.summarizedCount ?? 0);
       const kept = Number(event.data.keptCount ?? 0);
       const chars = Number(event.data.summaryChars ?? 0);
-      process.stdout.write(
-        chalk.gray(
-          `[summarizer] folded ${summarized} message(s) into ~${chars} chars; kept last ${kept}\n`
-        )
+      return chalk.gray(
+        `[summarizer] folded ${summarized} message(s) into ~${chars} chars; kept last ${kept}\n`
       );
-      break;
     }
 
     case "evaluation-start": {
-      process.stdout.write(chalk.gray("  [EVALUATOR] checking whether the request is fulfilled…\n"));
-      break;
+      return chalk.gray("  [EVALUATOR] checking whether the request is fulfilled…\n");
     }
 
     case "evaluation-verdict": {
@@ -132,15 +116,16 @@ export function renderEvent(event: RunnerEvent): void {
       // Verdicts are turn-transient (events only, never persisted to the
       // conversation): gray label per the saved-keeps-color convention, but
       // the verdict word stays colored — it's the line being scanned for.
-      process.stdout.write(chalk.gray("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`));
-      break;
+      return chalk.gray("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`);
     }
 
     case "warning": {
       const message = String(event.data.message ?? "");
-      process.stdout.write(chalk.yellowBright(`[warning] ${message}\n`));
-      break;
+      return chalk.yellowBright(`[warning] ${message}\n`);
     }
+
+    default:
+      return "";
   }
 }
 
@@ -150,39 +135,33 @@ export function renderEvent(event: RunnerEvent): void {
  * auto-wake turns from settling sub-sessions, queued/coalesced work — gets a
  * line, so the user can see WHY the agent started talking unprompted.
  */
-export function renderTurnEvent(event: TurnRunnerEvent): void {
+export function formatTurnEvent(event: TurnRunnerEvent): string {
   switch (event.type) {
     case "turn-queued":
-      if (event.source !== "user") {
-        process.stdout.write(
-          chalk.gray(`\n(queued ${event.source} turn — ${event.queueDepth} waiting)\n`)
-        );
-      }
-      break;
+      return event.source !== "user"
+        ? chalk.gray(`\n(queued ${event.source} turn — ${event.queueDepth} waiting)\n`)
+        : "";
     case "turn-start":
-      if (event.source !== "user") {
-        process.stdout.write(chalk.gray(`\n(auto-wake: processing ${event.source} report)\n`));
-      }
-      break;
+      return event.source !== "user"
+        ? chalk.gray(`\n(auto-wake: processing ${event.source} report)\n`)
+        : "";
     case "round-start":
       // Rounds beyond the first mean mid-turn feedback was folded in.
-      if (event.round > 1) {
-        process.stdout.write(chalk.gray(`\n(round ${event.round}: ${event.source} feedback folded into this turn)\n`));
-      }
-      break;
+      return event.round > 1
+        ? chalk.gray(`\n(round ${event.round}: ${event.source} feedback folded into this turn)\n`)
+        : "";
     case "round-done":
       // The REPL no longer awaits a turn's settle (the prompt stays live for
       // mid-turn injection), so failures must surface here or nowhere.
       if (event.status === "error") {
         const errorDetail = event.error ?? "unknown error";
-        process.stdout.write(chalk.red(`\n[error] turn round failed:\n${errorDetail}\n`));
+        return chalk.red(`\n[error] turn round failed:\n${errorDetail}\n`);
       }
-      break;
+      return "";
     case "turn-done":
-      if (event.status === "cancelled") {
-        process.stdout.write(chalk.yellowBright("\n(turn cancelled)\n"));
-      }
-      break;
+      return event.status === "cancelled" ? chalk.yellowBright("\n(turn cancelled)\n") : "";
+    default:
+      return "";
   }
 }
 
@@ -192,69 +171,63 @@ export function renderTurnEvent(event: TurnRunnerEvent): void {
  * the live `you>` prompt, and tagged so it's clearly an async report rather
  * than part of the current turn's output.
  */
-export function renderSubSessionNotification(notification: SubSessionNotification): void {
+export function formatSubSessionNotification(notification: SubSessionNotification): string {
   const shortId = notification.subSessionId.split("-")[0] ?? notification.subSessionId.slice(0, 8);
   const intent = notification.intent.replace(/\s+/g, " ").trim();
 
   if (notification.status === "done") {
     const result = (notification.result ?? "").replace(/\s+/g, " ").trim();
     const preview = result.length > 200 ? `${result.slice(0, 199)}…` : result;
-    process.stdout.write(
+    return (
       "\n" +
-        chalk.greenBright(`✓ [sub-session ${shortId} done] `) +
-        chalk.gray(intent) +
-        (preview.length > 0 ? `\n  ${preview}` : "") +
-        "\n"
+      chalk.greenBright(`✓ [sub-session ${shortId} done] `) +
+      chalk.gray(intent) +
+      (preview.length > 0 ? `\n  ${preview}` : "") +
+      "\n"
     );
-    return;
   }
 
   const reason = (notification.error ?? "unknown error").replace(/\s+/g, " ").trim();
-  process.stdout.write(
-    "\n" +
-      chalk.redBright(`✗ [sub-session ${shortId} error] `) +
-      chalk.gray(intent) +
-      `\n  ${reason}\n`
+  return (
+    "\n" + chalk.redBright(`✗ [sub-session ${shortId} error] `) + chalk.gray(intent) + `\n  ${reason}\n`
   );
 }
 
 // Executor sub-run lines render gray: they persist in the CHILD session's
 // transcript, not this conversation, so by the saved-keeps-color convention
 // they are transient here. Errors stay red — failure must remain visible.
-function renderExecutorEvent(data: Record<string, unknown>): void {
+function formatExecutorEvent(data: Record<string, unknown>): string {
   const kind = String(data.kind ?? "");
   switch (kind) {
     // Orchestrator-style events forwarded from the executor sub-run.
     case "orchestrator-start": {
       const model = String(data.orchestratorModel ?? "");
-      process.stdout.write(chalk.gray(`  [EXECUTOR] running (${model})\n`));
-      return;
+      return chalk.gray(`  [EXECUTOR] running (${model})\n`);
     }
     case "orchestrator-message": {
       const content = String(data.content ?? "").trim();
-      if (content.length > 0) {
-        process.stdout.write(chalk.gray(`  [EXECUTOR] ${content}\n`));
-      }
-      return;
+      return content.length > 0 ? chalk.gray(`  [EXECUTOR] ${content}\n`) : "";
     }
     case "tool-call": {
       const name = String(data.name ?? "");
       const args = JSON.stringify(data.arguments ?? {}, null, 0);
-      process.stdout.write(chalk.gray(`  [EXECUTOR] → tool: ${name} ${args}\n`));
-      return;
+      return chalk.gray(`  [EXECUTOR] → tool: ${name} ${args}\n`);
     }
     case "tool-result": {
       const name = String(data.name ?? "");
       const isError = Boolean(data.isError);
       const colour = isError ? chalk.red : chalk.gray;
-      process.stdout.write(colour(`  [EXECUTOR] ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`));
-      return;
+      return colour(`  [EXECUTOR] ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`);
     }
     case "warning": {
       const message = String(data.message ?? "");
-      process.stdout.write(chalk.yellowBright(`  [EXECUTOR] warning: ${message}\n`));
-      return;
+      // Executor warnings aren't persisted to this conversation: gray the line
+      // per the saved-keeps-color convention, but the "warning" word stays
+      // colored — it's the signal being scanned for.
+      return chalk.gray("  [EXECUTOR] ") + chalk.yellowBright("warning") + chalk.gray(`: ${message}\n`);
     }
+    default:
+      return "";
   }
 }
 
@@ -326,13 +299,13 @@ function short(value: string): string {
 export function renderSession(
   session: BannerSession,
   // Headless runs keep stdout reserved for the final answer, so they route the
-  // summary to stderr; the REPL keeps the stdout default.
-  out: NodeJS.WritableStream = process.stdout
+  // summary to stderr; the REPL routes through its pinned-prompt writer.
+  write: (text: string) => void = (text) => void process.stdout.write(text)
 ): void {
-  out.write(chalk.gray(`session:   ${sessionLine(session)}\n`));
+  write(chalk.gray(`session:   ${sessionLine(session)}\n`));
 }
 
-export function renderHelp(): void {
+export function renderHelp(write: (text: string) => void = (text) => void process.stdout.write(text)): void {
   const lines = [
     "",
     chalk.bold("Commands:"),
@@ -348,7 +321,7 @@ export function renderHelp(): void {
     "  /history                    print the current conversation transcript",
     "",
   ];
-  process.stdout.write(lines.join("\n"));
+  write(lines.join("\n"));
 }
 
 function indent(text: string, prefix: string): string {

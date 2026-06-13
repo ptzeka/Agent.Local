@@ -20,7 +20,8 @@
       "PowerShell(npm test --prefix c:\\\\www\\\\Agent.Local\\\\src\\\\agent)",
       "mcp__codemcp__get_file_context",
       "PowerShell(git -C c:\\\\www\\\\Agent.Local ls-files src/agent/sessions src/agent/contexts)",
-      "PowerShell(\\(Get-Content c:\\\\www\\\\Agent.Local\\\\src\\\\agent\\\\src\\\\agent\\\\runners\\\\orchestrator.ts | Measure-Object -Line\\).Lines; Select-String -Path c:\\\\www\\\\Agent.Local\\\\src\\\\agent\\\\src\\\\agent\\\\context\\\\agentcontext.ts -Pattern \"dispatch_executor|read-only|never writes\" | Select-Object -First 6)"
+      "PowerShell(\\(Get-Content c:\\\\www\\\\Agent.Local\\\\src\\\\agent\\\\src\\\\agent\\\\runners\\\\orchestrator.ts | Measure-Object -Line\\).Lines; Select-String -Path c:\\\\www\\\\Agent.Local\\\\src\\\\agent\\\\src\\\\agent\\\\context\\\\agentcontext.ts -Pattern \"dispatch_executor|read-only|never writes\" | Select-Object -First 6)",
+      "Bash(npx vitest *)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"
