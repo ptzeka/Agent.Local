@@ -22,8 +22,14 @@ export class LocalMcp implements Mcp {
 
   constructor(public readonly name: string, tools: LocalTool[]) {
     for (const tool of tools) {
-      this.toolsByName.set(tool.descriptor.name, tool);
+      this.registerTool(tool);
     }
+  }
+
+  // Subclasses whose handlers close over `this` cannot pass tools to super();
+  // they call this after super(), one tool per call.
+  protected registerTool(tool: LocalTool): void {
+    this.toolsByName.set(tool.descriptor.name, tool);
   }
 
   public listTools(): ToolDescriptor[] {

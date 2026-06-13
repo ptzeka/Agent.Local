@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-import type { Mcp, ToolExecutionResult } from "../mcp/mcp.js";
+import type { ToolExecutionResult } from "../mcp/mcp.js";
+import { LocalMcp } from "../mcp/local-mcp.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { RuntimeContext } from "../runtime/types.js";
 import type { OrchestratorListener } from "../runners/runner-events.js";
@@ -9,18 +10,6 @@ import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch
 import type { TurnBindable } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 import { CutoffScope } from "../../common/lifetime.js";
-
-/**
- * A tool hosted on the executor server. Same shape as LocalMcp's LocalTool,
- * except the descriptor is produced by a function: the dispatch descriptor
- * embeds the executor's LIVE tool enum, so it cannot be a static object.
- */
-interface ExecutorTool {
-  /** Bare name — `callTool` receives it with the server prefix stripped. */
-  name: string;
-  describe(): ToolDescriptor;
-  invoke(args: Record<string, unknown>): Promise<ToolExecutionResult>;
-}
 
 /**
  * ExecutorLocalMcp — in-process MCP server for executor coordination:
@@ -41,11 +30,7 @@ interface ExecutorTool {
  * Only one executor dispatch can run at a time: a promise-chain mutex ensures
  * sequential execution without blocking the caller's microtask queue.
  */
-export class ExecutorLocalMcp implements Mcp, TurnBindable {
-  public readonly name = "executor";
-
-  private readonly toolsByName: Map<string, ExecutorTool>;
-
+export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   // Promise-chain mutex: each dispatch chains after the previous one settles.
   private runLock: Promise<void> = Promise.resolve();
 
@@ -59,24 +44,21 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
   private turnTracker: DispatchTracker | undefined = undefined;
 
   constructor(private readonly ctx: RuntimeContext) {
-    const tools: ExecutorTool[] = [
-      {
-        name: "dispatch",
-        describe: () =>
-          buildDispatchDescriptor(this.resolveExecutorTools().map((tool) => tool.name)),
-        invoke: (args) => this.dispatch(args),
-      },
-      {
-        // Read-only introspection — answered in-process, never spawns an executor.
-        name: "list_tools",
-        describe: () => LIST_TOOLS_DESCRIPTOR,
-        invoke: async () => ({
-          isError: false,
-          content: JSON.stringify(this.resolveExecutorTools(), null, 2),
-        }),
-      },
-    ];
-    this.toolsByName = new Map(tools.map((tool) => [tool.name, tool]));
+    // Handlers close over `this`, so tools register after super(). Registered
+    // descriptors are routing keys only — listTools() advertises live ones.
+    super(EXECUTOR_SERVER_NAME, []);
+    this.registerTool({
+      descriptor: buildDispatchDescriptor([]),
+      invoke: (args) => this.dispatch(args),
+    });
+    // Read-only introspection — answered in-process, never spawns an executor.
+    this.registerTool({
+      descriptor: LIST_TOOLS_DESCRIPTOR,
+      invoke: async () => ({
+        isError: false,
+        content: JSON.stringify(this.resolveExecutorTools(), null, 2),
+      }),
+    });
   }
 
   /**
@@ -94,8 +76,15 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
     this.turnTracker = tracker;
   }
 
-  public listTools(): ToolDescriptor[] {
-    return [...this.toolsByName.values()].map((tool) => tool.describe());
+  /**
+   * Overrides the base's static advertisement: the dispatch descriptor embeds
+   * the executor's LIVE tool enum, so it must be rebuilt on every call.
+   */
+  public override listTools(): ToolDescriptor[] {
+    return [
+      buildDispatchDescriptor(this.resolveExecutorTools().map((tool) => tool.name)),
+      LIST_TOOLS_DESCRIPTOR,
+    ].map((descriptor) => ({ ...descriptor, name: `${this.name}__${descriptor.name}` }));
   }
 
   /**
@@ -113,17 +102,6 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
       // A dispatch must never target dispatch itself.
       .filter((serverName) => serverName !== this.name)
       .flatMap((serverName) => mcpRegistry.getClient(serverName)?.listTools() ?? []);
-  }
-
-  public async callTool(
-    toolName: string,
-    args: Record<string, unknown>
-  ): Promise<ToolExecutionResult> {
-    const executorTool = this.toolsByName.get(toolName);
-    if (!executorTool) {
-      return { isError: true, content: `Unknown tool "${toolName}" on executor server.` };
-    }
-    return executorTool.invoke(args);
   }
 
   private async dispatch(args: Record<string, unknown>): Promise<ToolExecutionResult> {
@@ -173,7 +151,7 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
 
   // The Mcp contract's kill path: dispatches run under scope OR turn signal,
   // so this reaches in-flight children even when no turn abort fires.
-  public async shutdown(): Promise<void> {
+  public override async shutdown(): Promise<void> {
     this.scope.cancel("executor-server-shutdown");
   }
 
@@ -288,11 +266,14 @@ export class ExecutorLocalMcp implements Mcp, TurnBindable {
 
 const EXECUTOR_ROLE = "executor" as const;
 
+// Server mount name — same string as the role, but a distinct concept.
+const EXECUTOR_SERVER_NAME = "executor";
+
 // Read-only safety net beside the dispatch enum: when the orchestrator is
 // unsure of a target tool's exact name or argument shape, it can fetch the
 // full descriptors (name, description, inputSchema) instead of guessing.
 const LIST_TOOLS_DESCRIPTOR: ToolDescriptor = {
-  name: "executor__list_tools",
+  name: "list_tools",
   description:
     "List the tools the EXECUTOR can run via executor__dispatch, as full JSON " +
     "descriptors (name, description, inputSchema). Read-only and instant — call " +
@@ -312,7 +293,7 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
       : "No executor-side tools are currently mounted; any dispatch will fail.";
 
   return {
-    name: "executor__dispatch",
+    name: "dispatch",
     description: [
       "Spawn the EXECUTOR sub-agent to perform exactly one mutation.",
       "This is the ONLY way the orchestrator can change state — write_file,",

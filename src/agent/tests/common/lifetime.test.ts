@@ -61,6 +61,75 @@ describe("CutoffScope", () => {
     scope.cancel("second");
     expect(scope.cancelled).toBe(true);
   });
+
+  /**
+   * Fan-out at runtime scale: 5 levels deep, 5 children per scope — the shape
+   * a deep dispatch/subsession tree takes. Every scope tallies its own abort
+   * via a listener, so the count proves the signal FIRED everywhere, not just
+   * that `cancelled` reads true.
+   */
+  describe("fan-out 5 deep x 5 wide", () => {
+    const FAN_OUT = 5;
+    const DEPTH = 5;
+
+    interface Node {
+      scope: CutoffScope;
+      depth: number;
+      aborted: boolean;
+    }
+
+    const buildTree = (): { root: Node; all: Node[] } => {
+      const root: Node = { scope: new CutoffScope(), depth: 0, aborted: false };
+      const all: Node[] = [root];
+      let frontier = [root];
+      for (let depth = 1; depth <= DEPTH; depth += 1) {
+        const next: Node[] = [];
+        for (const parent of frontier) {
+          for (let i = 0; i < FAN_OUT; i += 1) {
+            const node: Node = {
+              scope: new CutoffScope(parent.scope.signal),
+              depth,
+              aborted: false,
+            };
+            node.scope.signal.addEventListener("abort", () => {
+              node.aborted = true;
+            });
+            next.push(node);
+            all.push(node);
+          }
+        }
+        frontier = next;
+      }
+      return { root, all };
+    };
+
+    // 1 + 5 + 25 + 125 + 625 + 3125
+    const TOTAL = 3906;
+
+    test("root cancel tallies an abort on every descendant", () => {
+      const { root, all } = buildTree();
+      expect(all).toHaveLength(TOTAL);
+      expect(all.some((node) => node.scope.cancelled)).toBe(false);
+
+      root.scope.cancel("cut-everything");
+
+      const fired = all.filter((node) => node.aborted || node === root);
+      expect(fired).toHaveLength(TOTAL);
+      expect(all.every((node) => node.scope.cancelled)).toBe(true);
+    });
+
+    test("mid-tree cancel tallies exactly its own subtree", () => {
+      const { all } = buildTree();
+      const branch = all.find((node) => node.depth === 2)!;
+      branch.scope.cancel("cut-branch");
+
+      // A depth-2 node owns itself + 3 levels below: 1 + 5 + 25 + 125.
+      const cancelled = all.filter((node) => node.scope.cancelled);
+      expect(cancelled).toHaveLength(156);
+      expect(cancelled.every((node) => node.depth >= 2)).toBe(true);
+      expect(all.filter((node) => node.aborted)).toHaveLength(156);
+    });
+  });
 });
 
 describe("settledWithin", () => {
