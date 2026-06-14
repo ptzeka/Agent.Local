@@ -20,7 +20,7 @@ import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
-import type { OrchestratorListener, RunnerListener } from "./runner-events.js";
+import { Eventing } from "../../common/eventing.js";
 import { ContextSnapshot } from "../context/context-loader.js";
 
 // Re-export for backwards compatibility
@@ -45,8 +45,7 @@ export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js
  */
 
 export interface RunOptions {
-  signal?: AbortSignal;
-  onEvent?: RunnerListener;
+  signal: AbortSignal;
   /**
    * Coordinator that lets this run spawn and manage sub-sessions. When present,
    * the orchestrator exposes the synthetic create/status/finalize sub-session
@@ -109,8 +108,12 @@ export class Orchestrator {
    * file at the end of every round; the runtime's finalize() backstops the
    * tail on every exit path.
    */
-  public async run(options: RunOptions = {}): Promise<RunResult> {
-    const emit = options.onEvent ?? (() => {});
+  public async run(options: RunOptions): Promise<RunResult> {
+    // The turn's event bus, chained under the runtime's so everything published
+    // here bubbles up through the runtime to the host (CLI). The turn publishes
+    // directly; the host subscribes via runtime.getEvents() — no onEvent callback.
+    const turnEvents = new Eventing();
+    this.runtime.getEvents().add(turnEvents);
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();
     const modelsRegistry = this.runtime.getModelsRegistry();
@@ -132,7 +135,7 @@ export class Orchestrator {
       );
     }
 
-    await this.maybeSummarize(conversation, emit, options.signal);
+    await this.maybeSummarize(conversation, turnEvents, options.signal);
     // No opening append: every user message for this turn — including the first —
     // arrives through the inbox drain inside the loop (the single injection path).
 
@@ -170,21 +173,19 @@ export class Orchestrator {
     if (this.role !== "executor") {
       const executorMcp = mcpRegistry.getClient("executor");
       if (executorMcp && typeof (executorMcp as unknown as TurnBindable).bindTurn === "function") {
-        (executorMcp as unknown as TurnBindable).bindTurn(
-          options.signal,
-          emit as OrchestratorListener,
-          tracker
-        );
+        // The MCP client's own bus, chained under the turn (parent.add(child)) so
+        // what the executor publishes bubbles up to the turn. Handed to the client
+        // in place of an emit callback — it publishes rather than calls up.
+        const mcpClientEvents = new Eventing();
+        turnEvents.add(mcpClientEvents);
+        (executorMcp as unknown as TurnBindable).bindTurn(options.signal, tracker, mcpClientEvents);
       }
     }
 
-    emit({
-      type: OrchestratorEventTypes.START,
-      data: {
-        orchestratorModel: provider.modelId,
-        orchestratorTools: visibleTools,
-        readToolCount: visibleTools.length,
-      },
+    turnEvents.publish(OrchestratorEventTypes.START, {
+      orchestratorModel: provider.modelId,
+      orchestratorTools: visibleTools,
+      readToolCount: visibleTools.length,
     });
 
     const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
@@ -212,7 +213,7 @@ export class Orchestrator {
     const temperature = this.role === "executor" ? executorTemperature! : orchestratorTemperature!;
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-      if (options.signal?.aborted) {
+      if (options.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
 
@@ -223,7 +224,7 @@ export class Orchestrator {
         const injected: ChatMessage = { role: "user", content: text };
         conversation.append(injected);
         workingMessages.push(injected);
-        emit({ type: OrchestratorEventTypes.INJECTED_INPUT, data: { iteration, content: text } });
+        turnEvents.publish(OrchestratorEventTypes.INJECTED_INPUT, { iteration, content: text });
       }
       if (turnRequest === null && injectedPrompts.length > 0) {
         turnRequest = injectedPrompts.join("\n");
@@ -240,7 +241,7 @@ export class Orchestrator {
         };
       }
 
-      emit({ type: OrchestratorEventTypes.ITERATION, data: { iteration, max: maxIterations } });
+      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
 
       // Re-assert the request as the LAST message of every chat call (transient,
       // never pushed) so the model stays anchored as the transcript grows — the
@@ -266,16 +267,13 @@ export class Orchestrator {
 
       foldCounters(session.counters, response.usage);
 
-      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, emit);
+      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, turnEvents);
 
-      emit({
-        type: OrchestratorEventTypes.MESSAGE,
-        data: {
-          iteration,
-          content: assistantMessage.content,
-          toolCallCount: toolCalls.length,
-          usage: response.usage,
-        },
+      turnEvents.publish(OrchestratorEventTypes.MESSAGE, {
+        iteration,
+        content: assistantMessage.content,
+        toolCallCount: toolCalls.length,
+        usage: response.usage,
       });
 
       conversation.append(assistantMessage);
@@ -297,7 +295,7 @@ export class Orchestrator {
           turnRequest,
           assistantMessage.content,
           workingMessages.slice(turnStartIndex),
-          emit,
+          turnEvents,
           options.signal
         );
 
@@ -313,7 +311,7 @@ export class Orchestrator {
         // Terminal failure: the evaluator judged the request unrecoverable.
         // Stop trying rather than nudge-and-loop until the cap.
         if (verdict.state === "failed") {
-          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, emit);
+          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
         }
 
         // Nudges quote the request verbatim to prevent goal drift.
@@ -346,7 +344,7 @@ export class Orchestrator {
         const execution: ToolExecutionResult = await scopedClient.callTool(
           call.name,
           call.arguments,
-          emit,
+          turnEvents,
           options.signal
         );
         // Tools that ran a model of their own (executor dispatch) report the
@@ -368,11 +366,11 @@ export class Orchestrator {
           turnRequest,
           "(in-progress checkpoint — no final answer yet)",
           workingMessages.slice(turnStartIndex),
-          emit,
+          turnEvents,
           options.signal
         );
         if (verdict.state === "failed") {
-          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, emit);
+          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
         }
         if (verdict.state === "unsatisfied") {
           const nudge: ChatMessage = {
@@ -400,9 +398,9 @@ export class Orchestrator {
         "Try a narrower request or raise maxOrchestratorIterations in models.json.",
     };
     conversation.append(truncationNotice);
-    emit({
-      type: OrchestratorEventTypes.WARNING,
-      data: { message: `${this.role} hit iteration cap`, iterations: maxIterations },
+    turnEvents.publish(OrchestratorEventTypes.WARNING, {
+      message: `${this.role} hit iteration cap`,
+      iterations: maxIterations,
     });
     return {
       finalMessage: truncationNotice,
@@ -424,22 +422,22 @@ export class Orchestrator {
     iterations: number,
     dispatches: number,
     conversation: Conversation,
-    emit: RunnerListener
+    events: Eventing
   ): Promise<RunResult> {
     const failureNotice: ChatMessage = {
       role: "assistant",
       content: `SYSTEM-FAILURE: failed to complete request — ${reason}`,
     };
     conversation.append(failureNotice);
-    emit({ type: OrchestratorEventTypes.SYSTEM_FAILURE, data: { reason } });
+    events.publish(OrchestratorEventTypes.SYSTEM_FAILURE, { reason });
     await conversation.flush();
     return { finalMessage: failureNotice, iterations, dispatches, outcome: "failed" };
   }
 
   private async maybeSummarize(
     conversation: Conversation,
-    emit: RunnerListener,
-    signal?: AbortSignal
+    events: Eventing,
+    signal: AbortSignal
   ): Promise<void> {
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
     const threshold = config.orchestration.summarizeAtMessages!;
@@ -453,19 +451,15 @@ export class Orchestrator {
     const prefix = messages.slice(0, tailStart);
     const tail = messages.slice(tailStart);
 
-    emit({
-      type: OrchestratorEventTypes.SUMMARIZATION_START,
-      data: { messageCount: prefix.length },
-    });
+    events.publish(OrchestratorEventTypes.SUMMARIZATION_START, { messageCount: prefix.length });
 
     let summaryText: string;
     try {
       const summarizer = new Summarizer(this.runtime);
       summaryText = await summarizer.summarize(prefix, { signal });
     } catch (err) {
-      emit({
-        type: OrchestratorEventTypes.WARNING,
-        data: { message: `summarization failed: ${(err as Error).message}` },
+      events.publish(OrchestratorEventTypes.WARNING, {
+        message: `summarization failed: ${(err as Error).message}`,
       });
       return;
     }
@@ -474,13 +468,10 @@ export class Orchestrator {
 
     await conversation.replaceAll([summaryMessage, ...tail]);
 
-    emit({
-      type: OrchestratorEventTypes.SUMMARIZATION,
-      data: {
-        summarizedCount: prefix.length,
-        keptCount: tail.length,
-        summaryChars: summaryText.length,
-      },
+    events.publish(OrchestratorEventTypes.SUMMARIZATION, {
+      summarizedCount: prefix.length,
+      keptCount: tail.length,
+      summaryChars: summaryText.length,
     });
   }
 
@@ -488,10 +479,10 @@ export class Orchestrator {
     question: string,
     proposedAnswer: string,
     transcript: ChatMessage[],
-    emit: OrchestratorListener,
+    events: Eventing,
     signal?: AbortSignal
   ): Promise<EvaluationVerdict> {
-    emit({ type: OrchestratorEventTypes.EVALUATION_START, data: {} });
+    events.publish(OrchestratorEventTypes.EVALUATION_START, {});
 
     try {
       const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
@@ -500,16 +491,15 @@ export class Orchestrator {
         { question, proposedAnswer, transcript },
         { signal, temperature: config.orchestration.evaluatorTemperature }
       );
-      emit({
-        type: OrchestratorEventTypes.EVALUATION_VERDICT,
-        data: { state: verdict.state, reason: verdict.reason },
+      events.publish(OrchestratorEventTypes.EVALUATION_VERDICT, {
+        state: verdict.state,
+        reason: verdict.reason,
       });
       return verdict;
     } catch (err) {
       // Fail open — never trap the user because the judge errored.
-      emit({
-        type: OrchestratorEventTypes.WARNING,
-        data: { message: `evaluation failed, treating as satisfied: ${(err as Error).message}` },
+      events.publish(OrchestratorEventTypes.WARNING, {
+        message: `evaluation failed, treating as satisfied: ${(err as Error).message}`,
       });
       return { state: "satisfied", reason: "evaluator error; defaulting to satisfied" };
     }
@@ -549,7 +539,7 @@ export class Orchestrator {
   private normaliseAssistantTurn(
     provider: LLMProvider,
     response: ChatResponse,
-    emit: OrchestratorListener
+    events: Eventing
   ): { assistantMessage: ChatMessage; toolCalls: ToolCall[] } {
     if (provider.supportsNativeTools) {
       const nativeCalls = response.message.toolCalls ?? [];
@@ -559,14 +549,11 @@ export class Orchestrator {
 
       const { toolCalls: recoveredCalls, cleanedContent } = extractPromptedToolCalls(response.message);
       if (recoveredCalls.length > 0) {
-        emit({
-          type: OrchestratorEventTypes.WARNING,
-          data: {
-            message:
-              "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
-            model: provider.modelId,
-            recoveredCount: recoveredCalls.length,
-          },
+        events.publish(OrchestratorEventTypes.WARNING, {
+          message:
+            "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
+          model: provider.modelId,
+          recoveredCount: recoveredCalls.length,
         });
         return {
           assistantMessage: {

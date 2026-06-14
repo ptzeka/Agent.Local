@@ -237,6 +237,22 @@ generation looks hung to the user.
 - [ ] Surface token deltas through a runner event (`MESSAGE_DELTA`) the CLI/SSE
       layer can render incrementally; keep the collected final message unchanged
       for transcript/append.
+- [ ] Gate delta emission on a `streamOutput` feature flag (M6-1) resolved by
+      mode: interactive `chat` streams deltas; `standalone`/`api` default to
+      collect-only (SSE callers opt in). Mode comes from the runtime, the flag
+      value from the registry — no ad-hoc `if (isCli)` checks in the provider.
+
+### M1-12 · Output token-limit continuation — `~0.5d` · P2
+Don't break on *output* token-limit hits. When a response stops on `max_tokens`
+the generation was cut off, not finished, but the loop takes the truncated
+message as-is. (Input-side overflow is M1-8; this is the output side.)
+- [ ] Detect `stop_reason: "max_tokens"` (Anthropic) / the Gemini equivalent at
+      the provider boundary and expose it on `ChatResponse`.
+- [ ] On a truncated stop, continue the generation (append the partial as an
+      assistant turn and re-ask, or raise per-call `maxTokens`) before treating
+      it as final — never let a cut-off response satisfy completion.
+- [ ] Test: a fake provider returning a `max_tokens` stop then a clean finish
+      yields one coherent assistant message, not a truncated turn.
 
 ---
 
@@ -479,6 +495,26 @@ no progress state.
 
 **Done when:** the role branches in `Orchestrator.run` are gone (collapsed onto
 CompletionGate) and a tool-free, non-declaring turn no longer terminates the loop.
+
+---
+
+## M6 — Feature-flag registry (≈ 1–1.5 days)
+
+### M6-1 · Flag registry + retrieval — `~1d` · P2
+A central place to define and resolve feature flags, mirroring the existing
+config registries (`ModelRegistry`, planned `PolicyRegistry`) — so toggles like
+the streaming mode flag (M1-11) live in one artifact, not scattered booleans and
+`process.env` reads.
+- [ ] `flags.json` (sibling of `models.json`):
+      `{ <flag>: { default, byMode?, byRole? } }`; `FlagRegistry.load()` +
+      `isEnabled(flag, ctx)` / `get(flag, ctx)` resolving against runtime mode
+      and (later, via M2) the principal's policy.
+- [ ] Expose via a `FlagsMiddleware` stamping `ctx.flags`; runners and providers
+      read flags through it, never `process.env` ad hoc.
+- [ ] First consumers: `streamOutput` (M1-11); fold in any new loop toggle (e.g.
+      the M1-9 stagnation break) so it graduates from config constant to a flag.
+- [ ] Test: a flag resolves to different values by mode; an unknown flag returns
+      its declared default, not `undefined`.
 
 ---
 

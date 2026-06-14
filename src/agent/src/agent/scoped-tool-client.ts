@@ -1,11 +1,11 @@
-import type { RunnerListener } from "./runners/runner-events.js";
 import { OrchestratorEventTypes } from "./runners/runner-events.js";
+import type { Eventing } from "../common/eventing.js";
 import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
 import type { ToolDescriptor } from "./providers/provider.js";
 
 /**
  * Routes `<server>__<tool>` calls to the correct in-process MCP server and
- * emits TOOL_CALL / TOOL_RESULT events for the REPL renderer.
+ * publishes TOOL_CALL / TOOL_RESULT events for the REPL renderer.
  *
  * Path confinement is NOT the responsibility of this class. Each synthetic fs
  * server is constructed with its workspace segment as root (sandboxRoot +
@@ -35,7 +35,7 @@ export class ScopedToolClient implements ToolInvoker {
   public async callTool(
     name: string,
     args: Record<string, unknown>,
-    emit?: RunnerListener,
+    events?: Eventing,
     signal?: AbortSignal
   ): Promise<ToolExecutionResult> {
     const resolved = this.resolve(name);
@@ -45,13 +45,15 @@ export class ScopedToolClient implements ToolInvoker {
 
     const { client, toolTail } = resolved;
 
-    emit?.({ type: OrchestratorEventTypes.TOOL_CALL, data: { id: "", name, arguments: args } });
+    events?.publish(OrchestratorEventTypes.TOOL_CALL, { id: "", name, arguments: args });
     // Timeout policy lives in the server (it wraps this signal in its own
     // CancellationToken); the client only routes and forwards the turn's signal.
     const result = await client.callTool(toolTail, args, signal);
-    emit?.({
-      type: OrchestratorEventTypes.TOOL_RESULT,
-      data: { id: "", name, isError: result.isError, contentPreview: result.content.slice(0, 400) },
+    events?.publish(OrchestratorEventTypes.TOOL_RESULT, {
+      id: "",
+      name,
+      isError: result.isError,
+      contentPreview: result.content.slice(0, 400),
     });
     return result;
   }

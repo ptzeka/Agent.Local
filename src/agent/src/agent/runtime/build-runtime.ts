@@ -1,6 +1,7 @@
 import { buildSubRuntime } from "./build-sub-runtime.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { AnonymousMiddleware } from "./middleware/anonymous.js";
+import { EventingMiddleware } from "./middleware/eventing.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { ConversationMiddleware } from "./middleware/conversation.js";
@@ -38,6 +39,7 @@ import { ModelsMiddleware } from "./middleware/models.js";
  */
 export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentRuntime {
     return new AgentRuntime(deps)
+    .add(new EventingMiddleware({ parent: deps.eventing }))
     .add(new LoggerMiddleware())
     .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
     .add(new ProvidersMiddleware())

@@ -11,7 +11,6 @@ import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
 import type { SubSessionNotification, SubSessionNotificationListener } from "../runners/subsession.js";
 import { TurnRunner, type TurnRunnerListener, type TurnSource } from "../runners/turn-runner.js";
-import type { RunnerListener } from "../runners/runner-events.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
@@ -19,6 +18,7 @@ import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Logger } from "../../common/logger.js";
 import { CancellationToken, settledWithin } from "../../common/lifetime.js";
+import { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
 
@@ -52,7 +52,7 @@ export interface CompactResult {
  *     .build();
  *
  * Per-turn operations:
- *   await runtime.dispatchAsync(input, { onEvent });
+ *   await runtime.dispatchAsync(input);   // turn events flow out via getEvents()
  *   runtime.injectInput(content);
  *   await runtime.finalize();     // explicit persist (called automatically by dispatchAsync)
  *   await runtime.reset();
@@ -96,6 +96,9 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   /** This runtime's cutoff in the cancellation chain — parent of every turn,
    *  sub-session, and MCP client it owns. */
   private readonly scope: CancellationToken;
+  /** This runtime's bus in the event chain — the upward mirror of `scope`,
+   *  built and chained under the host's bus by EventingMiddleware during build(). */
+  private events!: Eventing;
   /** First shutdown() call wins; later callers join its promise. */
   private shutdownPromise: Promise<void> | null = null;
 
@@ -129,6 +132,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
       runtimeSignal: this.scope.signal,
+      eventing: undefined,
       configurationRegistry: undefined,
       modelsRegistry: undefined,
       mcpRegistry: undefined,
@@ -151,6 +155,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     // Every owned field must have been set by a pipeline step. Report all gaps
     // at once so a misordered/incomplete pipeline is easy to fix.
     const missing = [
+      !ctx.eventing && "eventing (EventingMiddleware)",
       !ctx.logger && "logger (LoggerMiddleware)",
       !ctx.store && "store (StoreMiddleware)",
       !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
@@ -168,6 +173,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       );
     }
 
+    this.events = ctx.eventing!;
     this.configurationRegistry = ctx.configurationRegistry!;
     this.logger = ctx.logger!;
     this.modelsRegistry = ctx.modelsRegistry!;
@@ -203,7 +209,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    * counter, and calls finalize() in the finally block so every exit path
    * (clean, capped, thrown) persists the session.
    */
-  async dispatchAsync(input?: string, options: RunOptions = {}): Promise<RunResult> {
+  async dispatchAsync(input: string, options: RunOptions): Promise<RunResult> {
     if (this.session.status === "running") {
       throw new Error(`Session "${this.session.sessionId}" is already running a turn.`);
     }
@@ -217,6 +223,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
 
     this.session.status = "running";
+    this.events.publish("runtime-status", { sessionId: this.session.sessionId, status: "running" });
 
     const runOptions: RunOptions = {
       ...options,
@@ -228,6 +235,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       const result = await this.orchestrator.run(runOptions);
       this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
       this.session.counters.turns += 1;
+      this.events.publish("runtime-status", {
+        sessionId: this.session.sessionId,
+        status: this.session.status,
+        outcome: result.outcome,
+      });
       return result;
     } catch (err) {
       // A user stop is an abandonment, not a failure — the session must come
@@ -261,16 +273,17 @@ export class AgentRuntime implements AgentRuntimeQueryable {
    * way the report enters the conversation, so the orchestrator actually
    * reasons over the child's result instead of it dying in a log line.
    *
-   * Idempotent; `onEvent` is bound on first call. Headless single runs simply
-   * never call this and keep the direct dispatchAsync path.
+   * Idempotent. Turn events reach the host via the runtime's bus (getEvents),
+   * not a callback; only scheduling events use onTurnEvent. Headless single runs
+   * simply never call this and keep the direct dispatchAsync path.
    */
-  startTurnLoop(options: { onEvent?: RunnerListener; onTurnEvent?: TurnRunnerListener } = {}): TurnRunner {
+  startTurnLoop(options: { onTurnEvent?: TurnRunnerListener } = {}): TurnRunner {
     if (this.turnRunner) return this.turnRunner;
 
     this.turnRunner = new TurnRunner(
       async (signal) => {
         // Contentless: the dispatch drains the inbox itself for this turn's input.
-        const result = await this.dispatchAsync(undefined, { onEvent: options.onEvent, signal });
+        const result = await this.dispatchAsync('', { signal });
         return { outcome: result.outcome };
       },
       {
@@ -540,6 +553,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
   getLogger(): Logger {
     return this.logger;
+  }
+
+  /** This runtime's event bus — host subscribes here (or chains it under its own). */
+  getEvents(): Eventing {
+    return this.events;
   }
 
   // --------------------------------------------------------------------------

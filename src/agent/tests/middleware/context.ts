@@ -33,6 +33,7 @@ export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeCon
     configPath: "/tmp/models.json",
     credentials: {},
     runtimeSignal: new AbortController().signal,
+    eventing: undefined,
     providerRegistry: undefined,
     modelsRegistry: undefined,
     configurationRegistry: undefined,

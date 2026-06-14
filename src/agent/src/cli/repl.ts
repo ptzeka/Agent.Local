@@ -4,6 +4,7 @@ import chalk from "chalk";
 
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import type { ModelRegistry } from "../agent/registries/model-registry.js";
+import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { formatEvent, formatSubSessionNotification, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
@@ -55,14 +56,18 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     ui.write(formatSubSessionNotification(notification));
   });
 
+  // Turn events arrive on the runtime's bus (the turn publishes; we subscribe),
+  // not through a callback. Map the bus shape {type,payload} to the renderer's
+  // {type,data} at this single boundary.
+  const unsubEvents = runtime.getEvents().subscribe((event) =>
+    ui.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent))
+  );
+
   // All turns flow through the runner's single pump: the REPL SUBMITS user
   // input fire-and-forget (the prompt never blocks), and settling sub-sessions
   // auto-wake the session through the same queue — no producer ever races the
   // dispatchAsync running-guard.
   const turnRunner = runtime.startTurnLoop({
-    onEvent: (event) => {
-      ui.write(formatEvent(event));
-    },
     onTurnEvent: (event) => {
       if (event.type === "turn-start") {
         ui.write(formatTurnEvent(event));
@@ -138,6 +143,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   });
 
   await runtime.stopTurnLoop();
+  unsubEvents();
   unsubscribe();
   rl.close();
 

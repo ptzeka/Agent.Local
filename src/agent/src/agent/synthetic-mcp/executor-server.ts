@@ -5,12 +5,12 @@ import { LocalMcp } from "../mcp/local-mcp.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { McpClientRegistry } from "../registries/index.js";
 import type { RuntimeContext } from "../runtime/types.js";
-import type { OrchestratorListener } from "../runners/runner-events.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 import { CancellationToken } from "../../common/lifetime.js";
+import { Eventing } from "../../common/eventing.js";
 
 /**
  * ExecutorLocalMcp — in-process MCP server for executor coordination:
@@ -43,8 +43,10 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
 
   // Per-turn context — set by the orchestrator before each user turn.
   private turnSignal: AbortSignal | undefined = undefined;
-  private turnEmit: OrchestratorListener = () => {};
   private turnTracker: DispatchTracker | undefined = undefined;
+  // The turn's MCP bus: we PUBLISH up it instead of calling an emit callback.
+  // Defaulted so an unbound turn (the executor sub-run never binds) is a no-op.
+  private turnEvents: Eventing = new Eventing();
 
   constructor(
     private readonly ctx: RuntimeContext,
@@ -72,17 +74,17 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
 
   /**
    * Called by the orchestrator at the start of every turn that may dispatch.
-   * Binds the current abort signal, event emitter, and dispatch tracker so
-   * the executor sub-run shares them without needing them in the tool args.
+   * Binds the current abort signal, event bus, and dispatch tracker so the
+   * executor sub-run shares them without needing them in the tool args.
    */
   public bindTurn(
     signal: AbortSignal | undefined,
-    emit: OrchestratorListener,
-    tracker: DispatchTracker
+    tracker: DispatchTracker,
+    events: Eventing
   ): void {
     this.turnSignal = signal;
-    this.turnEmit = emit;
     this.turnTracker = tracker;
+    this.turnEvents = events;
   }
 
   /**
@@ -123,7 +125,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     if (tracker) {
       const reservation = tracker.reserve();
       if (!reservation.ok) {
-        this.turnEmit({ type: "warning", data: { message: reservation.reason } });
+        this.turnEvents.publish(OrchestratorEventTypes.WARNING, { message: reservation.reason });
         return { isError: true, content: `[dispatch-blocked] ${reservation.reason}` };
       }
 
@@ -180,10 +182,9 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       `Args: ${JSON.stringify(toolArgs, null, 2)}\n` +
       `Intent: ${intent}`;
 
-    this.turnEmit({
-      type: OrchestratorEventTypes.DISPATCH_START,
-      data: { tool, intent, args: toolArgs },
-    });
+    // Publish up the MCP bus instead of an emit callback: this bubbles
+    // mcpClientEvents → turnEvents → runtime → host (CLI).
+    this.turnEvents.publish(OrchestratorEventTypes.DISPATCH_START, { tool, intent, args: toolArgs });
 
     // Brand-new child runtime per dispatch: own session (parent-linked, fresh
     // id), own registries and context snapshot, persisted by its own store.
@@ -211,7 +212,6 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       }
     );
 
-    const emit = this.turnEmit;
     let content: string;
     let ok: boolean;
     let iterations = 0;
@@ -220,15 +220,23 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
 
     try {
       runtime = await childRuntime.build();
-      const result = await runtime.dispatchAsync(askMessage, {
-        signal,
-        // Forward executor sub-run events so the REPL can render them.
-        onEvent: (event) =>
-          emit({ type: "executor-event", data: { ...event.data, kind: event.type } }),
-      });
-      content = result.finalMessage.content;
-      ok = result.outcome === "satisfied";
-      iterations = result.iterations;
+      // The child is its own event root; bridge its turn events up as
+      // `executor-event` so the renderer tags them as the sub-run's, not the
+      // parent's. This is the MCP-bus link the parent reaches the child through.
+      const detach = runtime.getEvents().subscribe((event) =>
+        this.turnEvents.publish(OrchestratorEventTypes.EXECUTOR_EVENT, {
+          ...event.payload,
+          kind: event.type,
+        })
+      );
+      try {
+        const result = await runtime.dispatchAsync(askMessage, { signal });
+        content = result.finalMessage.content;
+        ok = result.outcome === "satisfied";
+        iterations = result.iterations;
+      } finally {
+        detach();
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       content = `[executor-error] ${msg}`;
@@ -244,15 +252,12 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       tracker.recordSuccess(dispatchSignature({ tool, args: toolArgs, intent }));
     }
 
-    emit({
-      type: OrchestratorEventTypes.DISPATCH_FEEDBACK,
-      data: {
-        ok,
-        ack: extractFirstLine(content, "EXECUTOR: ACK"),
-        evidence: extractFirstLine(content, "EXECUTOR: RESULT"),
-        deterministicVerdict: "unverified",
-        iterations,
-      },
+    this.turnEvents.publish(OrchestratorEventTypes.DISPATCH_FEEDBACK, {
+      ok,
+      ack: extractFirstLine(content, "EXECUTOR: ACK"),
+      evidence: extractFirstLine(content, "EXECUTOR: RESULT"),
+      deterministicVerdict: "unverified",
+      iterations,
     });
 
     return { isError: !ok, content, usage };

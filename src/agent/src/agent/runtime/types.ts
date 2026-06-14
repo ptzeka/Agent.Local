@@ -8,6 +8,7 @@ import type { SessionManager } from "../session/session-manager.js";
 import type { SessionStore } from "../session/session-store.js";
 import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { Logger } from "../../common/logger.js";
+import type { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
@@ -22,6 +23,9 @@ export interface AgentRuntimeQueryable {
   getMcpClientRegistry(): McpClientRegistry;
   getContextLoader(): ContextLoader;
   getLogger(): Logger;
+  /** This runtime's event bus — a turn chains its own bus under it and publishes
+   *  there, so turn events bubble up through the runtime to the host. */
+  getEvents(): Eventing;
 }
 
 export interface AgentRuntimeDeps {
@@ -35,6 +39,11 @@ export interface AgentRuntimeDeps {
   /** Cancellation chain link — an ancestor cancel reaches everything this
    *  runtime owns. Omitted, the runtime is its own root. */
   parentSignal?: AbortSignal;
+  /** Parent event bus — the host's. The runtime chains its OWN bus under this
+   *  (parent.add(child)), so its events bubble up to the host. The event mirror
+   *  of parentSignal: cancellation flows down, events bubble up. Omitted, the
+   *  runtime's bus is its own root with no upward consumer. */
+  eventing?: Eventing;
 }
 
 export interface RuntimeContext {
@@ -49,6 +58,9 @@ export interface RuntimeContext {
   /** Owning runtime's scope signal — steps hand it to resources that must die
    *  with the runtime (MCP clients, sub-session children). */
   readonly runtimeSignal: AbortSignal;
+  /** This runtime's event bus, chained under the host's by EventingMiddleware —
+   *  the upward mirror of runtimeSignal. Steps and the orchestrator publish here. */
+  eventing: Eventing | undefined;
   providerRegistry: ProvidersRegistry | undefined;
   modelsRegistry: ModelRegistry | undefined;
   configurationRegistry: ConfigurationRegistry | undefined;

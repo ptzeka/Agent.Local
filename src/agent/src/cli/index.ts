@@ -24,8 +24,10 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
+import { Eventing } from "../common/eventing.js";
 
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
+import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { parseArgs } from "./args.js";
 import { bannerSessionOf, runRepl } from "./repl.js";
@@ -138,6 +140,7 @@ async function bootstrap(): Promise<Bootstrap> {
  **/
 function buildRuntime(
   boot: Bootstrap,
+  eventing: Eventing,
   sessionId?: string
 ): AgentRuntime {
   const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
@@ -151,6 +154,9 @@ function buildRuntime(
     credentials: token ? { token } : {},
     orchestratorRole: "orchestrator",
     parentSignal: boot.rootSignal,
+    // The host's bus: the runtime chains its own under this, so runtime events
+    // bubble up here to the CLI.
+    eventing,
   };
   return buildRuntimeRef(deps, sessionId);
 }
@@ -166,7 +172,13 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const saved = await AgentRuntime.listSavedSessions(sessionsDir);
   const choice = await pickSession(saved);
 
-  const runtime = await buildRuntime(boot, choice.kind === "resume" ? choice.sessionId : undefined).build();
+  // Host bus the runtime chains under. The REPL owns the terminal via PromptUI
+  // and is the SOLE writer; no out-of-band status line here — a raw write to the
+  // shared TTY desyncs PromptUI's cursor math and eats the turn-event output.
+  // Activity is already shown by the spinner; completion by the turn events.
+  const eventing = new Eventing();
+
+  const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined).build();
   boot.registerRuntime(runtime);
 
   // Drain any sub-sessions that outlive a turn before the REPL exits.
@@ -202,7 +214,13 @@ async function runHeadless(
   sessionId?: string
 ): Promise<number> {
   try {
-    const runtime = await buildRuntime(boot, sessionId).build();
+    // Host bus — same role as interactive; progress already goes to stderr here.
+    const eventing = new Eventing();
+    eventing.subscribe("runtime-status", (e) =>
+      process.stderr.write(chalk.gray(`[runtime] ${String(e.payload.status)}\n`))
+    );
+
+    const runtime = await buildRuntime(boot, eventing, sessionId).build();
     boot.registerRuntime(runtime);
 
     const unsubscribe = runtime.onSubSessionEvent((notification) =>
@@ -211,10 +229,16 @@ async function runHeadless(
 
     process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 
+    // Turn events arrive on the runtime's bus; map {type,payload} to the
+    // renderer's {type,data} at this boundary. Progress is on stdout here.
+    const unsubEvents = runtime.getEvents().subscribe((event) =>
+      process.stdout.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent))
+    );
+
     try {
-      const result = await runtime.dispatchAsync(input, {
-        onEvent: (event) => process.stdout.write(formatEvent(event)),
-      });
+      // The process root is the turn's cutoff: SIGINT/SIGTERM abort it (via the
+      // bootstrap handlers), cutting the in-flight model/tool/sub-run awaits.
+      const result = await runtime.dispatchAsync(input, { signal: boot.rootSignal });
       await runtime.awaitSubSessions();
       process.stdout.write(result.finalMessage.content + "\n");
       // Same identity summary the REPL prints on exit; stderr keeps stdout
@@ -228,6 +252,7 @@ async function runHeadless(
           ? EXIT_FAILED
           : EXIT_CAPPED;
     } finally {
+      unsubEvents();
       unsubscribe();
       // Cancels the runtime scope so token-holding resources release before exit.
       await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });

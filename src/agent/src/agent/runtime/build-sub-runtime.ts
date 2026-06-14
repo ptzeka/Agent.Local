@@ -1,6 +1,7 @@
 import type { SubRuntimeRefs } from "../runners/subsession.js";
 import { AgentRuntime } from "./agent-runtime.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
+import { EventingMiddleware } from "./middleware/eventing.js";
 import { ChildSessionMiddleware } from "./middleware/child-session.js";
 import { ContextMiddleware } from "./middleware/context.js";
 import { ConversationMiddleware } from "./middleware/conversation.js";
@@ -40,6 +41,9 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     parentSignal: refs.parentSignal ?? deps.parentSignal,
   };
   return new AgentRuntime(childDeps)
+    // No parent bus: a child is its own event root. Its events reach the parent
+    // through the executor MCP bridge onto the turn, not by inheriting the host's.
+    .add(new EventingMiddleware())
     .add(new LoggerMiddleware())
     .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
     .add(new ProvidersMiddleware())
