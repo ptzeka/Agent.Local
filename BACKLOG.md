@@ -524,6 +524,57 @@ others map to session/runtime actions. Builds on the existing inject seam
 `[system] stop`, the loop halts the in-flight turn deterministically, and the
 command vocabulary in the initial context prompt is sourced from the registry.
 
+### M5-4 · Core turn-tools for sub-session control instructions — `~1d` · P2
+The model-facing sub-session tools exist (`list_subsessions`,
+`finalize_subsession` = stop-by-id, in `synthetic-mcp/subsessions-tools/`), but
+the M5-3 `[system]` instruction path only wires parent-session verbs (`stop`,
+`list sessions`, `compact`). A `[system] list sessions` (or `stop <subSessionId>`)
+injected from the host has no deterministic core handler — it falls through to
+the model instead of acting on the `SubSessionCoordinator` directly.
+- [ ] Map `[system]` sub-session verbs to coordinator calls in the core
+      instruction handler (M5-3 registry): `list sub-sessions` →
+      `coordinator.list(sessionId)`, `stop <id>` →
+      `coordinator.finalize(sessionId, id)` — no model round-trip.
+- [ ] Reuse the existing coordinator seam (no new chokepoint); the synthetic
+      tools and the `[system]` handler share one code path so model-driven and
+      host-driven control can't diverge.
+- [ ] Surface results via the same notification seam the REPL already uses for
+      out-of-band sub-session events.
+- [ ] Tests: injected `[system] list sessions` returns sub-session summaries
+      without entering the model; `[system] stop <id>` finalizes that child and
+      leaves siblings running.
+
+**Done when:** an injected `[system] list sessions` lists the active
+sub-sessions deterministically and `[system] stop <id>` finalizes that child,
+both without a model round-trip and sharing the synthetic tools' coordinator path.
+
+### M5-5 · Evaluator scoped to last intent; ambiguous input ⇒ nothing to evaluate — `~0.5d` · P2
+The evaluator judges against the *last* intent only, but on an ambiguous
+opener it over-reaches into clarification. Observed: request "create it again
+the same way" with no prior context returned
+`EVALUATOR: AWAITING-INPUT — "it"/"the same way" are ambiguous…`. That is the
+*orchestrator's* job (it owns the user conversation); the evaluator demanding
+clarification means it is reasoning about missing conversation history it
+should never see. When the intent it is handed is not concretely evaluable,
+the correct conclusion is "nothing to evaluate" — not a clarification request.
+- [ ] Evaluator prompt + contract: scope strictly to the last intent and the
+      work done this turn; it has no standing conversation/backlog and must not
+      infer one. AWAITING-INPUT stays reserved for when the PROPOSED ANSWER is
+      itself a question (rule 1) — never minted by the evaluator from an
+      ambiguous *request*.
+- [ ] Add an explicit "nothing to evaluate" outcome (or fold into SATISFIED with
+      a no-op reason) for a request too underspecified to score, so the turn
+      ends back at the orchestrator/user rather than the evaluator blocking on
+      its own ambiguity (`runners/evaluator.ts`, `context/system-prompt.ts`
+      ~L240 rule 1).
+- [ ] Test: "create it again the same way" with empty/again-only context does
+      NOT yield evaluator-originated AWAITING-INPUT; it returns the
+      nothing-to-evaluate outcome and the turn defers to the orchestrator.
+
+**Done when:** an ambiguous, context-free request no longer produces an
+evaluator-minted AWAITING-INPUT clarification, and the evaluator's verdict is
+derived only from the last intent + this turn's transcript.
+
 ---
 
 ## M6 — Feature-flag registry (≈ 1–1.5 days)
