@@ -3,12 +3,9 @@ import { describe, expect, test } from "@jest/globals";
 import { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ModelsFile } from "../../src/agent/registries/configuration-registry.js";
 
-/**
- * ModelRegistry: maps logical roles onto declared models and exposes each role
- * model's per-model MCP server whitelist (the `mcp` array from models.json).
- * Loading/parsing now lives in ConfigurationRegistry, so the registry is
- * constructed directly from an in-memory ModelsFile here.
- */
+// maps logical roles onto declared models and exposes each role model's per-model MCP server whitelist
+// (the `mcp` array from models.json); loading/parsing lives in ConfigurationRegistry, so the registry is
+// constructed directly from an in-memory ModelsFile here
 
 const base = { provider: "ollama", model: "x", supportsTools: true };
 

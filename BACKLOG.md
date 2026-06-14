@@ -527,9 +527,40 @@ Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
 - [ ] **MR-3** · `SyntheticToolSet` for dispatch_executor/subsessions/excel;
       delete `refreshTurnServers` + role methods from `McpClientRegistry`
       (registry becomes a neutral transport) — `~2d`
-- [ ] **MR-4** · `AgentRuntime.beginTurn()` → `TurnContext`; decompose
-      `Orchestrator.run` (loop / CompletionGate / normalization →
-      tool-adapter); usage accounting moves to TurnContext (closes M1-2) — `~2.5d`
+- [ ] **MR-4** · Turn/round middleware — solid core loop, injectable
+      behavior — `~3d`
+  - **Goal:** `Orchestrator.run` shrinks to a stable stepper that owns
+    nothing but the shape of execution: `resolve → for each round { model
+    call → tool dispatch } → settle`. Every behavior that today is welded
+    inline (`runners/orchestrator.ts`) — summarization, evaluator gate,
+    nudge injection, `DispatchTracker`, usage folding, abort checks —
+    becomes a middleware unit composed *around* the loop, never edited
+    into it. Adding a behavior must touch no core-loop file.
+  - **Two pipelines, same `(ctx, next)` contract as runtime `IMiddleware`**
+    so the pattern is uniform across the codebase, just execution-scoped
+    instead of build-scoped:
+    - `TurnMiddleware` wraps one whole `run()` (one user prompt → final
+      answer). Migrate here: `maybeSummarize`, subsessions rebind, `START`
+      event, end-of-turn usage fold-back (**closes M1-2**), finalize.
+    - `RoundMiddleware` wraps one loop iteration (one model call + its tool
+      execs — the unit the code already calls a "round"). Migrate here:
+      injected-prompt drain, `CompletionGate`/evaluator verdict + nudge,
+      periodic `DispatchTracker` check, per-call usage fold, budget
+      (M1-3) and stagnation (M1-9) as drop-in units.
+  - `AgentRuntime.beginTurn()` → `TurnContext` (and a per-round
+    `RoundContext`) carry the shared mutable state — working messages,
+    usage, tracker, signal, verdict — that middleware reads/writes,
+    replacing today's closure-captured locals. Registered via the
+    `Container`/tokens DI seam (`getAll(MiddlewareToken)`), order-sensitive,
+    each unit declaring fail-open vs fail-closed.
+  - Decompose the leftover core helpers (assistant-turn normalization →
+    tool-adapter; the `role === "executor"` branches collapse onto the
+    gate per M5-1).
+  - **Done when:** `run()` is a thin core (<~80 lines) with zero
+    role/eval/summarize/budget branches; evaluator, summarizer, dispatch
+    cap, and usage accounting each live in their own middleware unit-tested
+    in isolation; and a new behavior ships as a registered middleware with
+    no diff to the core loop.
 - [ ] **MR-5** · Factories: `RunnerFactory` (`runtime.runners`),
       `RegistryFactory.fromConfig`, `RuntimeFactory.standard()/child()`
       replacing `cli buildRuntime` + `build-sub-runtime.ts` — `~1.5d`
@@ -546,11 +577,11 @@ advertised surface ≡ dispatch enforcement.
 ## M5 — Core loop semantics (≈ 3–4 days) — *control logic, not hardening*
 
 From the 2026-06-13 loop review. These change what the loop *does*, not its
-resilience. Build them on MR-4's `step()` + `CompletionGate` seam — they are far
-cleaner on a stepper+gate than bolted onto today's flat `for` in
-`runners/orchestrator.ts`, so MR-4 is a hard prerequisite (consider pulling it
-forward). The terminal signal below *is* a gate input; the plan state *is* what
-the gate reads.
+resilience. Build them as `RoundMiddleware` on MR-4's loop + `CompletionGate`
+seam — they are far cleaner as injectable round units than bolted onto today's
+flat `for` in `runners/orchestrator.ts`, so MR-4 is a hard prerequisite
+(consider pulling it forward). The terminal signal below *is* a gate input; the
+plan state *is* what the gate reads.
 
 ### M5-1 · Explicit completion signal — `~1.5d` · P1
 Completion is currently *inferred from the absence of tool calls*

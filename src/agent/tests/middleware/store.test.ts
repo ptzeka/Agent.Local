@@ -8,10 +8,7 @@ import { StoreToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
 
-/**
- * StoreMiddleware business logic: open a real SessionStore rooted at
- * ctx.sessionsDir and hand it to the rest of the pipeline.
- */
+// opens a real SessionStore rooted at ctx.sessionsDir and hands it to the rest of the pipeline
 describe("StoreMiddleware", () => {
   let dir: string;
 

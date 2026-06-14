@@ -18,11 +18,8 @@ import {
 } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/**
- * The two provisioning steps a sub-runtime swaps in for the top-level pipeline:
- * inherit the parent's identity instead of authenticating, and mint a fresh
- * parent-linked child session instead of opening/resuming from disk.
- */
+// the two provisioning steps a sub-runtime swaps in for the top-level pipeline: inherit the parent's identity
+// instead of authenticating, and mint a fresh parent-linked child session instead of opening/resuming from disk
 
 const noop = async () => {};
 const PARENT_USER = {
@@ -55,8 +52,8 @@ describe("ChildSessionMiddleware", () => {
     await fs.rm(root, { recursive: true, force: true });
   });
 
-  /** Run Store → WorkspaceRegistry → InheritedUser → ChildSession → Conversation
-   *  over a context rooted in a temp dir, exactly as buildSubRuntime orders them. */
+  // runs Store → WorkspaceRegistry → InheritedUser → ChildSession → Conversation over a temp-dir context,
+  // exactly as buildSubRuntime orders them
   async function provision(options: { standingContext?: string } = {}) {
     const ctx = makeContext({ workspaceRoot: root, sessionsDir: path.join(root, "sessions") });
     await new StoreMiddleware().initialize(ctx, noop);

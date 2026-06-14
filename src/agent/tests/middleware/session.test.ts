@@ -12,20 +12,14 @@ import { SessionStore } from "../../src/agent/session/session-store.js";
 import { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
-/**
- * Minimal tools stub carrying just the `sandboxRoot` SessionMiddleware reads to
- * create the session's workspace segment dir. Rooted in the test's temp dir so
- * the created segment is cleaned up with everything else in afterEach.
- */
+// minimal tools stub carrying just the sandboxRoot SessionMiddleware reads to create the session's
+// workspace segment dir; rooted in the test's temp dir so the segment is cleaned up in afterEach
 function fakeTools(root: string): McpClient {
   return { sandboxRoot: path.join(root, "sandbox") } as unknown as McpClient;
 }
 
-/**
- * SessionMiddleware business logic: open a fresh session or resume a persisted
- * one, register its workspace, stamp the resolved identity, and heal a
- * crash-interrupted transcript on resume.
- */
+// opens a fresh session or resumes a persisted one, registers its workspace, stamps the resolved identity,
+// and heals a crash-interrupted transcript on resume
 describe("SessionMiddleware", () => {
   let root: string;
   let store: SessionStore;

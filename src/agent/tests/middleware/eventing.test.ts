@@ -4,13 +4,10 @@ import { Eventing } from "../../src/common/eventing.js";
 import { EventingMiddleware } from "../../src/agent/runtime/middleware/eventing.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 
-/**
- * EventingMiddleware ownership: the runtime's bus is created once and must SURVIVE
- * a rebuild (reset/compact re-run the pipeline). Re-minting it would strand a
- * host's one-time subscription on a dead bus — the orphaned-bus regression.
- */
+// the runtime's bus is created once and must survive a rebuild (reset/compact re-run the pipeline);
+// re-minting it would strand a host's one-time subscription on a dead bus — the orphaned-bus regression
 describe("EventingMiddleware", () => {
-  // Minimal context: the middleware only touches `eventing`.
+  // minimal context: the middleware only touches `eventing`
   const ctxWith = (eventing?: Eventing): RuntimeContext =>
     ({ eventing } as unknown as RuntimeContext);
 

@@ -2,11 +2,8 @@ import { describe, expect, test } from "@jest/globals";
 
 import { CancellationToken, settledWithin } from "../../src/common/lifetime.js";
 
-/**
- * The cancellation chain semantics: right-cutting (a cancel reaches every
- * descendant, never the parent or siblings), stillborn late joiners, and the
- * bounded-wait helper shutdown paths rely on.
- */
+// cancellation-chain semantics: right-cutting (a cancel reaches every descendant, never the parent or
+// siblings), stillborn late joiners, and the bounded-wait helper shutdown paths rely on
 describe("CutoffScope", () => {
   test("cancel propagates to descendants only", () => {
     const root = new CancellationToken();
@@ -62,12 +59,8 @@ describe("CutoffScope", () => {
     expect(scope.cancelled).toBe(true);
   });
 
-  /**
-   * Fan-out at runtime scale: 5 levels deep, 5 children per scope — the shape
-   * a deep dispatch/subsession tree takes. Every scope tallies its own abort
-   * via a listener, so the count proves the signal FIRED everywhere, not just
-   * that `cancelled` reads true.
-   */
+  // fan-out at runtime scale (5 deep x 5 wide), the shape a deep dispatch/subsession tree takes; each scope
+  // tallies its own abort via a listener so the count proves the signal FIRED everywhere, not just `cancelled`
   describe("fan-out 5 deep x 5 wide", () => {
     const FAN_OUT = 5;
     const DEPTH = 5;

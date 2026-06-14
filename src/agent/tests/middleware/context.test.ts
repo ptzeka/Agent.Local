@@ -15,15 +15,9 @@ import { SessionStore } from "../../src/agent/session/session-store.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import { makeContext } from "./context.js";
 
-/**
- * ContextMiddleware business logic: snapshot the non-conversation context the
- * given role will send (system prompt + project direction + tool block), store
- * it content-addressed, and stamp the hash onto the session under that role.
- *
- * The middleware reads the role's provider (model id + native-tool mode) from
- * providerRegistry/modelsRegistry, the role's prompt template from
- * modelsRegistry, and the role's tools from mcpRegistry.getClient(role).
- */
+// snapshots the non-conversation context a role sends (system prompt + project direction + tool block),
+// stores it content-addressed, and stamps the hash onto the session under that role. The middleware reads
+// the role's provider/template from providerRegistry/modelsRegistry and its tools from mcpRegistry.getClient.
 
 const READ_TOOL: ToolDescriptor = {
   name: "read_file",
@@ -31,25 +25,25 @@ const READ_TOOL: ToolDescriptor = {
   inputSchema: { type: "object" },
 };
 
-/** modelsRegistry stub: resolves every role to one model key and serves a per-role template. */
+// modelsRegistry stub: resolves every role to one model key and serves a per-role template
 function fakeModelsRegistry(): ModelRegistry {
   return {
     getProviderForRole: (_role: string) => "the-model",
     getPromptTemplate: (role: string) =>
       role === "executor" ? "# Executor Prompt\nExecute the task." : "# System Prompt\nYou are a helpful assistant.",
-    // The role's model is allowed one server; the fake mcpRegistry serves it regardless of name.
+    // the role's model is allowed one server; the fake mcpRegistry serves it regardless of name
     getValidMcpServersForRole: (_role: string) => ["fsmcp"],
   } as unknown as ModelRegistry;
 }
 
-/** providersRegistry stub: resolves the model key to a provider reporting the given model + tool mode. */
+// providersRegistry stub: resolves the model key to a provider reporting the given model + tool mode
 function fakeProvidersRegistry(modelId: string, nativeTools: boolean): ProvidersRegistry {
   return {
     getProvider: (_name: string) => ({ modelId, supportsNativeTools: nativeTools }),
   } as unknown as ProvidersRegistry;
 }
 
-/** mcpRegistry stub: every role's client advertises the given tool list. */
+// mcpRegistry stub: every role's client advertises the given tool list
 function fakeMcpRegistry(tools: ToolDescriptor[]): McpClientRegistry {
   return {
     sandboxRoot: "/tmp/sandbox",

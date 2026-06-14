@@ -13,13 +13,8 @@ import { WorkspaceRegistry as RealWorkspaceRegistry } from "../../src/agent/regi
 import type { Principal } from "../../src/agent/identity/types.js";
 import { makeContext } from "./context.js";
 
-/**
- * ChildSessionMiddleware business logic.
- *
- * A sub-session is created fresh with a pre-minted id, inherits the parent's
- * workspace, optionally seeds standing context, stamps the inherited identity,
- * and persists itself for the store/picker.
- */
+// a sub-session is created fresh with a pre-minted id, inherits the parent's workspace, optionally seeds
+// standing context, stamps the inherited identity, and persists itself for the store/picker
 describe("ChildSessionMiddleware", () => {
   let tempDir: string;
   let store: SessionStore;

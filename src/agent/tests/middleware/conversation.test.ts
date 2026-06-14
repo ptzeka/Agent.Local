@@ -11,12 +11,8 @@ import { SessionStore } from "../../src/agent/session/session-store.js";
 import { createSession, type Session } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
 
-/**
- * The conversation split: the transcript lives in a rolling JSONL file linked
- * from the session by conversationId. Covers the store round-trip, the
- * append/flush watermark, structural rewrites, and the middleware's resume
- * healing + legacy backfill.
- */
+// the transcript lives in a rolling JSONL file linked from the session by conversationId. Covers the store
+// round-trip, the append/flush watermark, structural rewrites, and the middleware's resume heal + backfill
 describe("Conversation", () => {
   let root: string;
   let store: ConversationStore;

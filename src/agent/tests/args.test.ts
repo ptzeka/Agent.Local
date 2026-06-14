@@ -2,13 +2,8 @@ import { describe, expect, test } from "@jest/globals";
 
 import { parseArgs } from "../src/cli/args.js";
 
-/**
- * parseArgs tests.
- *
- * Pure input → output: assert the two recognised flags across the
- * `--flag value` and `--flag=value` forms, plus the no-flag (interactive)
- * default and the value-handling edge cases.
- */
+// pure input → output: the two recognised flags across --flag value and --flag=value forms, plus the
+// no-flag (interactive) default and value-handling edge cases
 describe("parseArgs", () => {
   test("no flags ⇒ interactive (run undefined)", () => {
     const args = parseArgs([]);

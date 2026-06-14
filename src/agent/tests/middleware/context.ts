@@ -18,11 +18,8 @@ import {
   SessionManagerToken,
 } from "../../src/agent/runtime/tokens.js";
 
-/**
- * Maps the ergonomic override keys tests use (`session`, `store`, ...) to the
- * tokens those services live under in the real container, so seeding a service
- * in a test is still a one-liner: `makeContext({ session })`.
- */
+// maps the ergonomic override keys tests use (session, store, ...) to the tokens those services live under,
+// so seeding a service in a test stays a one-liner: makeContext({ session })
 const SERVICE_TOKENS: Record<string, Token<unknown>> = {
   configurationRegistry: ConfigurationToken,
   providerRegistry: ProvidersToken,
@@ -40,18 +37,9 @@ const SERVICE_TOKENS: Record<string, Token<unknown>> = {
   sessionManager: SessionManagerToken,
 };
 
-/**
- * Build a RuntimeContext seeded with ONLY the infrastructure fields plus a fresh
- * container — exactly the shape AgentRuntime.build() hands to the first pipeline
- * step (ContainerMiddleware) after it creates `ctx.registry`. Every
- * middleware-populated service starts absent from the registry; each test seeds
- * just the inputs the step under test reads, via the override keys above.
- *
- * The default `mcpRegistry` is a cast fake exposing the member middleware reaches
- * for without driving a turn: `getClient(role)` (ContextMiddleware). Tests that
- * need richer behavior pass their own service overrides, which overwrite the
- * default token registration.
- */
+// RuntimeContext seeded with only the infrastructure fields plus a fresh container — the shape
+// AgentRuntime.build() hands the first pipeline step; every middleware-populated service starts absent and
+// each test seeds just the inputs it reads. The default mcpRegistry is a cast fake exposing getClient(role).
 export function makeContext(overrides: Record<string, unknown> = {}): RuntimeContext {
   const mockMcpRegistry = {
     sandboxRoot: "/tmp/agent-mw-test-sandbox",

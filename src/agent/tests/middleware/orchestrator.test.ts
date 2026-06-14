@@ -5,10 +5,7 @@ import { OrchestratorMiddleware } from "../../src/agent/runtime/middleware/orche
 import { OrchestratorToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/**
- * OrchestratorMiddleware business logic: build the one stateless Orchestrator
- * from the infra deps, with no dependency on any other pipeline step.
- */
+// builds the one stateless Orchestrator from the infra deps, with no dependency on any other pipeline step
 describe("OrchestratorMiddleware", () => {
   test("seeds ctx.orchestrator with an Orchestrator and advances", async () => {
     const ctx = makeContext({ toolDescriptors: [] });

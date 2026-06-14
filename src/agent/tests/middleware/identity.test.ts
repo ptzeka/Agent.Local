@@ -4,16 +4,13 @@ import { IdentityMiddleware } from "../../src/agent/runtime/middleware/identity.
 import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/** Build a (mock, unsigned) JWT with the given payload as the middle segment. */
+// build a (mock, unsigned) JWT with the given payload as the middle segment
 function jwt(payload: Record<string, unknown>): string {
   const seg = (o: object) => Buffer.from(JSON.stringify(o)).toString("base64url");
   return `${seg({ alg: "none" })}.${seg(payload)}.signature`;
 }
 
-/**
- * IdentityMiddleware business logic: decode a bearer token into a Principal and
- * stamp ctx.user — or leave ctx.user untouched so a fallback can take over.
- */
+// decodes a bearer token into a Principal and stamps ctx.user — or leaves it untouched so a fallback takes over
 describe("IdentityMiddleware", () => {
   test("decodes a valid token into an authenticated Principal with claims and scopes", async () => {
     const ctx = makeContext({

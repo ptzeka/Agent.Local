@@ -4,14 +4,9 @@ import { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { Mcp } from "../../src/agent/mcp/mcp.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 
-/**
- * McpClientRegistry business logic.
- *
- * The registry is a thin name-keyed collection of mounted servers (`Mcp`):
- * `LocalMcp` (in-process) and `McpClient` (spawned stdio) are stored
- * interchangeably. It exposes a server by name and aggregates every server's
- * already-namespaced (`<server>__<tool>`) tool descriptors.
- */
+// a thin name-keyed collection of mounted servers (Mcp): LocalMcp (in-process) and McpClient (spawned stdio)
+// are stored interchangeably; exposes a server by name and aggregates every server's already-namespaced
+// (<server>__<tool>) tool descriptors
 describe("McpClientRegistry", () => {
   let registry: McpClientRegistry;
 
@@ -19,7 +14,7 @@ describe("McpClientRegistry", () => {
     registry = new McpClientRegistry("/tmp/workspace");
   });
 
-  /** A minimal `Mcp` whose `listTools()` returns the given namespaced descriptors. */
+  // a minimal Mcp whose listTools() returns the given namespaced descriptors
   function fakeMcp(name: string, tools: ToolDescriptor[]): Mcp {
     return {
       name,

@@ -2,11 +2,8 @@ import { describe, expect, test } from "@jest/globals";
 
 import { Eventing, type EventMessage } from "../../src/common/eventing.js";
 
-/**
- * Eventing semantics: standalone publish/subscribe with unsubscribe, and the
- * upward bubble across a parent -> c1 -> c2 chain — a leaf publish reaches the
- * leaf's subscribers first, then each ancestor's, in order, exactly once.
- */
+// publish/subscribe with unsubscribe, and the upward bubble across parent -> c1 -> c2 — a leaf publish
+// reaches the leaf's subscribers first, then each ancestor's, in order, exactly once
 describe("Eventing", () => {
   describe("standalone", () => {
     test("subscriber receives the published type and payload", () => {

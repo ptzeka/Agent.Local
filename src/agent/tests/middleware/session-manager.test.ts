@@ -9,17 +9,9 @@ import { makeContext } from "./context.js";
 // the manager folds settled children's token tally into this session, so the step requires one
 const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
 
-/**
- * SessionManagerMiddleware business logic.
- *
- * Contract change: the manager used to compose the parent's orchestrator + inbox
- * + store, so the middleware refused to build without all three. It now
- * provisions each child by building a whole sub-runtime from an injected
- * factory, so it depends only on that factory — there is no half-wired state to
- * guard against, and the step always seeds the manager. These cover the new
- * shape: the manager is always built, and a cap-0 (leaf) manager enforces the
- * one-level-deep guard by rejecting every spawn.
- */
+// the manager now provisions each child by building a whole sub-runtime from an injected factory, so it
+// depends only on that factory and the step always seeds it. These cover that shape: the manager is always
+// built, and a cap-0 (leaf) manager enforces the one-level-deep guard by rejecting every spawn.
 describe("SessionManagerMiddleware", () => {
   test("always seeds ctx.sessionManager and continues the pipeline", async () => {
     const ctx = makeContext({ session });

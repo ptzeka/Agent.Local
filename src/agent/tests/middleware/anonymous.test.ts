@@ -5,11 +5,8 @@ import { AnonymousMiddleware } from "../../src/agent/runtime/middleware/anonymou
 import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/**
- * AnonymousMiddleware business logic: guarantee ctx.user is set after the
- * identity phase — falling back to the anonymous principal only when no earlier
- * step resolved a real one.
- */
+// guarantees ctx.user is set after the identity phase, falling back to the anonymous principal only when no
+// earlier step resolved a real one
 describe("AnonymousMiddleware", () => {
   test("stamps the anonymous principal when no user was resolved", async () => {
     const ctx = makeContext(); // user undefined

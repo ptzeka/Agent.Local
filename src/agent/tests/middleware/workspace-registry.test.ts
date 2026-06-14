@@ -7,10 +7,7 @@ import { WorkspaceRegistryMiddleware } from "../../src/agent/runtime/middleware/
 import { WorkspacesToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/**
- * WorkspaceRegistryMiddleware business logic: stand up a fresh workspace
- * registry for SessionMiddleware to register/resolve against.
- */
+// stands up a fresh workspace registry for SessionMiddleware to register/resolve against
 describe("WorkspaceRegistryMiddleware", () => {
   let root: string;
 

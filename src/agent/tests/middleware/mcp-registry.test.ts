@@ -15,13 +15,8 @@ const stubModelsRegistry = {
   getTimeoutForModel: () => 60000,
 } as unknown as ModelRegistry;
 
-/**
- * McpRegistryMiddleware business logic.
- *
- * This middleware constructs the MCP client registry (bound to the sandbox
- * root) and registers the in-process MCP servers (filesystem and Excel) as
- * `LocalMcp` instances on it, then continues the chain.
- */
+// constructs the MCP client registry (bound to the sandbox root), registers the in-process servers
+// (filesystem and Excel) as LocalMcp instances on it, then continues the chain
 describe("McpRegistryMiddleware", () => {
   test("throws without workspace and session", async () => {
     const ctx = makeContext({ session: undefined, workspace: undefined });

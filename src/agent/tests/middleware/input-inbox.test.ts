@@ -4,10 +4,7 @@ import { InputInboxMiddleware } from "../../src/agent/runtime/middleware/input-i
 import { InboxToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-/**
- * InputInboxMiddleware business logic: create the external input-injection seam
- * the orchestrator drains each iteration.
- */
+// creates the external input-injection seam the orchestrator drains each iteration
 describe("InputInboxMiddleware", () => {
   test("seeds ctx.inbox with a working inbox and advances", async () => {
     const ctx = makeContext();
