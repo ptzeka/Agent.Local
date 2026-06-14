@@ -1,5 +1,12 @@
 # AI Assistant Guidelines — Agent.Local
 
+## Language: mirror the user's language
+
+- **Reply in the language the user writes in.** When the user writes in Greek (Ελληνικά), respond in Greek; otherwise respond in English. Match their language per message.
+- **Code stays English regardless.** Identifiers, file names, commit messages, and `//` comments remain in English even when the surrounding conversation is in Greek — this keeps the codebase consistent for all contributors.
+- Greek technical terms with no settled translation may stay in English (e.g. "token", "signal", "middleware") within otherwise-Greek prose.
+- **Offer language corrections.** When the user's Greek (or other non-native) phrasing, spelling, or accents (τόνοι) are off, flag it — but keep it to a single terse line after answering, never blocking the answer. Format: `διόρθωση: <τύπος> <λάθος> -> <σωστό>`, e.g. `διόρθωση: ορθογραφία πος -> πώς`.
+
 ## Code search: always use codemcp first
 
 **Always prefer codemcp tools over `grep`, `Glob`, or `Read` for any code search or navigation task.**

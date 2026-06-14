@@ -95,9 +95,9 @@ describe("Container", () => {
     expect(container.get(dogToken).bark()).toBe("woof");
   });
 
-  test("getAll() collects every implementation aliased under one generic interface token", () => {
+  test("getAll() collects every member registered under a group token via .by()", () => {
     // Repository<T> is the generic interface; each concrete repo registers under its own token
-    // AND aliases the shared family token, so getAll(family) returns all implementations
+    // AND joins the shared family group via .by(), so getAll(family) returns all implementations
     interface Repository<T> {
       all(): T[];
     }
@@ -116,8 +116,8 @@ describe("Container", () => {
     const userRepo: Repository<User> = { all: () => [{ id: "u1" }] };
     const orderRepo: Repository<Order> = { all: () => [{ total: 10 }] };
 
-    container.set(userRepoToken, userRepo).as(repositories);
-    container.set(orderRepoToken, orderRepo).as(repositories);
+    container.set(userRepoToken, userRepo).by(repositories);
+    container.set(orderRepoToken, orderRepo).by(repositories);
 
     const all = container.getAll(repositories);
     expect(all).toHaveLength(2);
@@ -127,7 +127,77 @@ describe("Container", () => {
     expect(container.get(orderRepoToken)).toBe(orderRepo);
   });
 
-  test("a single instance can be aliased under multiple interface tokens by chaining .as()", () => {
+  test(".as() is singular and .by() is group — a base class handle needs no string label", () => {
+    interface IUserRepository {
+      findUser(): string;
+    }
+    // a real base class: its own runtime identity, so .by()/getAll() key off it directly with no string
+    abstract class RepositoryBase {
+      abstract name: string;
+    }
+    class UserRepository extends RepositoryBase implements IUserRepository {
+      name = "users";
+      findUser() {
+        return "alice";
+      }
+    }
+
+    const container = new Container();
+    // an interface alias still needs a string label (interfaces vanish at runtime); the base class does not
+    const iUserRepository = token<IUserRepository>("IUserRepository");
+    const repo = new UserRepository();
+
+    container.set(UserRepository, repo).as(iUserRepository).by(RepositoryBase);
+
+    // the concrete class and the interface alias both resolve singularly via get()
+    expect(container.get(UserRepository)).toBe(repo);
+    expect(container.get(iUserRepository).findUser()).toBe("alice");
+    // the base class is a grouping, reachable only through getAll() — keyed by the class, no string
+    expect(container.getAll(RepositoryBase)).toEqual([repo]);
+    // .by() does NOT make the base singularly resolvable
+    expect(container.tryGet(RepositoryBase)).toBeUndefined();
+    // .as() does NOT add the interface to a group
+    expect(container.getAll(iUserRepository)).toEqual([]);
+  });
+
+  test("a class reference is a handle — keyed by identity, labeled by name, no string anywhere", () => {
+    abstract class Plugin {
+      abstract id(): string;
+    }
+    class AlphaPlugin extends Plugin {
+      id() {
+        return "alpha";
+      }
+    }
+    class BetaPlugin extends Plugin {
+      id() {
+        return "beta";
+      }
+    }
+
+    const container = new Container();
+    const alpha = new AlphaPlugin();
+    const beta = new BetaPlugin();
+
+    // each concrete class resolves singularly; both join the base-class group via .by()
+    container.set(AlphaPlugin, alpha).by(Plugin);
+    container.set(BetaPlugin, beta).by(Plugin);
+
+    expect(container.get(AlphaPlugin)).toBe(alpha);
+    expect(container.get(BetaPlugin)).toBe(beta);
+    // distinct classes are distinct keys — no collision despite a shared base
+    expect(container.get(AlphaPlugin)).not.toBe(container.get(BetaPlugin));
+    expect(container.getAll(Plugin)).toEqual([alpha, beta]);
+  });
+
+  test("get() by an unregistered class throws naming the class", () => {
+    class Missing {}
+    const container = new Container();
+
+    expect(() => container.get(Missing)).toThrow(/no instance registered for "Missing"/);
+  });
+
+  test("an instance can join multiple groups by chaining .by()", () => {
     interface Reader {
       read(): string;
     }
@@ -142,14 +212,13 @@ describe("Container", () => {
     const writers = token<Writer>("writer");
     const device: ReadWriter = { read: () => "data", write: () => {} };
 
-    container.set(rwToken, device).as(readers).as(writers);
+    container.set(rwToken, device).by(readers).by(writers);
 
     expect(container.getAll(readers)).toEqual([device]);
     expect(container.getAll(writers)).toEqual([device]);
-    expect(container.get(readers).read()).toBe("data");
   });
 
-  test("getAll() returns an empty array when no implementations were registered", () => {
+  test("getAll() returns an empty array when no members were registered", () => {
     const container = new Container();
     const empty = token<{ run(): void }>("plugins");
 

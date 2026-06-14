@@ -54,16 +54,16 @@ export function formatEvent(event: RunnerEvent): string {
     }
 
     case "dispatch-feedback": {
+      // `ok` is executor-completion, not mutation success — the orchestrator judges that from the report
       const ok = Boolean(event.data.ok);
       const ack = String(event.data.ack ?? "");
       const evidence = String(event.data.evidence ?? "");
-      const det = String(event.data.deterministicVerdict ?? "");
       const iterations = Number(event.data.iterations ?? 0);
-      const stamp = ok ? chalk.greenBright("OK") : chalk.redBright("FAIL");
+      const stamp = ok ? chalk.greenBright("RAN") : chalk.redBright("ERROR");
       return (
         chalk.magentaBright(`[DISPATCH] ← ${stamp}`) +
-        chalk.gray(` (ack=${ack}, deterministic=${det}, executor turns=${iterations})\n`) +
-        chalk.gray(`           evidence: ${evidence}\n`)
+        chalk.gray(` (ack=${ack}, executor turns=${iterations})\n`) +
+        chalk.gray(`           report: ${evidence}\n`)
       );
     }
 

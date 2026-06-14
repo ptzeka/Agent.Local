@@ -583,21 +583,35 @@ flat `for` in `runners/orchestrator.ts`, so MR-4 is a hard prerequisite
 (consider pulling it forward). The terminal signal below *is* a gate input; the
 plan state *is* what the gate reads.
 
-### M5-1 · Explicit completion signal — `~1.5d` · P1
-Completion is currently *inferred from the absence of tool calls*
-(`runners/orchestrator.ts` ~L283): a tool-free assistant turn IS the result. But
-"no tool call" ≠ "done" — a model that narrates ("Let me now verify…") without
-emitting a call is read as a final answer, indistinguishable from a dropped call.
-- [ ] Make completion *declared*: a synthetic `done`/`finish` tool the model
-      calls to end the turn (lean choice — provider-agnostic, works for the
-      prompted-JSON path too), or key off the provider stop reason. Pick one.
-- [ ] A tool-free turn that does NOT declare done becomes continue+nudge
-      ("you didn't act — call a tool or declare done"), not a silent exit.
-- [ ] CompletionGate (MR-4) consumes the signal: executor gate = done-declared;
-      orchestrator gate = done-declared AND evaluator-satisfied. The
-      `this.role === "executor"` branches collapse onto the gate.
-- [ ] Tests: a narrating-without-acting model keeps going; an explicit done
-      ends the turn; both role gates honor the signal.
+### M5-1 · Completion signal — mostly by design; narrow residue — `~0.5d` · P2
+**Groomed 2026-06-14: down-scoped.** Completion-by-absence-of-tool-calls is
+**by design**, not the bug the original note framed. Each role has a completion
+mechanism suited to its job:
+- **Executor** is a bounded one-shot (ACK → execute → validate → RESULT). Its
+  tool-free message IS the `RESULT OK/FAIL` report (`runners/orchestrator.ts`
+  L230) — completion is *structural* (one ask, done, reported), so there is
+  nothing for a judge to adjudicate and no explicit `done` signal is needed.
+  The executor runs tools, not logic — that's the orchestrator's job — so its
+  terminal report being the exit is intended, not inferred.
+- **Orchestrator** is open-ended, and its tool-free turn is already adjudicated
+  by the evaluator (`runners/orchestrator.ts` L228-280): a "narrated but not
+  done" turn returns CONTINUE and is nudged, NOT silently exited. The premise
+  that this is indistinguishable from a dropped call is largely already covered.
+
+No separate synthetic `done` tool is warranted for correctness: a structured
+declaration only improves host-side *extraction* of the signal, never the
+model's *judgment* of whether it is done — and the evaluator is the judgment
+authority. Residue worth tracking (not building speculatively):
+- [ ] Evaluator *trigger*: the judge runs on EVERY tool-free orchestrator turn
+      ("zero tool calls" is the trigger). If judge-call cost bites, gate the
+      evaluator on a claimed-done signal so it fires on intent, not silence —
+      efficiency/precision only, not correctness.
+- [ ] Intent declaration up front → folded into M5-2 (plan/progress state) and
+      M5-6 (orchestrator 3-phase prompt), not a standalone mechanism here.
+
+**Done when:** the by-design rationale is recorded (this note); any
+evaluator-trigger change is driven by an actual judge-cost signal, not built
+speculatively.
 
 ### M5-2 · First-class plan / progress state — `~2d` · P2
 The loop has no structured "what's left." The evaluator re-derives progress from
@@ -696,6 +710,31 @@ the correct conclusion is "nothing to evaluate" — not a clarification request.
 **Done when:** an ambiguous, context-free request no longer produces an
 evaluator-minted AWAITING-INPUT clarification, and the evaluator's verdict is
 derived only from the last intent + this turn's transcript.
+
+### M5-6 · Orchestrator prompt: explicit 3-phase shape — `~0.5d` · P2
+An orchestrator turn should read as three clean phases, but the prompt
+(`context/system-prompt.ts` ORCHESTRATOR_SYSTEM_PROMPT, L21-134) only expresses
+the middle one:
+  1. **State intent / plan** — what it will do this turn. MISSING at the turn
+     level: intent today lives only per-mutation inside `executor__dispatch`'s
+     `intent` field, never as a turn-level plan.
+  2. **Execute** — gather context, dispatch one tool, parse ACK/RESULT,
+     recalculate. Well covered (the "Loop" section, L53-68); leave as-is.
+  3. **Declare a typed result** — done / more-info-needed / cannot-complete.
+     DELEGATED, not declared: the orchestrator only "write[s] a final
+     user-facing summary with NO tool calls" (untyped prose, L66-68); the result
+     vocabulary lives on the EVALUATOR as SATISFIED / AWAITING-INPUT / FAILED
+     (L198-205), which classifies the prose after the fact.
+- [ ] Add phase 1: a turn-level intent/plan statement (ties into M5-2's plan
+      state — the plan IS the intent declaration; don't build two).
+- [ ] Add phase 3: the orchestrator declares its own typed result, categories
+      mirroring the evaluator verdicts (done≈SATISFIED, need-info≈AWAITING-INPUT,
+      cannot-complete≈FAILED). The evaluator then RATIFIES a structured proposal
+      instead of classifying free prose (proposal-vs-authority split, see M5-1).
+
+**Done when:** the orchestrator prompt is organized as the three explicit
+phases, phase-3 result types line up 1:1 with evaluator verdicts, and the
+evaluator reads a declared result rather than inferring one from prose.
 
 ---
 

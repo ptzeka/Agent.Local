@@ -206,10 +206,12 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     }
 
     this.turnEvents.publish(OrchestratorEventTypes.DISPATCH_FEEDBACK, {
+      // `ok` reflects only whether the executor sub-run completed, not whether the mutation
+      // succeeded — the orchestrator judges that from the verbal report
       ok,
       ack: extractFirstLine(content, "EXECUTOR: ACK"),
-      evidence: extractFirstLine(content, "EXECUTOR: RESULT"),
-      deterministicVerdict: "unverified",
+      // executor reports verbally now; its concluding line stands in as the evidence snippet
+      evidence: lastNonEmptyLine(content),
       iterations,
     });
 
@@ -258,7 +260,8 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
       toolListBlock,
       "",
       "The executor will ACK the ask, run the tool, independently re-read or",
-      "check the result, and return a RESULT line with evidence.",
+      "check the result, and report what it observed, with evidence. The",
+      "report is a factual account, not a verdict — you judge whether it landed.",
     ].join("\n"),
     inputSchema: {
       type: "object",
@@ -289,4 +292,14 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
 function extractFirstLine(content: string, prefix: string): string {
   const line = content.split("\n").find((l) => l.startsWith(prefix));
   return line ?? "";
+}
+
+// the executor's verbal report has no fixed status line, so its concluding sentence is the evidence snippet
+function lastNonEmptyLine(content: string): string {
+  const lines = content.split("\n");
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length > 0) return trimmed;
+  }
+  return "";
 }
