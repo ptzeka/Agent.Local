@@ -4,17 +4,14 @@ import { createFsReadonlyLocalMcp } from "../../src/agent/synthetic-mcp/fs-serve
 import { createExcelReadonlyLocalMcp } from "../../src/agent/synthetic-mcp/excel-server.js";
 import type { ToolContext } from "../../src/agent/synthetic-mcp/types.js";
 
-/**
- * Read-only server mounts — the ENFORCED half of the orchestrator/executor
- * split. The contract under test is the boundary itself: mutating tools must
- * be absent from the advertisement AND uncallable, so a coordinator model
- * granted only these mounts cannot mutate no matter what it emits.
- */
+// Read-only mounts — the enforced half of the orchestrator/executor split. The contract under test is the
+// boundary: mutating tools must be absent from the advertisement AND uncallable, so a coordinator granted
+// only these mounts cannot mutate no matter what it emits.
 
 const MUTATING_FS_TAILS = ["write_file", "edit_file", "delete_file"];
 const MUTATING_EXCEL_TAILS = ["append_excel_rows", "append_after_excel_rows", "delete_excel_rows"];
 
-/** Tool handlers are never invoked in these tests; only mounting is exercised. */
+// tool handlers are never invoked in these tests; only mounting is exercised
 const fakeToolContext = {
   session: {},
   workspace: {},

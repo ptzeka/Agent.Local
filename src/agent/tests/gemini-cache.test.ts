@@ -2,19 +2,13 @@ import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globa
 
 import { GeminiProvider, cacheExpiryMs } from "../src/agent/providers/gemini-provider.js";
 
-/**
- * Gemini context-cache lifecycle tests.
- *
- * The provider memoizes one server-side cache entry (system + tools). Entries
- * are deleted server-side at expireTime; reusing a lapsed name fails the
- * request outright. These lock in that the memo is keyed on BOTH content and
- * freshness: a fresh entry is reused, an expired or content-changed one is
- * recreated, and a failed create falls back to inline (and retries later).
- */
+// The provider memoizes one server-side cache entry (system + tools), deleted server-side at expireTime.
+// These lock in that the memo is keyed on content AND freshness: fresh reused, expired/changed recreated,
+// failed create falls back to inline and retries later.
 
 const NOW = Date.parse("2026-06-10T12:00:00Z");
 
-/** A system instruction + tool set big enough to be cache-worthy in spirit. */
+// a system instruction + tool set big enough to be cache-worthy in spirit
 const SYSTEM = "You are the orchestrator.";
 const TOOLS = [{ functionDeclarations: [{ name: "read_file" }] }];
 

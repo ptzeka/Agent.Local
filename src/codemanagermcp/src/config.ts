@@ -6,11 +6,11 @@ import appSettings from './appsettings.json' with { type: 'json' };
 // ── Sub-configs ───────────────────────────────────────────────────────────────
 
 export interface RepositoryMapping {
-  /** Azure DevOps organisation name. */
+  // Azure DevOps organisation name
   org: string;
-  /** Team project name. */
+  // team project name
   project: string;
-  /** Repository name as shown in Azure DevOps. */
+  // repository name as shown in Azure DevOps
   repository: string;
 }
 
@@ -18,11 +18,8 @@ export interface AzureDevOpsConfig {
   organization: string;
   project: string;
   repository: string;
-  /**
-   * Path to a plain-text file containing the PAT — for local dev.
-   * Resolved relative to the directory holding server.js.
-   * Falls back to the AZURE_DEVOPS_TOKEN environment variable when absent.
-   */
+  // plain-text PAT file for local dev, resolved relative to server.js's dir;
+  // falls back to the AZURE_DEVOPS_TOKEN env var when absent
   apiKeyFile?: string;
 }
 
@@ -36,17 +33,14 @@ export interface PipelinesConfig {
 export interface AzureDevOpsSection {
   apiKeyFile?: string;
   pipelines: PipelinesConfig;
-  /**
-   * Map of consumer-provided repository keys (e.g. "org/Project/_git/Repo")
-   * to the Azure DevOps target that key resolves to.
-   */
+  // maps consumer-provided repository keys (e.g. "org/Project/_git/Repo") to their ADO target
   repositories: Record<string, RepositoryMapping>;
 }
 
 // ── Top-level config ──────────────────────────────────────────────────────────
 
 export interface CodeManagerConfig {
-  /** Absolute path to the local git repository clone. */
+  // absolute path to the local git repository clone
   repositoryPath: string;
   mainBranch: string;
   branchPrefix: string;
@@ -152,15 +146,12 @@ function build(): CodeManagerConfig {
 
 export const config: CodeManagerConfig = build();
 
-/** Directory holding the running server.js — used for PAT file resolution and the data/ state subfolder. */
+// directory holding the running server.js — used for PAT file resolution and the data/ state subfolder
 export const serverDir: string = dirname(fileURLToPath(import.meta.url));
 
 // ── Repository resolution ─────────────────────────────────────────────────────
 
-/**
- * Resolves a consumer-provided repository key (e.g. "rxoinc/Platform/_git/Rxo.UI.NormalizedAddresses")
- * into the ADO target that key maps to. Throws when the key is unknown.
- */
+// resolves a consumer-provided repository key into its ADO target; throws when the key is unknown
 export function resolveRepository(key: string): AzureDevOpsConfig {
   const entry = config.azureDevOps.repositories[key];
   if (!entry) {
@@ -180,12 +171,12 @@ export function resolveRepository(key: string): AzureDevOpsConfig {
 
 // ── Utility ───────────────────────────────────────────────────────────────────
 
-/** Returns the resolved branch name for a feature slug. */
+// resolved branch name for a feature slug
 export function featureBranch(slug: string): string {
   return `${config.branchPrefix}${slug}`;
 }
 
-/** Slugifies a human feature name into a safe branch-name segment. */
+// slugifies a human feature name into a safe branch-name segment
 export function slugify(name: string): string {
   return name
     .toLowerCase()

@@ -6,14 +6,9 @@ import path from "node:path";
 import { ContextLoader } from "../../src/agent/context/context-loader.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 
-/**
- * Context-snapshot store tests.
- *
- * The snapshot captures the non-conversation context (system prompt + project
- * direction + tool block) under a content-addressed hash. These cover the
- * invariants ContextMiddleware leans on: deterministic hashing keyed on the
- * captured inputs, write-once dedup, and a faithful round-trip read.
- */
+// The snapshot captures non-conversation context (system prompt + project direction + tool block) under a
+// content-addressed hash. These cover what ContextMiddleware leans on: deterministic hashing keyed on the
+// captured inputs, write-once dedup, and a faithful round-trip read.
 
 const tool = (name: string): ToolDescriptor => ({
   name,

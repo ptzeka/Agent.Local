@@ -7,16 +7,9 @@ import {
   type TurnSource,
 } from "../../src/agent/runners/turn-runner.js";
 
-/**
- * TurnRunner scheduling semantics.
- *
- * The runner is CONTENTLESS — prompt text lives in an InputInbox it never sees.
- * These tests model that inbox as a plain array: `push` enqueues + wakes,
- * `shouldRun` reports whether anything is queued, and the dispatch DRAINS the
- * queue (recording each turn's batch) exactly as `dispatchAsync` drains the
- * real inbox. So the suite exercises the scheduling contract — single-writer,
- * wake/settle, the empty-turn guard — not prompt content.
- */
+// The runner is contentless — prompt text lives in an InputInbox it never sees. These model that inbox as a
+// plain array (push enqueues + wakes, the dispatch drains it) to exercise the scheduling contract:
+// single-writer, wake/settle, and the empty-turn guard — not prompt content.
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -36,22 +29,20 @@ function deferred<T = void>(): Deferred<T> {
 
 interface Harness {
   runner: TurnRunner;
-  /** Enqueue input and wake the runner — the InputInbox.push + onPush pair. */
+  // enqueue input and wake the runner — the InputInbox.push + onPush pair
   push: (content: string, source?: TurnSource) => void;
-  /** One entry per dispatch: the batch that turn drained. */
+  // one entry per dispatch: the batch that turn drained
   drained: string[][];
   events: TurnRunnerEvent[];
-  /** High-water mark of concurrent dispatches — must stay 1 (single-writer). */
+  // high-water mark of concurrent dispatches — must stay 1 (single-writer)
   maxConcurrent: () => number;
 }
 
 interface HarnessOptions {
-  /** Awaited while a dispatch is "in flight"; resolve it to let that turn end.
-   *  Receives the drained batch. Omit for an instant dispatch. */
+  // awaited while a dispatch is "in flight" (receives the drained batch); omit for an instant dispatch
   gate?: (batch: string[]) => Promise<void> | undefined;
   parentSignal?: AbortSignal;
-  /** Simulate the running turn picking up late input at its final iteration, so
-   *  the inbox is empty by settle (no follow-up turn). */
+  // simulate the running turn draining late input at its final iteration, so the inbox is empty by settle
   drainAgainBeforeReturn?: boolean;
   onEvent?: (event: TurnRunnerEvent) => void;
 }

@@ -4,13 +4,8 @@ import { ScopedToolClient } from "../src/agent/scoped-tool-client.js";
 import type { Mcp } from "../src/agent/mcp/mcp.js";
 import type { ToolDescriptor } from "../src/agent/providers/provider.js";
 
-/**
- * ScopedToolClient routing.
- *
- * Path confinement lives in the server (Workspace guard), not here — these
- * tests cover the routing layer only: namespaced calls, tolerant bare-name
- * resolution, and corrective errors for ambiguous / unknown names.
- */
+// Path confinement lives in the server (Workspace guard), not here — these cover routing only:
+// namespaced calls, tolerant bare-name resolution, and corrective errors for ambiguous/unknown names.
 
 function fakeMcp(name: string, toolTails: string[]): { mcp: Mcp; callTool: jest.Mock } {
   const callTool = jest.fn(async () => ({ isError: false, content: "{}" }));

@@ -5,14 +5,9 @@ import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { makeContext } from "../middleware/context.js";
 
-/**
- * ExecutorLocalMcp dispatch descriptor.
- *
- * The "tool" property must enumerate the executor role's live tool names —
- * taken from the advertisement registry of the executor's mounted servers —
- * both as a strict schema enum and in the prose description, so the
- * orchestrator can only pick names the executor can actually run.
- */
+// the "tool" property must enumerate the executor role's live tool names (from the mounted servers'
+// advertisement registry) as both a strict schema enum and prose, so the orchestrator can only pick
+// names the executor can actually run
 describe("ExecutorLocalMcp.listTools", () => {
   // A fake advertisement registry that just replays the given descriptors;
   // unmounted servers (e.g. codemcp) are simply absent from the list.

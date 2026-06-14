@@ -6,14 +6,9 @@ import path from "node:path";
 import { createFsLocalMcp } from "../../src/agent/synthetic-mcp/fs-server.js";
 import type { LocalMcp } from "../../src/agent/mcp/local-mcp.js";
 
-/**
- * The in-process fsmcp server that replaced the spawned stdio server. It is now
- * a `LocalMcp`: tool calls are plain in-process function calls (no SDK Server,
- * no transport), so the tests drive it through the `Mcp` surface — listTools()
- * advertises namespaced descriptors, callTool() takes the bare tool name and
- * returns a `{ isError, content }` envelope whose content is the tool's JSON
- * payload. IO must stay confined to the injected sandbox root.
- */
+// In-process fsmcp LocalMcp (no SDK Server/transport), driven through the Mcp surface: listTools()
+// advertises namespaced descriptors, callTool() takes the bare name and returns a { isError, content }
+// envelope. IO must stay confined to the injected sandbox root.
 
 describe("createFsLocalMcp", () => {
   let root: string;

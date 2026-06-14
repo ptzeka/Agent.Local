@@ -6,15 +6,8 @@ const ADO_API_VERSION = '7.1';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
-/**
- * Resolves the Azure DevOps Personal Access Token.
- *
- * Priority:
- *   1. AZURE_DEVOPS_TOKEN environment variable — injected by Azure Pipelines or set in shell.
- *   2. apiKeyFile contents — path relative to baseDir, for local dev without env vars.
- *
- * Throws when neither source yields a token.
- */
+// PAT resolution: AZURE_DEVOPS_TOKEN env var first (CI), then apiKeyFile contents (local dev);
+// throws when neither yields a token
 export function resolveToken(apiKeyFile: string | undefined, baseDir: string): string {
   const envToken = process.env['AZURE_DEVOPS_TOKEN'];
   if (envToken?.trim()) return envToken.trim();
@@ -89,10 +82,7 @@ interface AdoPrResponse {
   url?: string;
 }
 
-/**
- * Creates an Azure DevOps Pull Request from head → base.
- * If a PR for the same branch already exists, returns the existing PR.
- */
+// creates an ADO pull request from head → base; returns the existing PR if one is already open for the branch
 export async function createPullRequest(
   adoConfig: AzureDevOpsConfig,
   token: string,
@@ -124,7 +114,7 @@ export async function createPullRequest(
     };
   } catch (err) {
     const msg = (err as Error).message;
-    // TF401179 = PR already exists for this source/target combination.
+    // TF401179 = PR already exists for this source/target combination
     if (msg.includes('TF401179') || msg.toLowerCase().includes('already exists')) {
       return findExistingPr(adoConfig, token, opts.sourceBranch, opts.targetBranch);
     }
@@ -178,7 +168,7 @@ export interface PipelineRun {
   id: number;
   state: PipelineRunState;
   result: PipelineRunResult;
-  /** Web URL to view the run in Azure DevOps. */
+  // web URL to view the run in Azure DevOps
   webUrl: string;
 }
 
@@ -189,10 +179,7 @@ interface AdoPipelineRunResponse {
   _links?: { web?: { href?: string } };
 }
 
-/**
- * Queues an Azure Pipelines run for the given pipeline definition ID.
- * Passes BRANCH_NAME, BRANCH_SLUG, and FEATURE_NAME as pipeline variables.
- */
+// queues a pipeline run, passing BRANCH_NAME, BRANCH_SLUG, and FEATURE_NAME as pipeline variables
 export async function queuePipelineRun(
   adoConfig: AzureDevOpsConfig,
   token: string,
@@ -220,9 +207,7 @@ export async function queuePipelineRun(
   return normalisePipelineRun(adoConfig, pipelineId, run);
 }
 
-/**
- * Fetches the current status of a pipeline run.
- */
+// fetches the current status of a pipeline run
 export async function getPipelineRun(
   adoConfig: AzureDevOpsConfig,
   token: string,
@@ -254,13 +239,8 @@ function normalisePipelineRun(
   void pipelineId;
 }
 
-/**
- * Polls a pipeline run until it reaches the `completed` state or the timeout
- * elapses. Returns the final run status.
- *
- * @param pollIntervalMs  How often to poll. Default: 15 000 ms.
- * @param timeoutMs       Max total wait. Default: 15 minutes.
- */
+// polls until the run reaches `completed` or timeoutMs elapses (default 15 min, poll every 15 s),
+// then returns the final or last-known status
 export async function waitForPipelineRun(
   adoConfig: AzureDevOpsConfig,
   token: string,
@@ -277,7 +257,7 @@ export async function waitForPipelineRun(
     await sleep(Math.min(pollIntervalMs, deadline - Date.now()));
   }
 
-  // Return the last known state (still inProgress) if we hit the timeout.
+  // on timeout, return the last known state (still inProgress)
   return getPipelineRun(adoConfig, token, pipelineId, runId);
 }
 

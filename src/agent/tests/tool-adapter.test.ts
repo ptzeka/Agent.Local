@@ -6,14 +6,8 @@ import {
   extractPromptedToolCalls,
 } from "../src/agent/tool-adapter.js";
 
-/**
- * tool-adapter tests.
- *
- * Both functions are pure (no I/O, no clock dependence beyond the generated
- * call id), so these are straightforward input → output assertions covering the
- * native-less "prompted JSON" strategy: building the instruction addendum and
- * recovering tool calls from assistant text.
- */
+// Both functions are pure (no I/O beyond a generated call id), so these are input → output assertions over
+// the native-less "prompted JSON" strategy: building the instruction addendum and recovering calls from text.
 
 const SAMPLE_TOOL: ToolDescriptor = {
   name: "read_file",
@@ -21,7 +15,7 @@ const SAMPLE_TOOL: ToolDescriptor = {
   inputSchema: { type: "object", properties: { path: { type: "string" } } },
 };
 
-/** Build the assistant message shape the extractor consumes. */
+// build the assistant message shape the extractor consumes
 function assistant(content: string): ChatMessage {
   return { role: "assistant", content };
 }

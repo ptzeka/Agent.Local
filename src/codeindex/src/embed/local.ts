@@ -1,18 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { EmbedAdapter } from './index.js';
 
-/**
- * Local, dependency-free embedding adapter. Uses a deterministic hashed
- * bag-of-tokens projection so the project builds and runs offline with zero
- * external dependencies or model downloads.
- *
- * This is intentionally a *placeholder-grade* embedding: it is reproducible,
- * stable, and dimensionally correct, but retrieval quality is much weaker
- * than a real embedding model. Swap to `voyage` or `openai` (or wire a real
- * local model such as @xenova/transformers' nomic-embed-text) when accuracy
- * matters. The modelId field changes when you change provider so the
- * codemcp server can refuse cross-model queries.
- */
+// local, dependency-free embedding: deterministic hashed bag-of-tokens, so the project runs offline.
+// Placeholder-grade — reproducible and dimensionally correct but weaker than a real model; swap to
+// voyage/openai when accuracy matters. modelId changes with provider so codemcp can refuse cross-model queries.
 export class LocalEmbedAdapter implements EmbedAdapter {
   readonly modelId: string;
   readonly dim: number;
@@ -36,7 +27,7 @@ function embedOne(text: string, dim: number): number[] {
     vec[h1] = (vec[h1] ?? 0) + 1;
     vec[h2] = (vec[h2] ?? 0) - 1;
   }
-  // L2 normalize for cosine-distance friendliness.
+  // L2 normalize for cosine-distance friendliness
   let norm = 0;
   for (const v of vec) norm += v * v;
   norm = Math.sqrt(norm);
@@ -46,7 +37,7 @@ function embedOne(text: string, dim: number): number[] {
 }
 
 function tokenize(text: string): string[] {
-  // Split on non-word characters; lowercase; drop empties; cap length.
+  // split on non-word chars, lowercase, drop empties, cap length
   return text
     .toLowerCase()
     .split(/[^a-z0-9_]+/)
@@ -55,7 +46,6 @@ function tokenize(text: string): string[] {
 
 function hashTo(token: string, dim: number, salt: number): number {
   const h = createHash('sha256').update(`${salt}:${token}`).digest();
-  // Use first 4 bytes as an unsigned int.
   const n = (h.readUInt32BE(0) >>> 0) % dim;
   return n;
 }

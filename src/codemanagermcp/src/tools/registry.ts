@@ -8,18 +8,14 @@ import { getStatus, getStatusShape, type GetStatusInput } from './get_status.js'
 
 export interface ToolDeps {
   config: CodeManagerConfig;
-  /** Directory holding the running server.js — used for state/data and PAT file resolution. */
+  // directory holding the running server.js — used for state/data and PAT file resolution
   serverDir: string;
-  /** Resolved Azure DevOps PAT — read once at server startup. */
+  // resolved Azure DevOps PAT — read once at server startup
   adoToken: string;
 }
 
-/**
- * Tool registration record. `inputShape` is a Zod raw shape passed to
- * `McpServer.registerTool` — the SDK wraps it into an object schema and uses it
- * for both JSON Schema generation (for the LLM) and runtime input validation.
- * Handlers receive the validated input directly.
- */
+// inputShape is a Zod raw shape passed to McpServer.registerTool — the SDK uses it for both
+// JSON Schema generation and runtime validation, and handlers receive the validated input
 export interface ToolDef {
   name: string;
   description: string;

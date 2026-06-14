@@ -3,14 +3,9 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 import { applyMessageBreakpoints } from "../src/agent/providers/anthropic-provider.js";
 
-/**
- * Rolling conversation-cache breakpoint tests.
- *
- * The provider marks the last content block of the prompt (so the next,
- * longer prompt reads this one as a cache hit) and a second block ~15 blocks
- * earlier (so the current prompt can still find the previous entry when one
- * iteration appended more than the API's 20-block lookback window).
- */
+// The provider marks the last content block (so the next, longer prompt reads this one as a cache hit) and
+// a second block ~15 earlier (so the previous entry stays in reach when one iteration appends more than the
+// API's 20-block lookback window).
 
 function user(text: string): Anthropic.MessageParam {
   return { role: "user", content: text };
@@ -31,7 +26,7 @@ function toolResults(count: number): Anthropic.MessageParam {
   };
 }
 
-/** All blocks across all messages, flattened in order, post-normalisation. */
+// all blocks across all messages, flattened in order, post-normalisation
 function flatBlocks(messages: Anthropic.MessageParam[]): Record<string, unknown>[] {
   return messages.flatMap((m) =>
     typeof m.content === "string"

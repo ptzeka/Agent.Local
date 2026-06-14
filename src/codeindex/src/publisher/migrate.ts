@@ -20,14 +20,10 @@ export interface MigrationStatus {
 }
 
 export interface MigrationRunnerOptions {
-  /** Path to the migrations directory. Defaults to ../../migrations relative to this file. */
+  // path to the migrations directory; defaults to ../../migrations relative to this file
   migrationsDir?: string;
-  /**
-   * When false, the runner records migrations as applied without executing
-   * their SQL body. Set to false for non-SQL backends (e.g. the debug file
-   * backend) so the schema_versions journal stays in lockstep with what
-   * Postgres would have.
-   */
+  // when false, record migrations as applied without running their SQL — for non-SQL backends
+  // (the debug file backend) so schema_versions stays in lockstep with what Postgres would have
   executeSql?: boolean;
 }
 
@@ -88,9 +84,7 @@ export class MigrationRunner {
     await conn.begin();
     try {
       if (this.executeSql) {
-        // The migration runner is the documented exception to the "no SQL in
-        // code" rule — by design, it streams arbitrary SQL loaded from .sql
-        // files. The journal-table insert is delegated back to the repository.
+        // the documented exception to "no SQL in code": by design it streams arbitrary SQL from .sql files
         await conn.query(script.body);
       }
       await this.repo.recordMigration(conn, script.name, script.checksum);

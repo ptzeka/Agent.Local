@@ -6,15 +6,9 @@ import {
   type TurnRunnerEvent,
 } from "../../src/agent/runners/turn-runner.js";
 
-/**
- * Cancellation-chain semantics: a turn is a child of a parent signal (the
- * runtime scope). An ancestor abort must read exactly like a per-turn cancel —
- * "cancelled", never "error" — and a turn whose signal is already aborted must
- * never dispatch.
- *
- * The runner is contentless; these tests model the InputInbox as an array the
- * dispatch drains, mirroring `dispatchAsync` (see turn-runner.test.ts).
- */
+// A turn is a child of a parent signal (the runtime scope): an ancestor abort must read exactly like a
+// per-turn cancel — "cancelled", never "error" — and a turn whose signal is already aborted must never
+// dispatch. Contentless runner; the inbox is modelled as an array the dispatch drains (see turn-runner.test).
 describe("TurnRunner under a parent signal", () => {
   interface Deferred {
     promise: Promise<void>;
@@ -69,7 +63,7 @@ describe("TurnRunner under a parent signal", () => {
     };
   }
 
-  /** A gate that signals "started" then blocks until the abort signal fires. */
+  // a gate that signals "started" then blocks until the abort signal fires
   function blockUntilAbort(started: () => void, signal: AbortSignal): Promise<never> {
     started();
     return new Promise<never>((_, reject) => {

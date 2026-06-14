@@ -6,19 +6,13 @@ import type { RunResult } from "../../src/agent/runners/orchestrator.js";
 import type { Session } from "../../src/agent/session/session.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 
-/**
- * Cancellation-chain semantics for detached children: each sub-session's run
- * signal derives from the manager's parent signal (the runtime scope), so an
- * ancestor abort reaches every child without the manager being enumerated —
- * while finalize() keeps cutting exactly one child.
- */
+// Each sub-session's run signal derives from the manager's parent signal (the runtime scope), so an ancestor
+// abort reaches every child without the manager being enumerated, while finalize() keeps cutting exactly one.
 
 const workspace = { workspaceId: "ws" } as Workspace;
 
-/**
- * Fake child runtime: dispatchAsync parks until its signal aborts (then
- * rejects, like a real provider call) or the test releases it via `finish`.
- */
+// fake child runtime: dispatchAsync parks until its signal aborts (then rejects, like a real provider call)
+// or the test releases it via `finish`
 function makeFakeChildFactory() {
   const releases: Array<() => void> = [];
   const seenSignals: Array<AbortSignal | undefined> = [];

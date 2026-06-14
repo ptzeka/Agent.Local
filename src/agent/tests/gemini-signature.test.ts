@@ -7,16 +7,10 @@ import {
 } from "../src/agent/providers/gemini-provider.js";
 import type { ChatMessage } from "../src/agent/providers/provider.js";
 
-/**
- * Gemini thoughtSignature round-trip tests.
- *
- * Thinking models attach an opaque `thoughtSignature` to each functionCall
- * part and reject (HTTP 400) any later request that replays the call without
- * it. These lock in that the signature is captured off the response and echoed
- * back verbatim when the conversation is replayed.
- */
+// Thinking models attach an opaque thoughtSignature to each functionCall and reject (HTTP 400) a replay
+// without it. These lock in that the signature is captured off the response and echoed back verbatim.
 
-/** Minimal GenerateContentResponse stand-in carrying just the parts we read. */
+// minimal GenerateContentResponse stand-in carrying just the parts we read
 function responseWithParts(
   parts: Array<Record<string, unknown>>
 ): GenerateContentResponse {

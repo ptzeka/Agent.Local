@@ -4,9 +4,9 @@ import { VoyageEmbedAdapter } from './voyage.js';
 import { OpenAIEmbedAdapter } from './openai.js';
 
 export interface EmbedAdapter {
-  /** Stable identifier stored on the commit row (e.g. "local:hash-768"). */
+  // stable identifier stored on the commit row (e.g. "local:hash-768")
   readonly modelId: string;
-  /** Output dimensionality — must match the vector(N) column. */
+  // output dimensionality — must match the vector(N) column
   readonly dim: number;
   embedBatch(texts: string[]): Promise<number[][]>;
 }

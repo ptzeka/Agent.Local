@@ -1,15 +1,11 @@
-// Shared helper for pulling leading doc comments into a chunk.
-//
-// A declaration's "doc" comment is the comment block immediately above it,
-// with no blank line separating them. Including it in the chunk means:
-//   - the embedder sees the intent ("what this function is for"), not just the body
-//   - the assistant can quote the docs alongside the code with line citations
-// The chunk's startLine is shifted up to the first comment line; endLine is unchanged.
+// Pulls a declaration's leading doc comment (the contiguous block directly above it, no blank line)
+// into its chunk, so the embedder sees intent and the assistant can cite docs with the code.
+// startLine shifts up to the first comment line; endLine is unchanged.
 
 export type CommentSyntax = 'cstyle' | 'sql';
 
 interface SyntaxRules {
-  /** Line-comment prefixes (any match counts). */
+  // line-comment prefixes (any match counts)
   lineStarts: string[];
   blockStart: string;
   blockEnd: string;
@@ -27,11 +23,8 @@ const SQL_STYLE: SyntaxRules = {
   blockEnd: '*/',
 };
 
-/**
- * Walks backward from `declStartLine` (1-based) collecting contiguous comment
- * lines. Stops at the first blank line or non-comment line. Returns the new
- * (earlier-or-equal) 1-based start line.
- */
+// walks back from declStartLine (1-based) over contiguous comment lines, stopping at the first
+// blank or non-comment line; returns the new (earlier-or-equal) 1-based start line
 export function expandToLeadingComments(
   lines: string[],
   declStartLine: number,
@@ -53,8 +46,7 @@ export function expandToLeadingComments(
     }
 
     if (trimmed.endsWith(rules.blockEnd)) {
-      // Walk back further to find the matching block start. Allow it to be
-      // on the same line (single-line block comment) or any earlier line.
+      // walk back to the matching block start, which may be on this same line or earlier
       let j = i;
       let foundStart = false;
       while (j >= 0) {
@@ -77,12 +69,8 @@ export function expandToLeadingComments(
   return earliest;
 }
 
-/**
- * Strip leading comment lines from a statement body — used by the SQL
- * chunker so symbol-extraction regexes can match the underlying DDL/DML
- * keyword. The original chunk content is left untouched; only the text
- * passed to the symbol detector is stripped.
- */
+// strips leading comment lines so the SQL chunker's symbol regexes match the underlying keyword;
+// only the text passed to the detector is stripped, not the stored chunk content
 export function stripLeadingComments(text: string, syntax: CommentSyntax): string {
   const rules = syntax === 'sql' ? SQL_STYLE : C_STYLE;
   const lines = text.split(/\r?\n/);
@@ -93,7 +81,7 @@ export function stripLeadingComments(text: string, syntax: CommentSyntax): strin
     if (trimmed.length === 0) { firstCode++; continue; }
     if (rules.lineStarts.some(p => trimmed.startsWith(p))) { firstCode++; continue; }
     if (trimmed.startsWith(rules.blockStart)) {
-      // Skip lines until we close the block.
+      // skip lines until the block closes
       while (firstCode < lines.length) {
         const line = lines[firstCode] ?? '';
         firstCode++;

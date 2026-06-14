@@ -39,7 +39,7 @@ class PgConnection implements DbConnection {
     if (this.released) return;
     try {
       if (this.txState === 'open') {
-        // Fail-safe: an open transaction at dispose means the caller never committed.
+        // open transaction at dispose means the caller never committed; roll back to be safe
         try { await this.client.query('ROLLBACK'); } catch { /* swallow */ }
         this.txState = 'rolledback';
       }

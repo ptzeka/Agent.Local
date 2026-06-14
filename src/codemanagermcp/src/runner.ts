@@ -10,15 +10,15 @@ export interface RunResult {
 }
 
 export interface RunOptions {
-  /** Working directory for the command. */
+  // working directory for the command
   cwd?: string;
-  /** Timeout in milliseconds. Default: 120 000 ms. */
+  // timeout in milliseconds (default 120 000)
   timeoutMs?: number;
-  /** Extra environment variables merged over process.env. */
+  // extra environment variables merged over process.env
   env?: NodeJS.ProcessEnv;
 }
 
-/** Runs a shell command. Never throws — returns exit code + captured output. */
+// never throws — returns exit code + captured output so callers branch on exitCode
 export async function run(command: string, options: RunOptions = {}): Promise<RunResult> {
   const { cwd, timeoutMs = 120_000, env } = options;
   try {
@@ -39,7 +39,7 @@ export async function run(command: string, options: RunOptions = {}): Promise<Ru
   }
 }
 
-/** Runs a shell command and throws if it exits non-zero. */
+// throws if the command exits non-zero
 export async function mustRun(command: string, options: RunOptions = {}): Promise<RunResult> {
   const result = await run(command, options);
   if (result.exitCode !== 0) {
@@ -51,7 +51,7 @@ export async function mustRun(command: string, options: RunOptions = {}): Promis
   return result;
 }
 
-/** Formats a RunResult as a human-readable block for MCP output. */
+// formats a RunResult as a human-readable block for MCP output
 export function formatResult(label: string, result: RunResult): string {
   const lines: string[] = [`${label} (exit ${result.exitCode})`];
   if (result.stdout) lines.push(result.stdout);

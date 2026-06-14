@@ -3,13 +3,8 @@ import type Anthropic from "@anthropic-ai/sdk";
 
 import { repairToolPairing } from "../src/agent/providers/anthropic-provider.js";
 
-/**
- * repairToolPairing tests.
- *
- * The Messages API requires every assistant `tool_use` to be answered by a
- * `tool_result` in the immediately-following user turn. These cover the
- * poisoned-transcript shapes a real interruption leaves behind.
- */
+// The Messages API requires every assistant tool_use to be answered by a tool_result in the
+// immediately-following user turn. These cover the poisoned-transcript shapes a real interruption leaves.
 
 const toolUse = (id: string): Anthropic.ContentBlockParam => ({
   type: "tool_use",
@@ -18,7 +13,7 @@ const toolUse = (id: string): Anthropic.ContentBlockParam => ({
   input: {},
 });
 
-/** Pull the tool_result ids out of a user turn (or [] for anything else). */
+// pull the tool_result ids out of a user turn (or [] for anything else)
 function resultIds(message: Anthropic.MessageParam | undefined): string[] {
   if (!message || message.role !== "user" || !Array.isArray(message.content)) return [];
   return message.content
