@@ -25,13 +25,15 @@ import { EVALUATOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 const DEFAULT_TEMPERATURE = 0.1;
 
 /**
- * Four-state verdict:
+ * Five-state verdict:
  *   - "satisfied"       → the request is fully met; the orchestrator turn ends.
  *   - "continue"        → real progress, on the right track; nudge to keep going.
  *   - "unsatisfied"     → stuck or off track; force a change of approach.
  *   - "awaiting-input"  → blocked waiting for user clarification; turn pauses.
+ *   - "failed"          → the request cannot be completed; stop trying. Terminal,
+ *                         unlike "unsatisfied" which keeps looping.
  */
-export type EvaluationState = "satisfied" | "continue" | "unsatisfied" | "awaiting-input";
+export type EvaluationState = "satisfied" | "continue" | "unsatisfied" | "awaiting-input" | "failed";
 
 export interface EvaluationVerdict {
   state: EvaluationState;
@@ -106,7 +108,7 @@ export class Evaluator {
 function parseVerdict(content: string): EvaluationVerdict {
   for (const raw of content.split("\n")) {
     const line = raw.trim();
-    const match = line.match(/^EVALUATOR:\s*(SATISFIED|CONTINUE|UNSATISFIED|AWAITING-INPUT|AWAITING_INPUT)\b\s*(.*)$/i);
+    const match = line.match(/^EVALUATOR:\s*(SATISFIED|CONTINUE|UNSATISFIED|AWAITING-INPUT|AWAITING_INPUT|FAILED)\b\s*(.*)$/i);
     if (match) {
       let state = match[1].toLowerCase().replace(/_/g, "-") as EvaluationState;
       const reason = match[2].trim() || DEFAULT_REASON[state];
@@ -124,6 +126,7 @@ const DEFAULT_REASON: Record<EvaluationState, string> = {
   continue: "making progress; continue with the next step",
   unsatisfied: "not making progress; change approach",
   "awaiting-input": "orchestrator is waiting for user input",
+  failed: "request cannot be completed",
 };
 
 function formatMessageForEvaluation(message: ChatMessage): string {

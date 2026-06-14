@@ -54,7 +54,9 @@ export function formatEvent(event: RunnerEvent): string {
       const label = isError ? "tool-error" : "tool-ok";
       let out = colour(`  ← ${label}: ${name}\n`);
       if (preview.length > 0) {
-        out += indent(preview, "    " + chalk.gray("│ ")) + "\n";
+        // Response body is transient context, not the signal: collapse to one
+        // gray line so the colored label stays the thing being scanned for.
+        out += "    " + chalk.gray(collapseLine(preview)) + "\n";
       }
       return out;
     }
@@ -99,7 +101,9 @@ export function formatEvent(event: RunnerEvent): string {
     }
 
     case "evaluation-start": {
-      return chalk.gray("  [EVALUATOR] checking whether the request is fulfilled…\n");
+      // The spinner already signals work in flight; only the verdict is worth a
+      // line, so the gate reads as one [EVALUATOR] line, not two.
+      return "";
     }
 
     case "evaluation-verdict": {
@@ -112,7 +116,9 @@ export function formatEvent(event: RunnerEvent): string {
             ? chalk.cyanBright("CONTINUE")
             : state === "awaiting-input"
               ? chalk.blueBright("AWAITING-INPUT")
-              : chalk.yellowBright(state.toUpperCase() || "UNSATISFIED");
+              : state === "failed"
+                ? chalk.redBright("FAILED")
+                : chalk.yellowBright(state.toUpperCase() || "UNSATISFIED");
       // Verdicts are turn-transient (events only, never persisted to the
       // conversation): gray label per the saved-keeps-color convention, but
       // the verdict word stays colored — it's the line being scanned for.
@@ -122,6 +128,11 @@ export function formatEvent(event: RunnerEvent): string {
     case "warning": {
       const message = String(event.data.message ?? "");
       return chalk.yellowBright(`[warning] ${message}\n`);
+    }
+
+    case "system-failure": {
+      const reason = String(event.data.reason ?? "request cannot be completed");
+      return chalk.redBright(`  [SYSTEM-FAILURE] failed to complete request — ${reason}\n`);
     }
 
     default:
@@ -314,9 +325,14 @@ export function renderHelp(write: (text: string) => void = (text) => void proces
   write(lines.join("\n"));
 }
 
-function indent(text: string, prefix: string): string {
-  return text
-    .split("\n")
-    .map((line) => `${prefix}${line}`)
-    .join("\n");
+/**
+ * Collapse a (possibly pretty-printed) tool response to a single line. JSON is
+ * re-stringified compactly; anything else just has its whitespace runs folded.
+ */
+function collapseLine(text: string): string {
+  try {
+    return JSON.stringify(JSON.parse(text));
+  } catch {
+    return text.replace(/\s+/g, " ").trim();
+  }
 }

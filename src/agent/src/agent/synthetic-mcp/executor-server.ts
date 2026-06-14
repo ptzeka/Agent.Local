@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import type { ToolExecutionResult } from "../mcp/mcp.js";
 import { LocalMcp } from "../mcp/local-mcp.js";
 import type { ToolDescriptor } from "../providers/provider.js";
+import type { McpClientRegistry } from "../registries/index.js";
 import type { RuntimeContext } from "../runtime/types.js";
 import type { OrchestratorListener } from "../runners/runner-events.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
@@ -45,7 +46,13 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   private turnEmit: OrchestratorListener = () => {};
   private turnTracker: DispatchTracker | undefined = undefined;
 
-  constructor(private readonly ctx: RuntimeContext) {
+  constructor(
+    private readonly ctx: RuntimeContext,
+    // Advertisement-only registry of the EXECUTOR role's servers. Distinct from
+    // ctx.mcpRegistry (the owning role's mounts): the executor's write tools
+    // must NOT be enumerable through the parent's scoped client, only here.
+    private readonly executorServers: McpClientRegistry
+  ) {
     // Handlers close over `this`, so tools register after super(). Registered
     // descriptors are routing keys only — listTools() advertises live ones.
     super(EXECUTOR_SERVER_NAME, []);
@@ -90,20 +97,14 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   }
 
   /**
-   * Full descriptors of the tools the executor role may run, resolved fresh on
-   * every advertisement (role → model → models.json `mcp` list) so they track
-   * live server mounts: declared-but-unmounted servers drop out, exactly like
-   * the orchestrator's own server resolution.
+   * Full descriptors of the tools the executor role may run. The advertisement
+   * registry already holds exactly the executor role's mounted servers (built
+   * from its models.json `mcp` list), so declared-but-unmounted servers — e.g.
+   * `codemcp` — are simply absent. The executor server itself is never mounted
+   * into that registry, so a dispatch can never target dispatch.
    */
   private resolveExecutorTools(): ToolDescriptor[] {
-    const modelsRegistry = this.ctx.modelsRegistry;
-    const mcpRegistry = this.ctx.mcpRegistry;
-    if (!modelsRegistry || !mcpRegistry) return [];
-    return modelsRegistry
-      .getValidMcpServersForRole(EXECUTOR_ROLE)
-      // A dispatch must never target dispatch itself.
-      .filter((serverName) => serverName !== this.name)
-      .flatMap((serverName) => mcpRegistry.getClient(serverName)?.listTools() ?? []);
+    return this.executorServers.listTools();
   }
 
   private async dispatch(args: Record<string, unknown>): Promise<ToolExecutionResult> {

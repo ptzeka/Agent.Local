@@ -36,6 +36,7 @@ import { pickSession } from "./session-picker.js";
 const EXIT_SATISFIED = 0;
 const EXIT_ERROR = 1;
 const EXIT_CAPPED = 2;
+const EXIT_FAILED = 3;
 
 /** Shared infrastructure produced by bootstrap(). Session setup is NOT here —
  *  each run mode builds its own AgentRuntime after choosing a session. */
@@ -221,7 +222,11 @@ async function runHeadless(
       renderSession(bannerSessionOf(runtime, sessionId !== undefined), (text) =>
         void process.stderr.write(text)
       );
-      return result.outcome === "satisfied" ? EXIT_SATISFIED : EXIT_CAPPED;
+      return result.outcome === "satisfied"
+        ? EXIT_SATISFIED
+        : result.outcome === "failed"
+          ? EXIT_FAILED
+          : EXIT_CAPPED;
     } finally {
       unsubscribe();
       // Cancels the runtime scope so token-holding resources release before exit.

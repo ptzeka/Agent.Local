@@ -1,47 +1,31 @@
 import { describe, expect, test } from "@jest/globals";
 
 import { ExecutorLocalMcp } from "../../src/agent/synthetic-mcp/executor-server.js";
-import type { ModelRegistry } from "../../src/agent/registries/index.js";
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
+import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { makeContext } from "../middleware/context.js";
 
 /**
  * ExecutorLocalMcp dispatch descriptor.
  *
  * The "tool" property must enumerate the executor role's live tool names —
- * resolved per listTools() call from the role's MCP servers — both as a strict
- * schema enum and in the prose description, so the orchestrator can only pick
- * names the executor can actually run.
+ * taken from the advertisement registry of the executor's mounted servers —
+ * both as a strict schema enum and in the prose description, so the
+ * orchestrator can only pick names the executor can actually run.
  */
 describe("ExecutorLocalMcp.listTools", () => {
-  const makeRegistries = () => {
-    const modelsRegistry = {
-      getValidMcpServersForRole: (role: string) =>
-        role === "executor" ? ["fsmcp", "codemcp", "executor"] : [],
-    } as unknown as ModelRegistry;
+  // A fake advertisement registry that just replays the given descriptors;
+  // unmounted servers (e.g. codemcp) are simply absent from the list.
+  const makeExecutorServers = (tools: Partial<ToolDescriptor>[]) =>
+    ({ listTools: () => tools as ToolDescriptor[] }) as unknown as McpClientRegistry;
 
-    const clients: Record<string, { listTools: () => { name: string }[] } | undefined> = {
-      fsmcp: {
-        listTools: () => [
-          { name: "fsmcp__write_file" },
-          { name: "fsmcp__edit_file" },
-        ],
-      },
-      // codemcp declared in models.json but not mounted — must drop out.
-      codemcp: undefined,
-    };
-    const mcpRegistry = {
-      getClient: (name: string) => clients[name],
-    } as unknown as McpClientRegistry;
+  test("enumerates the executor's mounted tools as enum and description", () => {
+    const executorServers = makeExecutorServers([
+      { name: "fsmcp__write_file" },
+      { name: "fsmcp__edit_file" },
+    ]);
 
-    return { modelsRegistry, mcpRegistry };
-  };
-
-  test("enumerates the executor role's mounted tools as enum and description", () => {
-    const { modelsRegistry, mcpRegistry } = makeRegistries();
-    const ctx = makeContext({ modelsRegistry, mcpRegistry });
-
-    const [descriptor] = new ExecutorLocalMcp(ctx).listTools();
+    const [descriptor] = new ExecutorLocalMcp(makeContext({}), executorServers).listTools();
 
     expect(descriptor.name).toBe("executor__dispatch");
     const toolProperty = (descriptor.inputSchema as { properties: { tool: { enum?: string[] } } })
@@ -54,13 +38,7 @@ describe("ExecutorLocalMcp.listTools", () => {
   });
 
   test("omits the enum when no executor tools are mounted", () => {
-    const ctx = makeContext({
-      modelsRegistry: {
-        getValidMcpServersForRole: () => [],
-      } as unknown as ModelRegistry,
-    });
-
-    const [descriptor] = new ExecutorLocalMcp(ctx).listTools();
+    const [descriptor] = new ExecutorLocalMcp(makeContext({}), makeExecutorServers([])).listTools();
 
     const toolProperty = (descriptor.inputSchema as { properties: { tool: { enum?: string[] } } })
       .properties.tool;
@@ -69,10 +47,9 @@ describe("ExecutorLocalMcp.listTools", () => {
   });
 
   test("advertises executor__list_tools alongside dispatch", () => {
-    const { modelsRegistry, mcpRegistry } = makeRegistries();
-    const ctx = makeContext({ modelsRegistry, mcpRegistry });
+    const executorServers = makeExecutorServers([{ name: "fsmcp__write_file" }]);
 
-    const tools = new ExecutorLocalMcp(ctx).listTools();
+    const tools = new ExecutorLocalMcp(makeContext({}), executorServers).listTools();
 
     expect(tools.map((tool) => tool.name)).toEqual(["executor__dispatch", "executor__list_tools"]);
   });
@@ -80,17 +57,14 @@ describe("ExecutorLocalMcp.listTools", () => {
 
 describe("ExecutorLocalMcp.callTool list_tools", () => {
   test("returns the executor's tool descriptors as JSON without dispatching", async () => {
-    const modelsRegistry = {
-      getValidMcpServersForRole: (role: string) => (role === "executor" ? ["fsmcp"] : []),
-    } as unknown as ModelRegistry;
-    const mcpRegistry = {
-      getClient: () => ({
-        listTools: () => [{ name: "fsmcp__write_file", description: "write", inputSchema: {} }],
-      }),
+    const executorServers = {
+      listTools: () => [{ name: "fsmcp__write_file", description: "write", inputSchema: {} }],
     } as unknown as McpClientRegistry;
-    const ctx = makeContext({ modelsRegistry, mcpRegistry });
 
-    const result = await new ExecutorLocalMcp(ctx).callTool("list_tools", {});
+    const result = await new ExecutorLocalMcp(makeContext({}), executorServers).callTool(
+      "list_tools",
+      {}
+    );
 
     expect(result.isError).toBe(false);
     const parsed = JSON.parse(result.content) as { name: string }[];

@@ -226,12 +226,13 @@ You are given:
     executor results, read-backs).
 
 VERDICT TYPES (choose EXACTLY ONE):
-  There are four valid types; output exactly one, no other types exist:
+  There are five valid types; output exactly one, no other types exist:
 
     1. EVALUATOR: SATISFIED <why the request is fully met>
     2. EVALUATOR: CONTINUE <progress made so far + the next concrete step>
     3. EVALUATOR: UNSATISFIED <why the work is stuck or off track>
     4. EVALUATOR: AWAITING-INPUT <what clarification is needed from the user>
+    5. EVALUATOR: FAILED <why the request cannot be completed>
 
   Your response must be a single line: EVALUATOR: <KEYWORD> <brief reason>
 
@@ -255,6 +256,12 @@ How to choose — apply these checks IN ORDER, first match wins:
      actions — waiting on an answer from the user is AWAITING-INPUT (rule 1),
      not UNSATISFIED. Use this to force a change of approach, not merely to
      note that work remains.
+  5. FAILED — the request CANNOT be completed and no change of approach will
+     help: the task is impossible, a required capability or resource is
+     permanently unavailable, or the orchestrator has exhausted every viable
+     approach and is only repeating known-dead actions. This is TERMINAL —
+     it stops the turn. Reserve it for genuinely unrecoverable situations;
+     when another approach might still work, use UNSATISFIED instead.
 
 CONSTRAINTS:
   - Never invent verdict types ("PARTIAL", "BLOCKED", "WAITING", "UNCLEAR", etc.)

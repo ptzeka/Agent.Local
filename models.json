@@ -66,6 +66,15 @@
       "toolTimeoutMs": 60000,
       "iterationCap": 16
     },
+    "claude-haiku-4-5-executor": {
+      "provider": "anthropic",
+      "model": "claude-haiku-4-5",
+      "supportsTools": true,
+      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
+    },
     "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
@@ -89,7 +98,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "executor", "subsessions", "delaymcp"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     }
@@ -97,16 +106,16 @@
 
   "roles": {
     "orchestrator": "gemini-2.5-flash-lite-orchestrator",
-    "executor": "qwen-coder-14b",
+    "executor": "claude-haiku-4-5-executor",
     "coder": "gemini-2.5-flash-lite-coder",
-    "summarizer": "llama-fast",
+    "summarizer": "claude-haiku-4-5",
     "evaluator": "claude-haiku-4-5"
   },
 
   "orchestration": {
-    "maxOrchestratorIterations": 16,
+    "maxOrchestratorIterations": 4,
     "maxExecutorDispatchesPerTurn": 8,
-    "maxExecutorIterationsPerAsk": 6,
+    "maxExecutorIterationsPerAsk": 4,
     "orchestratorTemperature": 0.2,
     "executorTemperature": 0.1,
     "evaluatorTemperature": 0.1,

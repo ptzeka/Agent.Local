@@ -130,6 +130,11 @@ model returns `[policy-error]` and no fs mutation occurred.
       `accumulateUsage` (export it from a shared module).
 - [ ] Add a per-role breakdown (`counters.byRole: Record<string, {in, out}>`)
       so cost attribution survives the move to budgets.
+- [ ] Fold usage on the FAILURE path too: today `foldCounters`
+      (`runners/orchestrator.ts` ~L266) runs only after a successful chat, so a
+      turn that streams output then throws records zero spend — exactly the case
+      we most want costed. Capture partial usage in the provider's catch (or a
+      `finally`) and fold it before re-throw.
 - [ ] Update the code comment in `session/session.ts` that documents the gap.
 
 ### M1-3 · Budget ceilings — `~1d` · P1
@@ -182,6 +187,56 @@ size from iteration 2 onward in a live smoke test.
       (respawn via stored config); on failure return the existing
       "no longer connected" error.
 - [ ] Test with a server process that exits mid-session.
+
+### M1-7 · Tool-call execution isolation in the loop — `~0.5d` · P1
+The per-server `McpClient.callTool` already catches and returns `isError`
+(`mcp/mcp-client.ts` ~L107), but the orchestrator's `scopedClient.callTool`
+call (`runners/orchestrator.ts` ~L339) runs bare. A throw from the routing /
+scoping layer (server unmounted, transport died mid-turn) escapes the loop and
+kills the whole turn instead of degrading to a tool result the model can react to.
+- [ ] Wrap each `callTool` in the tool-loop in try/catch; on throw, push a
+      `wrapToolResult(call, "[tool-error] …")` message and continue the loop.
+- [ ] Test: a tool that throws (not returns `isError`) becomes a tool-error
+      message and the turn keeps going to a final answer.
+
+### M1-8 · Context-overflow recovery — `~1d` · P1
+`maybeSummarize` fails *open* (`runners/orchestrator.ts` ~L433): if
+summarization errors, the next `provider.chat` ships an over-window transcript
+and throws a context-length error (non-retryable — M1-1 won't catch it), killing
+the turn with no recovery.
+- [ ] Classify context-length errors at the provider boundary distinctly from
+      other fatals.
+- [ ] On that error, force a hard re-summarize/truncate of the working messages
+      and retry the chat ONCE before surfacing failure.
+- [ ] Test with a fake provider that rejects oversize input then succeeds:
+      the loop recovers instead of ending the turn.
+
+### M1-9 · Stagnation / loop detection — `~1d` · P2
+The only no-progress guard is the periodic evaluator (`runners/orchestrator.ts`
+~L359), which is coarse and costs a judge call. A model repeating the same tool
+call with the same args, or oscillating between two states, just burns iterations
+to the cap.
+- [ ] Hash `(tool name + canonical args)` per call; on N identical consecutive
+      calls, break with a new outcome (or inject a single corrective nudge then
+      escalate to the evaluator).
+- [ ] Cheap structural check runs every round; the evaluator stays the
+      semantic backstop.
+- [ ] Test: a fake model emitting one repeated call stops before `maxIterations`.
+
+### M1-10 · Parallel independent tool execution — `~1d` · P2
+Tool calls in one assistant turn run serially (`runners/orchestrator.ts` ~L334).
+- [ ] Run independent calls concurrently (`Promise.all`), preserving result
+      order and honoring the turn signal; keep writes serialized if any
+      ordering hazard exists (start read-only-only).
+- [ ] Test: two read calls overlap in time; results map back to the right ids.
+
+### M1-11 · Stream assistant deltas to the UI — `~1d` · P2
+The Anthropic provider streams internally only to dodge the SDK HTTP timeout and
+returns `finalMessage()` (`providers/anthropic-provider.ts` ~L113), so a long
+generation looks hung to the user.
+- [ ] Surface token deltas through a runner event (`MESSAGE_DELTA`) the CLI/SSE
+      layer can render incrementally; keep the collected final message unchanged
+      for transcript/append.
 
 ---
 
@@ -378,6 +433,52 @@ Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
 **Done when:** the five acceptance checks in UNIFIED_RUNTIME_PLAN.md §5 pass,
 including `Orchestrator.run` under ~100 lines and one test proving
 advertised surface ≡ dispatch enforcement.
+
+---
+
+## M5 — Core loop semantics (≈ 3–4 days) — *control logic, not hardening*
+
+From the 2026-06-13 loop review. These change what the loop *does*, not its
+resilience. Build them on MR-4's `step()` + `CompletionGate` seam — they are far
+cleaner on a stepper+gate than bolted onto today's flat `for` in
+`runners/orchestrator.ts`, so MR-4 is a hard prerequisite (consider pulling it
+forward). The terminal signal below *is* a gate input; the plan state *is* what
+the gate reads.
+
+### M5-1 · Explicit completion signal — `~1.5d` · P1
+Completion is currently *inferred from the absence of tool calls*
+(`runners/orchestrator.ts` ~L283): a tool-free assistant turn IS the result. But
+"no tool call" ≠ "done" — a model that narrates ("Let me now verify…") without
+emitting a call is read as a final answer, indistinguishable from a dropped call.
+- [ ] Make completion *declared*: a synthetic `done`/`finish` tool the model
+      calls to end the turn (lean choice — provider-agnostic, works for the
+      prompted-JSON path too), or key off the provider stop reason. Pick one.
+- [ ] A tool-free turn that does NOT declare done becomes continue+nudge
+      ("you didn't act — call a tool or declare done"), not a silent exit.
+- [ ] CompletionGate (MR-4) consumes the signal: executor gate = done-declared;
+      orchestrator gate = done-declared AND evaluator-satisfied. The
+      `this.role === "executor"` branches collapse onto the gate.
+- [ ] Tests: a narrating-without-acting model keeps going; an explicit done
+      ends the turn; both role gates honor the signal.
+
+### M5-2 · First-class plan / progress state — `~2d` · P2
+The loop has no structured "what's left." The evaluator re-derives progress from
+the whole transcript on every completion check and periodically
+(`runners/orchestrator.ts` ~L455) — a second model call, lossy and costly. The
+verbatim request anchor (~L247) patches goal drift precisely *because* there is
+no progress state.
+- [ ] Maintain a small explicit plan/checklist the model reads and updates each
+      iteration (synthetic tool, or a structured block in the working messages).
+- [ ] Re-ground the anchor with goal AND current plan/progress, not just the
+      verbatim request — drifts less than re-quoting alone.
+- [ ] Evaluator scores AGAINST the plan instead of re-reading the transcript;
+      paired with M5-1 it runs only when done is declared (plus the periodic
+      check), cutting judge calls.
+- [ ] Test: a multi-step task shows the plan advancing; the verdict references
+      plan items, not free-form prose.
+
+**Done when:** the role branches in `Orchestrator.run` are gone (collapsed onto
+CompletionGate) and a tool-free, non-declaring turn no longer terminates the loop.
 
 ---
 

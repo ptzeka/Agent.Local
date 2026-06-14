@@ -328,19 +328,20 @@ function handleHistoryCommand(ctx: SlashContext): void {
 }
 
 /**
- * Owns the bottom two terminal rows: a permanently reserved status line (blank
- * when idle, spinner while a turn runs) sitting directly above the `you> `
- * prompt. Reserving the row means the prompt never shifts as the spinner comes
- * and goes.
+ * Owns the bottom terminal rows: the `you> ` prompt, with a spinner row drawn
+ * directly above it ONLY while a turn is running. The spinner row is opened on
+ * first tick and reclaimed when the turn ends, so an idle prompt sits flush
+ * against the previous output — a permanently reserved blank row left a stray
+ * line between rounds (the dead row surfaced above each newly committed input).
  *
- * readline only ever sees a SINGLE-line prompt; the status row is drawn here
+ * readline only ever sees a SINGLE-line prompt; the spinner row is drawn here
  * with explicit cursor moves, never through readline. Keeping readline's prompt
  * one row tall is what makes this reliable — a multi-row readline prompt forces
  * its refresh to move several rows, which desynced against the manual scroll
  * writes and left stray blank lines between events.
  *
- * Invariant: between calls the cursor rests on the prompt row, with the status
- * row physically just above it.
+ * Invariant: between calls the cursor rests on the prompt row; a spinner row is
+ * physically just above it exactly when statusText is non-empty.
  */
 class PromptUI {
   private statusText = "";
@@ -350,14 +351,17 @@ class PromptUI {
   }
 
   /**
-   * Lay down a fresh reserved status row, then the prompt beneath it, at the
-   * cursor's current row. Called at startup and after each submitted line —
-   * readline freezes the prior reserved row into history on Enter, so a new one
-   * must be drawn under the committed input before any output scrolls above it.
+   * Draw the prompt at the cursor's current row. Called at startup and after
+   * each submitted line — readline freezes the committed input into history on
+   * Enter, and the prompt is laid down flush beneath it (no reserved filler row)
+   * before any output scrolls above.
    */
   reserve(): void {
-    process.stdout.write(this.statusText + "\n");
     this.rl.prompt(true);
+  }
+
+  private get hasSpinner(): boolean {
+    return this.statusText !== "";
   }
 
   /** Emit completed output above the prompt block. No-op on empty strings so
@@ -365,34 +369,49 @@ class PromptUI {
   write(text: string): void {
     if (text.length === 0) return;
     const body = text.endsWith("\n") ? text : text + "\n";
-    // Clear the prompt row, then the status row above it; the cursor lands on
-    // the status row, where the scrolled output begins. Redraw status + prompt
-    // beneath it so the reserved block ends up back at the bottom.
+    // Clear the prompt row (and the spinner row above it, when present) so the
+    // body lands where they were, then redraw spinner + prompt beneath it.
+    cursorTo(process.stdout, 0);
+    clearLine(process.stdout, 0);
+    if (this.hasSpinner) {
+      moveCursor(process.stdout, 0, -1);
+      cursorTo(process.stdout, 0);
+      clearLine(process.stdout, 0);
+    }
+    process.stdout.write(body);
+    if (this.hasSpinner) process.stdout.write(this.statusText + "\n");
+    this.rl.prompt(true);
+  }
+
+  /** Show/update the spinner above the prompt, opening its row on first use. */
+  setSpinner(text: string): void {
+    const wasActive = this.hasSpinner;
+    this.statusText = text;
+    if (wasActive) {
+      this.redrawStatus();
+      return;
+    }
+    // First activation: open a fresh row above the prompt for the spinner.
+    cursorTo(process.stdout, 0);
+    clearLine(process.stdout, 0);
+    process.stdout.write(text + "\n");
+    this.rl.prompt(true);
+  }
+
+  /** Reclaim the spinner row so the prompt rises back under the last output. */
+  clearSpinner(): void {
+    if (!this.hasSpinner) return;
+    this.statusText = "";
     cursorTo(process.stdout, 0);
     clearLine(process.stdout, 0);
     moveCursor(process.stdout, 0, -1);
     cursorTo(process.stdout, 0);
     clearLine(process.stdout, 0);
-    process.stdout.write(body);
-    process.stdout.write(this.statusText + "\n");
     this.rl.prompt(true);
   }
 
-  /** Show/update the spinner on the reserved status line. */
-  setSpinner(text: string): void {
-    this.statusText = text;
-    this.redrawStatus();
-  }
-
-  /** Blank the status line, keeping the row reserved so the prompt stays put. */
-  clearSpinner(): void {
-    if (this.statusText === "") return;
-    this.statusText = "";
-    this.redrawStatus();
-  }
-
   /**
-   * Repaint the status row in place. Save/restore cursor (DECSC/DECRC) brackets
+   * Repaint the spinner row in place. Save/restore cursor (DECSC/DECRC) brackets
    * the move so an in-progress prompt + input below is left exactly as it was.
    */
   private redrawStatus(): void {

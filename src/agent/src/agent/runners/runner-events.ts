@@ -17,6 +17,7 @@ export const OrchestratorEventTypes = {
   SUMMARIZATION: "summarization",
   EVALUATION_START: "evaluation-start",
   EVALUATION_VERDICT: "evaluation-verdict",
+  SYSTEM_FAILURE: "system-failure",
   INJECTED_INPUT: "injected-input",
   SUBSESSION_START: "subsession-start",
   SUBSESSION_STATUS: "subsession-status",

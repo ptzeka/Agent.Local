@@ -70,11 +70,12 @@ export interface RunResult {
   /**
    * How the run ended. "satisfied" — the evaluator accepted the final answer;
    * "capped" — the loop hit the orchestrator iteration cap without a satisfied
-   * verdict (the natural "tried too many times / all fails" bound). Lets a
-   * caller distinguish a real completion from a give-up without inspecting the
-   * transcript, and drives the headless exit code.
+   * verdict (the natural "tried too many times / all fails" bound); "failed" —
+   * the evaluator judged the request unrecoverable and stopped the turn early.
+   * Lets a caller distinguish a real completion from a give-up without inspecting
+   * the transcript, and drives the headless exit code.
    */
-  outcome: "satisfied" | "capped";
+  outcome: "satisfied" | "capped" | "failed";
 }
 
 /**
@@ -309,6 +310,12 @@ export class Orchestrator {
           };
         }
 
+        // Terminal failure: the evaluator judged the request unrecoverable.
+        // Stop trying rather than nudge-and-loop until the cap.
+        if (verdict.state === "failed") {
+          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, emit);
+        }
+
         // Nudges quote the request verbatim to prevent goal drift.
         const nudge: ChatMessage = {
           role: "user",
@@ -364,6 +371,9 @@ export class Orchestrator {
           emit,
           options.signal
         );
+        if (verdict.state === "failed") {
+          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, emit);
+        }
         if (verdict.state === "unsatisfied") {
           const nudge: ChatMessage = {
             role: "user",
@@ -403,6 +413,28 @@ export class Orchestrator {
   }
 
   // --------------------------------------------------------------------------
+
+  /**
+   * Terminal failure exit: the evaluator judged the request unrecoverable.
+   * Records a system-failure notice in the transcript, surfaces it as an event,
+   * and returns with outcome "failed" so the caller stops trying.
+   */
+  private async failTurn(
+    reason: string,
+    iterations: number,
+    dispatches: number,
+    conversation: Conversation,
+    emit: RunnerListener
+  ): Promise<RunResult> {
+    const failureNotice: ChatMessage = {
+      role: "assistant",
+      content: `SYSTEM-FAILURE: failed to complete request — ${reason}`,
+    };
+    conversation.append(failureNotice);
+    emit({ type: OrchestratorEventTypes.SYSTEM_FAILURE, data: { reason } });
+    await conversation.flush();
+    return { finalMessage: failureNotice, iterations, dispatches, outcome: "failed" };
+  }
 
   private async maybeSummarize(
     conversation: Conversation,
