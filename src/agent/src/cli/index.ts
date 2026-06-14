@@ -25,6 +25,7 @@ import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { Eventing } from "../common/eventing.js";
+import { FileLogger } from "../common/logger.js";
 
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
@@ -55,13 +56,18 @@ interface Bootstrap {
   shutdown: () => Promise<void>;
 }
 
+/** App-level diagnostics — before any runtime (and its logger) exists. */
+const log = new FileLogger("cli");
+
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
+  log.debug("application start", { mode: args.run !== undefined ? "headless" : "interactive" });
   const boot = await bootstrap();
 
   if (args.run !== undefined) {
     const code = await runHeadless(boot, args.run, args.sessionId);
     await boot.shutdown();
+    log.debug("application end", { code });
     process.exit(code);
   }
 
@@ -69,6 +75,7 @@ async function main(): Promise<void> {
     await runInteractive(boot);
   } finally {
     await boot.shutdown();
+    log.debug("application end", {});
   }
 }
 

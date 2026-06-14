@@ -197,6 +197,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     // manager, so re-bind it to the one that will actually fire.
     this.rewireTurnWake();
 
+    this.logger.debug("runtime initialized", { sessionId: this.session.sessionId });
     return this;
   }
 
@@ -224,6 +225,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
     this.session.status = "running";
     this.events.publish("runtime-status", { sessionId: this.session.sessionId, status: "running" });
+    this.logger.debug("runtime running", { sessionId: this.session.sessionId });
 
     const runOptions: RunOptions = {
       ...options,
@@ -231,6 +233,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       pullInjectedPrompts: () => this.inbox.drain(this.session.sessionId),
     };
 
+    this.logger.debug("turn start", { sessionId: this.session.sessionId });
     try {
       const result = await this.orchestrator.run(runOptions);
       this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
@@ -247,6 +250,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       this.session.status = options.signal?.aborted ? "awaiting-input" : "error";
       throw err;
     } finally {
+      this.logger.debug("turn end", { sessionId: this.session.sessionId, status: this.session.status });
       await this.finalize();
     }
   }

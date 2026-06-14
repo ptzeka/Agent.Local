@@ -114,6 +114,7 @@ export class Orchestrator {
     // directly; the host subscribes via runtime.getEvents() — no onEvent callback.
     const turnEvents = new Eventing();
     this.runtime.getEvents().add(turnEvents);
+    const logger = this.runtime.getLogger();
     const session = this.runtime.getSession();
     const workspace = this.runtime.getWorkspace();
     const modelsRegistry = this.runtime.getModelsRegistry();
@@ -341,12 +342,14 @@ export class Orchestrator {
           throw new Error("turn aborted: user requested stop");
         }
 
+        logger.debug("tool call start", { name: call.name });
         const execution: ToolExecutionResult = await scopedClient.callTool(
           call.name,
           call.arguments,
           turnEvents,
           options.signal
         );
+        logger.debug("tool call end", { name: call.name, isError: execution.isError });
         // Tools that ran a model of their own (executor dispatch) report the
         // delegated cost on the result; it lands in the *Tallied counters so
         // own chat spend and dependency spend stay separately readable.

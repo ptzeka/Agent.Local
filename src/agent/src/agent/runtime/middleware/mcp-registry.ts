@@ -43,6 +43,8 @@ export class McpRegistryMiddleware implements IMiddleware {
       throw new Error("McpRegistryMiddleware: modelsRegistry must be available in context");
     }
 
+    ctx.logger?.debug("mcp start", { role: this.params.role });
+
     const sandboxRoot = ctx.sandboxRoot;
     ctx.mcpRegistry = new McpClientRegistry(sandboxRoot);
 
@@ -79,6 +81,8 @@ export class McpRegistryMiddleware implements IMiddleware {
     ctx.mcpRegistry.registerClient(
       new ExecutorLocalMcp(ctx, executorServers).setTimeout(executorTimeout)
     );
+
+    ctx.logger?.debug("mcp end", { toolCount: ctx.mcpRegistry.listTools().length });
     await next();
   }
 
