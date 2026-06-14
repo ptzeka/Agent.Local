@@ -25,7 +25,10 @@
       "Bash(node tmp-term-sim.mjs)",
       "Read(//c//**)",
       "Bash(rm -f tmp-term-sim.mjs)",
-      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('../../models.json','utf8'\\)\\); console.log\\('models.json valid JSON'\\)\")"
+      "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('../../models.json','utf8'\\)\\); console.log\\('models.json valid JSON'\\)\")",
+      "Bash(cd \"c:/www/Agent.Local\" && awk 'NR>FNR{next}1' /dev/null src/agent/logs/agent-6132026.log >/dev/null 2>&1; grep -nE \"build start|runtime initialized|repl subscribe|runtime running|repl event|turn start|model response\" src/agent/logs/agent-6132026.log | tail -40)",
+      "Read(//dev/**)",
+      "Bash(grep -nA4 \"runtime build start\" src/agent/logs/agent-6132026.log)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"

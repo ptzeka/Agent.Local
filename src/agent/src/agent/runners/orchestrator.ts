@@ -231,9 +231,13 @@ export class Orchestrator {
         turnRequest = injectedPrompts.join("\n");
       }
 
+      // Trace the drain so an empty turn vs a real request is visible in logs.
+      logger.debug("turn input drained", { iteration, drained: injectedPrompts.length, hasRequest: turnRequest !== null });
+
       // A wake with nothing queued (the scheduling turn already drained it):
       // no request to act on, so settle cleanly without calling the model.
       if (turnRequest === null) {
+        logger.debug("empty turn — no queued input, settling without model call", { sessionId: session.sessionId });
         return {
           finalMessage: { role: "assistant", content: "" },
           iterations: 0,
@@ -252,6 +256,7 @@ export class Orchestrator {
         content: modelsRegistry.getAnchorText(turnRequest),
       };
 
+      logger.debug("model call", { iteration, provider: provider.providerName, model: provider.modelId });
       let response: ChatResponse;
       try {
         response = await provider.chat([...workingMessages, requestAnchor], {
@@ -269,6 +274,9 @@ export class Orchestrator {
       foldCounters(session.counters, response.usage);
 
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, turnEvents);
+
+      // Content length + tool count distinguish a real answer from an empty reply.
+      logger.debug("model response", { iteration, contentLength: assistantMessage.content.length, toolCalls: toolCalls.length });
 
       turnEvents.publish(OrchestratorEventTypes.MESSAGE, {
         iteration,

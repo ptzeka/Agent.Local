@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-
 import type { Conversation } from "../conversation/conversation.js";
 import { InputInbox } from "../runners/input-inbox.js";
 import { Orchestrator, type RunOptions, type RunResult } from "../runners/orchestrator.js";
@@ -16,11 +15,11 @@ import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
-import type { Logger } from "../../common/logger.js";
 import { CancellationToken, settledWithin } from "../../common/lifetime.js";
 import { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
+import { ILogger } from "../../common/ilogger.js";
 
 export interface ResetResult {
   projectContext: string | null;
@@ -73,7 +72,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private readonly middlewares: IMiddleware[] = [];
 
   // Populated by build() — all required after construction
-  private logger!: Logger;
+  private logger!: ILogger;
   private session!: Session;
   private conversation!: Conversation;
   private workspace!: Workspace;
@@ -96,9 +95,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   /** This runtime's cutoff in the cancellation chain — parent of every turn,
    *  sub-session, and MCP client it owns. */
   private readonly scope: CancellationToken;
-  /** This runtime's bus in the event chain — the upward mirror of `scope`,
-   *  built and chained under the host's bus by EventingMiddleware during build(). */
-  private events!: Eventing;
+  /** This runtime's bus in the event chain — the upward mirror of `scope`, and
+   *  like `scope` created ONCE for the runtime's lifetime. A rebuild (reset/
+   *  compact) re-runs the pipeline but must not re-mint this bus: hosts subscribe
+   *  to it once and a fresh bus would strand that subscription on a dead object. */
+  private readonly events: Eventing = new Eventing();
   /** First shutdown() call wins; later callers join its promise. */
   private shutdownPromise: Promise<void> | null = null;
 
@@ -131,14 +132,16 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       sandboxRoot: this.deps.sandboxRoot,
       mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
+      logger: this.deps.logger,
       runtimeSignal: this.scope.signal,
-      eventing: undefined,
+      // Seed the lifetime-stable bus so EventingMiddleware chains it under the
+      // host rather than minting a new one — a rebuild must not orphan subscribers.
+      eventing: this.events,
       configurationRegistry: undefined,
       modelsRegistry: undefined,
       mcpRegistry: undefined,
       contextLoader: undefined,
-      providerRegistry: undefined,
-      logger: undefined,
+      providerRegistry: undefined,      
       store: undefined,
       workspaces: undefined,
       user: undefined,
@@ -173,7 +176,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       );
     }
 
-    this.events = ctx.eventing!;
+    // events is seeded from this.events and owned for the runtime's lifetime, so
+    // it is not re-claimed here (see the field declaration).
     this.configurationRegistry = ctx.configurationRegistry!;
     this.logger = ctx.logger!;
     this.modelsRegistry = ctx.modelsRegistry!;
@@ -268,19 +272,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Turn loop — multi-producer scheduling over dispatchAsync
   // --------------------------------------------------------------------------
 
-  /**
-   * Start the session's turn loop and return its TurnRunner. From here on the
-   * runner's pump is the sole caller of dispatchAsync: hosts SUBMIT turns
-   * (user input, API calls) instead of dispatching, and settling sub-sessions
-   * auto-wake the session — their report is appended as a mid-turn ROUND when
-   * a turn is in flight, or queued as a coalesced wake TURN when idle. Either
-   * way the report enters the conversation, so the orchestrator actually
-   * reasons over the child's result instead of it dying in a log line.
-   *
-   * Idempotent. Turn events reach the host via the runtime's bus (getEvents),
-   * not a callback; only scheduling events use onTurnEvent. Headless single runs
-   * simply never call this and keep the direct dispatchAsync path.
-   */
+  // start main loop
   startTurnLoop(options: { onTurnEvent?: TurnRunnerListener } = {}): TurnRunner {
     if (this.turnRunner) return this.turnRunner;
 
@@ -305,24 +297,14 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.turnRunner;
   }
 
-  /**
-   * Complete stoppage — the user's "stop": abort the in-flight turn, flush
-   * every queued turn, and cancel every running sub-session of this session.
-   * Children are swept FIRST and through finalize(), whose settle guard
-   * suppresses their report-back notifications — otherwise a dying child
-   * could enqueue a wake turn into the queue being flushed.
-   */
+  // stop all work and sub work, trigger signal cascade abort
   stopAllWork(): { cancelledTurns: number; cancelledSubSessions: number } {
     const cancelledSubSessions = this.sessionManager.cancelActive(this.session.sessionId);
     const cancelledTurns = this.turnRunner?.cancelAll() ?? 0;
     return { cancelledTurns, cancelledSubSessions };
   }
 
-  /**
-   * Stop the turn loop: unhook the wake subscription and let the in-flight
-   * turn finish. Pending turns stay in the runner's queue (snapshot-able by a
-   * future resume path); they are simply no longer pumped.
-   */
+  // complete current work and stop
   async stopTurnLoop(): Promise<void> {
     this.unsubscribeTurnWake?.();
     this.unsubscribeTurnWake = null;
@@ -332,10 +314,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
   }
 
-  /**
-   * Single host exit path. abort = kill now (SIGINT/pod-stop); drain = let work
-   * settle within the deadline, escalating to abort. Idempotent: first caller wins.
-   */
+  // terminate
   async shutdown(options: { mode: "drain" | "abort"; timeoutMs?: number }): Promise<void> {
     if (!this.shutdownPromise) {
       this.shutdownPromise = this.runShutdown(options);
@@ -555,7 +534,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.orchestrator;
   }
 
-  getLogger(): Logger {
+  getLogger(): ILogger {
     return this.logger;
   }
 

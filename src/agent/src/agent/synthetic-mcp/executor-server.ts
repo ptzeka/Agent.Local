@@ -193,6 +193,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     const parentSession = this.ctx.session!;
     const childRuntime = buildSubRuntime(
       {
+        logger: this.ctx.logger,
         configPath: this.ctx.configPath,
         orchestratorRole: EXECUTOR_ROLE,
         sessionsDir: this.ctx.sessionsDir,

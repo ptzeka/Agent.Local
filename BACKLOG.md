@@ -496,6 +496,34 @@ no progress state.
 **Done when:** the role branches in `Orchestrator.run` are gone (collapsed onto
 CompletionGate) and a tool-free, non-declaring turn no longer terminates the loop.
 
+### M5-3 · CLI control commands as parsed instructions — `~1.5d` · P2
+A small, documented vocabulary of control keywords typed in the REPL (e.g.
+`stop`, `list sessions`, `compact`) that the host recognizes and turns into a
+structured `[system]` instruction injected into the loop, rather than treating
+them as ordinary user prompts. The loop interprets the instruction
+deterministically — `stop` ends the current turn (the unhook path in
+`agent-runtime.ts` `stop()` / [[orchestrator-executor-architecture]]'s settle),
+others map to session/runtime actions. Builds on the existing inject seam
+(`POST /sessions/:id/inject`) and the M0-6 interrupt wiring.
+- [ ] Define the command set + grammar in ONE registry (lean parser: exact
+      keyword/prefix match, not NL) so CLI, SSE, and future hosts share it;
+      unrecognized input falls through as a normal prompt.
+- [ ] Host layer (`cli/index.ts` REPL) recognizes a command and emits the
+      `[system] <verb>` injection; the loop's instruction handler dispatches it
+      to the matching runtime/session action (stop, list, compact, …).
+- [ ] Seed the initial context prompt with the available commands so the model
+      is aware of them and can reference/suggest them — keep this list generated
+      from the same registry, never hand-maintained in the prompt text.
+- [ ] `stop` reuses the turn-stop path (no new chokepoint); pending turns stay
+      queued per the `stop()` contract.
+- [ ] Tests: `stop` mid-turn ends the current turn and leaves the session
+      resumable; `list sessions` returns summaries without entering the model;
+      a non-command sentence is dispatched to the model unchanged.
+
+**Done when:** typing `stop` (or `stop main loop`) in the REPL injects
+`[system] stop`, the loop halts the in-flight turn deterministically, and the
+command vocabulary in the initial context prompt is sourced from the registry.
+
 ---
 
 ## M6 — Feature-flag registry (≈ 1–1.5 days)

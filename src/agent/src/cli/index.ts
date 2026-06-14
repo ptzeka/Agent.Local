@@ -25,8 +25,8 @@ import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { Eventing } from "../common/eventing.js";
-import { FileLogger } from "../common/logger.js";
-
+import { FileLogger } from "../common/filelogger.js";
+import { ILogger } from "../common/ilogger.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
@@ -49,6 +49,7 @@ interface Bootstrap {
   sessionsDir: string;
   configPath: string;
   mcpConfigPath: string;
+  logger: ILogger;
   /** Process-level cancellation root — every runtime chains under it. */
   rootSignal: AbortSignal;
   /** Hand the built runtime to the signal handlers, which exist before it does. */
@@ -56,18 +57,21 @@ interface Bootstrap {
   shutdown: () => Promise<void>;
 }
 
-/** App-level diagnostics — before any runtime (and its logger) exists. */
-const log = new FileLogger("cli");
+// ---------------------------------------------------------------------------
+// MAIN - EntryPoint
+// ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  log.debug("application start", { mode: args.run !== undefined ? "headless" : "interactive" });
+  process.env.LOG_LEVEL = "debug";
   const boot = await bootstrap();
+  const logger = boot.logger;
+  logger.debug("********** application start **********", { mode: args.run !== undefined ? "headless" : "interactive" });
 
   if (args.run !== undefined) {
     const code = await runHeadless(boot, args.run, args.sessionId);
     await boot.shutdown();
-    log.debug("application end", { code });
+    logger.debug("********** application end **********", { code });
     process.exit(code);
   }
 
@@ -75,16 +79,11 @@ async function main(): Promise<void> {
     await runInteractive(boot);
   } finally {
     await boot.shutdown();
-    log.debug("application end", {});
+    logger.debug("application end", {});
   }
 }
 
-/**
- * Bring up the shared infrastructure (tools + model registry) and return it
- * with a teardown callback. Session creation happens per run-mode via
- * AgentRuntime so the session picker and headless session-id argument both
- * land in the same place — the pipeline.
- */
+// bootstrap args
 async function bootstrap(): Promise<Bootstrap> {
   dotenv.config();
 
@@ -105,6 +104,7 @@ async function bootstrap(): Promise<Bootstrap> {
   // Process-level cancellation root. Runtimes are built later (per run mode),
   // so the handlers hold a slot the run mode fills via registerRuntime.
   const root = new AbortController();
+  const logger = new FileLogger();
   let activeRuntime: AgentRuntime | null = null;
   const registerRuntime = (runtime: AgentRuntime): void => {
     activeRuntime = runtime;
@@ -135,16 +135,19 @@ async function bootstrap(): Promise<Bootstrap> {
     sessionsDir,
     mcpConfigPath,
     configPath,
+    logger,
     rootSignal: root.signal,
     registerRuntime,
     shutdown,
   };
 }
 
-/**
- * Build an AgentRuntime with the standard pipeline. Every subsystem the runtime
- * owns is produced by a step here — build() constructs nothing itself:
- **/
+
+// ---------------------------------------------------------------------------
+// Start RunTime
+// ---------------------------------------------------------------------------
+
+
 function buildRuntime(
   boot: Bootstrap,
   eventing: Eventing,
@@ -158,6 +161,7 @@ function buildRuntime(
     sessionsDir,
     workspaceRoot: projectRoot,
     sandboxRoot,
+    logger: boot.logger,
     credentials: token ? { token } : {},
     orchestratorRole: "orchestrator",
     parentSignal: boot.rootSignal,
@@ -168,20 +172,16 @@ function buildRuntime(
   return buildRuntimeRef(deps, sessionId);
 }
 
-/**
- * Interactive mode. Lists saved sessions so the user can resume or start
- * fresh, then builds the runtime through the pipeline and hands off to
- * the REPL.
- */
+// interactive e.g. user request/response
 async function runInteractive(boot: Bootstrap): Promise<void> {
   const { projectRoot, sandboxRoot, sessionsDir, configPath } = boot;
 
   const saved = await AgentRuntime.listSavedSessions(sessionsDir);
   const choice = await pickSession(saved);
 
-  // Host bus the runtime chains under. The REPL owns the terminal via PromptUI
-  // and is the SOLE writer; no out-of-band status line here — a raw write to the
-  // shared TTY desyncs PromptUI's cursor math and eats the turn-event output.
+  // Host bus the runtime chains under. The REPL owns the terminal via its scroll
+  // region (ScreenLayout) and is the SOLE writer; no out-of-band status line here
+  // — a raw write to the shared TTY would land inside the pinned-prompt region.
   // Activity is already shown by the spinner; completion by the turn events.
   const eventing = new Eventing();
 
@@ -208,13 +208,7 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   }
 }
 
-/**
- * Headless single run: build a runtime for the given (or fresh) session,
- * dispatch ONE turn, drain sub-tasks, persist, print the answer, and return
- * the process exit code.
- *
- * Progress goes to stderr so stdout carries only the final answer.
- */
+// headless e.g. job 1 time run
 async function runHeadless(
   boot: Bootstrap,
   input: string,
@@ -284,6 +278,11 @@ function findProjectRoot(): string {
     cursor = parent;
   }
 }
+
+// ---------------------------------------------------------------------------
+// BEGIN
+// ---------------------------------------------------------------------------
+
 
 main().catch((err) => {
   process.stderr.write(chalk.red(`\n[fatal] ${(err as Error).stack ?? err}\n`));

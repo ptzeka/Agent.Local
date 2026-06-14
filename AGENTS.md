@@ -29,6 +29,33 @@ The following repositories are indexed and cached:
 - No narrating behavior visible in the code, no multi-paragraph doc blocks, no restating names/types.
 - If a comment adds nothing beyond the code, delete it.
 
+### Function comments
+
+- **1 line preferred** — a single `//` line above the function:
+
+```ts
+// this function is main entrypoint
+function main() { ... }
+```
+
+- **2 lines max** — add a second `//` line only when there's extra worth stating:
+
+```ts
+// this function is main entrypoint
+// sub description
+function main() { ... }
+```
+
+- That's the ceiling: no endless comment stacks above a function.
+- **Top-level functions** may carry a `/* */` summary block when a fuller overview is warranted:
+
+```ts
+/*
+ * Summary of the top-level function: its role and why it exists.
+ */
+function bootstrap() { ... }
+```
+
 ### Section headers (grouping, not commenting)
 
 Triple-line headers group related members within a file:

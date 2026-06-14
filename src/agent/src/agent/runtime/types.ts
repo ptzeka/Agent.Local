@@ -7,11 +7,11 @@ import type { Session } from "../session/session.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type { SessionStore } from "../session/session-store.js";
 import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
-import type { Logger } from "../../common/logger.js";
 import type { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
+import { ILogger } from "../../common/ilogger.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
@@ -22,7 +22,7 @@ export interface AgentRuntimeQueryable {
   getProvidersRegistry(): ProvidersRegistry;
   getMcpClientRegistry(): McpClientRegistry;
   getContextLoader(): ContextLoader;
-  getLogger(): Logger;
+  getLogger(): ILogger;
   /** This runtime's event bus — a turn chains its own bus under it and publishes
    *  there, so turn events bubble up through the runtime to the host. */
   getEvents(): Eventing;
@@ -35,6 +35,7 @@ export interface AgentRuntimeDeps {
   workspaceRoot: string;
   sandboxRoot: string;
   mcpConfigPath: string;
+  logger: ILogger;
   credentials?: IdentityContext;
   /** Cancellation chain link — an ancestor cancel reaches everything this
    *  runtime owns. Omitted, the runtime is its own root. */
@@ -55,6 +56,7 @@ export interface RuntimeContext {
   readonly sandboxRoot: string;
   readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
+  logger: ILogger;
   /** Owning runtime's scope signal — steps hand it to resources that must die
    *  with the runtime (MCP clients, sub-session children). */
   readonly runtimeSignal: AbortSignal;
@@ -64,7 +66,6 @@ export interface RuntimeContext {
   providerRegistry: ProvidersRegistry | undefined;
   modelsRegistry: ModelRegistry | undefined;
   configurationRegistry: ConfigurationRegistry | undefined;
-  logger: Logger | undefined;
   store: SessionStore | undefined;
   contextLoader: ContextLoader| undefined,
   workspaces: WorkspaceRegistry | undefined;

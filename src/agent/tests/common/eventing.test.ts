@@ -183,4 +183,38 @@ describe("Eventing", () => {
       expect(rootHits).toBe(1);
     });
   });
+
+  // Locks in the exact production wiring: the REPL subscribes to the runtime bus
+  // (the "parent"), and a turn publishes on a child chained under it. A regression
+  // here is what makes a produced answer never reach the terminal.
+  describe("production wiring (runtime bus <- turn child)", () => {
+    test("publishing on the turn child reaches a subscriber on the runtime bus", () => {
+      const runtimeBus = new Eventing();   // what the REPL subscribes to
+      const turnBus = new Eventing();      // what the orchestrator's turn publishes on
+      runtimeBus.add(turnBus);             // parent.add(child) — the only correct direction
+
+      const seen: EventMessage[] = [];
+      runtimeBus.subscribe((event) => seen.push(event));
+
+      turnBus.publish("orchestrator-message", { content: "hi" });
+
+      expect(seen).toEqual([{ type: "orchestrator-message", payload: { content: "hi" } }]);
+    });
+
+    test("the reversed call (child.add(parent)) does NOT propagate child -> parent", () => {
+      // The inversion that silently breaks the cascade: registering the parent as
+      // a child of the leaf wires the bubble the wrong way, so a turn publish never
+      // reaches the runtime/REPL subscriber.
+      const runtimeBus = new Eventing();
+      const turnBus = new Eventing();
+      turnBus.add(runtimeBus);             // WRONG: now runtimeBus bubbles into turnBus
+
+      const seen: EventMessage[] = [];
+      runtimeBus.subscribe((event) => seen.push(event));
+
+      turnBus.publish("orchestrator-message", { content: "hi" });
+
+      expect(seen).toEqual([]);
+    });
+  });
 });

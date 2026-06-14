@@ -17,9 +17,11 @@ export class EventingMiddleware implements IMiddleware {
   constructor(private readonly params: EventingMiddlewareParams = {}) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    const events = new Eventing();
-    this.params.parent?.add(events);
-    ctx.eventing = events;
+    // Reuse a bus the runtime already owns (rebuild via reset/compact) so a
+    // host's one-time subscription survives; only mint one on a fresh build.
+    ctx.eventing ??= new Eventing();
+    // Idempotent: `add` dedupes parents in a Set, so re-chaining on rebuild is safe.
+    this.params.parent?.add(ctx.eventing);
     await next();
   }
 }

@@ -1,5 +1,4 @@
 import readline from "node:readline/promises";
-import { clearLine, cursorTo, moveCursor } from "node:readline";
 import chalk from "chalk";
 
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
@@ -30,25 +29,22 @@ const PROMPT = chalk.bold.cyan("you> ");
 export async function runRepl(options: ReplOptions): Promise<void> {
   const { workspaceRoot, sandboxRoot, runtime, resumed } = options;
 
-  renderBanner(workspaceRoot, sandboxRoot, bannerSessionOf(runtime, resumed), null);
-
+  // Single owner of terminal layout. Output prints ABOVE a prompt that readline
+  // keeps pinned at the bottom: each line clears the prompt row, writes itself,
+  // then readline repaints prompt + in-progress input beneath it. Horizontal-only
+  // (\r + clear-line + readline refresh), so it works on terminals without
+  // scroll-region support and never smears live typing.
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
     prompt: PROMPT,
+    terminal: true,
   });
+  const ui = new ScreenLayout(rl);
 
-  // Single owner of terminal layout: the prompt is pinned to the bottom row and
-  // every out-of-band line (turn output, spinner, sub-session reports) is
-  // written ABOVE it, then the prompt + in-progress input are repainted
-  // beneath. Without this, streamed writes land on top of readline's prompt row
-  // and smear whatever the user is mid-typing.
-  const ui = new PromptUI(rl);
-
-  // Activity indicator: draws a transient status line directly above the
-  // prompt while a turn is in flight, suppressed while the user is mid-keystroke
-  // so it never fights live typing.
-  const spinner = new TurnSpinner(ui, () => rl.line.length > 0);
+  // The banner is the first thing scrolled into the region, so it sits just
+  // above the pinned prompt at startup.
+  renderBanner(workspaceRoot, sandboxRoot, bannerSessionOf(runtime, resumed), null, (text) => ui.write(text));
 
   // Sub-session completions fire out-of-band (after the parent turn that
   // spawned them has ended). Surface them as they arrive, above the prompt.
@@ -68,19 +64,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   // auto-wake the session through the same queue — no producer ever races the
   // dispatchAsync running-guard.
   const turnRunner = runtime.startTurnLoop({
-    onTurnEvent: (event) => {
-      if (event.type === "turn-start") {
-        ui.write(formatTurnEvent(event));
-        spinner.start();
-        return;
-      }
-      if (event.type === "turn-done") {
-        spinner.stop();
-        ui.write(formatTurnEvent(event));
-        return;
-      }
-      ui.write(formatTurnEvent(event));
-    },
+    onTurnEvent: (event) => ui.write(formatTurnEvent(event)),
   });
 
   const ctx: SlashContext = {
@@ -105,10 +89,9 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
     const onLine = (raw: string) => {
       const input = raw.trim();
-      // Enter froze the previous reserved row into history; lay a fresh one
-      // under the committed line before any output or spinner touches the rows
-      // above it.
-      ui.reserve();
+      // Enter froze the typed line into scrollback; lay the next prompt under it
+      // before any output or spinner repaints below.
+      ui.commit();
       if (input === "") return;
 
       // "stop" is an interrupt, not a prompt: with the input line always live,
@@ -145,6 +128,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   await runtime.stopTurnLoop();
   unsubEvents();
   unsubscribe();
+  ui.close();
   rl.close();
 
   renderSession(bannerSessionOf(runtime, resumed));
@@ -334,135 +318,69 @@ function handleHistoryCommand(ctx: SlashContext): void {
 }
 
 /**
- * Owns the bottom terminal rows: the `you> ` prompt, with a spinner row drawn
- * directly above it ONLY while a turn is running. The spinner row is opened on
- * first tick and reclaimed when the turn ends, so an idle prompt sits flush
- * against the previous output — a permanently reserved blank row left a stray
- * line between rounds (the dead row surfaced above each newly committed input).
+ * Owns the bottom prompt. Every line of output is printed ABOVE a `you>` prompt
+ * that readline keeps pinned at the bottom: clear the prompt row, write the
+ * line, then let readline repaint the prompt + any in-progress input beneath it.
  *
- * readline only ever sees a SINGLE-line prompt; the spinner row is drawn here
- * with explicit cursor moves, never through readline. Keeping readline's prompt
- * one row tall is what makes this reliable — a multi-row readline prompt forces
- * its refresh to move several rows, which desynced against the manual scroll
- * writes and left stray blank lines between events.
- *
- * Invariant: between calls the cursor rests on the prompt row; a spinner row is
- * physically just above it exactly when statusText is non-empty.
+ * Deliberately horizontal-only — `\r` + clear-line + readline's own refresh,
+ * never absolute cursor positioning or a scroll region — so it behaves
+ * identically on terminals (ConPTY, basic TTYs) that don't honour DECSTBM. There
+ * is exactly ONE repaint per real output line; nothing else (no spinner) touches
+ * the prompt, because every extra repaint desyncs readline's hidden row state and
+ * leaks blank lines.
  */
-class PromptUI {
-  private statusText = "";
+class ScreenLayout {
+  private readonly out: NodeJS.WriteStream = process.stdout;
+  private readonly tty: boolean = Boolean(process.stdout.isTTY);
 
   constructor(private readonly rl: readline.Interface) {
-    this.reserve();
+    this.rl.prompt();
   }
 
-  /**
-   * Draw the prompt at the cursor's current row. Called at startup and after
-   * each submitted line — readline freezes the committed input into history on
-   * Enter, and the prompt is laid down flush beneath it (no reserved filler row)
-   * before any output scrolls above.
-   */
-  reserve(): void {
-    this.rl.prompt(true);
-  }
-
-  private get hasSpinner(): boolean {
-    return this.statusText !== "";
-  }
-
-  /** Emit completed output above the prompt block. No-op on empty strings so
+  /** Print finished output above the prompt. No-op on whitespace-only writes so
    *  the many "renders nothing" event cases don't churn the prompt. */
   write(text: string): void {
-    if (text.length === 0) return;
-    const body = text.endsWith("\n") ? text : text + "\n";
-    // Clear the prompt row (and the spinner row above it, when present) so the
-    // body lands where they were, then redraw spinner + prompt beneath it.
-    cursorTo(process.stdout, 0);
-    clearLine(process.stdout, 0);
-    if (this.hasSpinner) {
-      moveCursor(process.stdout, 0, -1);
-      cursorTo(process.stdout, 0);
-      clearLine(process.stdout, 0);
-    }
-    process.stdout.write(body);
-    if (this.hasSpinner) process.stdout.write(this.statusText + "\n");
-    this.rl.prompt(true);
+    const body = squeezeBlankLines(text);
+    if (body.length === 0) return;
+    if (this.tty) this.out.write("\r\x1b[2K"); // wipe the prompt row before output lands
+    this.out.write(body + "\n");
+    this.rl.prompt(true); // repaint prompt + in-progress input beneath the output
   }
 
-  /** Show/update the spinner above the prompt, opening its row on first use. */
-  setSpinner(text: string): void {
-    const wasActive = this.hasSpinner;
-    this.statusText = text;
-    if (wasActive) {
-      this.redrawStatus();
-      return;
-    }
-    // First activation: open a fresh row above the prompt for the spinner.
-    cursorTo(process.stdout, 0);
-    clearLine(process.stdout, 0);
-    process.stdout.write(text + "\n");
-    this.rl.prompt(true);
+  /** Lay a fresh prompt after the user commits a line (readline froze the typed
+   *  line into scrollback on Enter; we just draw the next prompt). */
+  commit(): void {
+    this.rl.prompt();
   }
 
-  /** Reclaim the spinner row so the prompt rises back under the last output. */
-  clearSpinner(): void {
-    if (!this.hasSpinner) return;
-    this.statusText = "";
-    cursorTo(process.stdout, 0);
-    clearLine(process.stdout, 0);
-    moveCursor(process.stdout, 0, -1);
-    cursorTo(process.stdout, 0);
-    clearLine(process.stdout, 0);
-    this.rl.prompt(true);
-  }
-
-  /**
-   * Repaint the spinner row in place. Save/restore cursor (DECSC/DECRC) brackets
-   * the move so an in-progress prompt + input below is left exactly as it was.
-   */
-  private redrawStatus(): void {
-    process.stdout.write("\x1b7");
-    moveCursor(process.stdout, 0, -1);
-    cursorTo(process.stdout, 0);
-    clearLine(process.stdout, 0);
-    process.stdout.write(this.statusText);
-    process.stdout.write("\x1b8");
+  close(): void {
+    /* nothing to tear down: no scroll region or pinned rows were claimed */
   }
 }
 
-/**
- * In-place activity indicator: cycles "*" → "****" on a status line just above
- * the pinned prompt while a turn is in flight, so silent stretches (model
- * thinking, long tool calls) read as "working" rather than hung. Ticks are
- * suppressed while the user is mid-keystroke — repainting the prompt under live
- * typing is harmless, but skipping spares needless flicker.
- */
-class TurnSpinner {
-  private timer: NodeJS.Timeout | null = null;
-  private step = 0;
-
-  constructor(
-    private readonly ui: PromptUI,
-    private readonly userIsTyping: () => boolean
-  ) {}
-
-  start(): void {
-    if (this.timer) return;
-    this.step = 0;
-    this.timer = setInterval(() => {
-      if (this.userIsTyping()) return;
-      this.step = (this.step % 4) + 1;
-      this.ui.setSpinner(chalk.gray("*".repeat(this.step)));
-    }, 300);
-    this.timer.unref(); // never the reason the process stays alive
+// Drop every blank line so output sits flush above the prompt. A line counts as
+// blank when it has no VISIBLE content — even if it carries ANSI color codes.
+// chalk wraps whole strings, so a decorative `\n…\n` becomes `ESC[..m\n…\nESC[..m`:
+// the newlines move INSIDE the codes and an anchored `^\n+`/`\n+$` strip misses
+// them. Color codes from dropped blank rows are carried onto the next kept line
+// so coloring survives the squeeze; a trailing reset rides the last line's tail.
+function squeezeBlankLines(text: string): string {
+  const ansi = /\x1b\[[0-9;]*m/g;
+  const codesOf = (line: string): string => (line.match(ansi) ?? []).join("");
+  const kept: string[] = [];
+  let carriedCodes = "";
+  for (const line of text.replace(/\r\n/g, "\n").split("\n")) {
+    if (line.replace(ansi, "").trim().length === 0) {
+      carriedCodes += codesOf(line);
+      continue;
+    }
+    kept.push(carriedCodes + line);
+    carriedCodes = "";
   }
-
-  stop(): void {
-    if (!this.timer) return;
-    clearInterval(this.timer);
-    this.timer = null;
-    this.ui.clearSpinner();
+  if (carriedCodes.length > 0 && kept.length > 0) {
+    kept[kept.length - 1] += carriedCodes;
   }
+  return kept.join("\n");
 }
 
 function stopResultText(result: { cancelledTurns: number; cancelledSubSessions: number }): string {

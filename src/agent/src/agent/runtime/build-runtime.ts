@@ -40,7 +40,7 @@ import { ModelsMiddleware } from "./middleware/models.js";
 export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentRuntime {
     return new AgentRuntime(deps)
     .add(new EventingMiddleware({ parent: deps.eventing }))
-    .add(new LoggerMiddleware())
+    .add(new LoggerMiddleware({ logger: deps.logger }))
     .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
     .add(new ProvidersMiddleware())
     .add(new ModelsMiddleware())

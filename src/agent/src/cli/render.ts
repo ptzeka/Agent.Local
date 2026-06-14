@@ -206,7 +206,10 @@ function formatExecutorEvent(data: Record<string, unknown>): string {
       return chalk.gray(`  [EXECUTOR] running (${model})\n`);
     }
     case "orchestrator-message": {
-      const content = String(data.content ?? "").trim();
+      // The executor stamps every line `EXECUTOR:` by protocol (transcript
+      // attribution); the `[EXECUTOR]` label below already says that, so the
+      // marker is dropped for display only — raw content keeps it for parsing.
+      const content = stripRoleMarker(String(data.content ?? ""), "EXECUTOR").trim();
       return content.length > 0 ? chalk.gray(`  [EXECUTOR] ${content}\n`) : "";
     }
     case "tool-call": {
@@ -232,6 +235,17 @@ function formatExecutorEvent(data: Record<string, unknown>): string {
   }
 }
 
+// Strip a leading `ROLE:` marker from each line. The executor stamps every line
+// with its role by protocol; the renderer's own label makes that redundant on
+// screen, so it is removed for display only.
+function stripRoleMarker(text: string, role: string): string {
+  const marker = new RegExp(`^\\s*${role}:\\s?`, "i");
+  return text
+    .split("\n")
+    .map((line) => line.replace(marker, ""))
+    .join("\n");
+}
+
 /** Identity of the session this REPL drives, shown in the startup banner. */
 export interface BannerSession {
   sessionId: string;
@@ -253,10 +267,12 @@ export function renderBanner(
   workspaceRoot: string,
   sandboxRoot: string,
   session: BannerSession,
-  contextPath?: string | null
+  contextPath?: string | null,
+  // Routes through the REPL's scroll-region writer so the banner lands in the
+  // scrollback above the pinned prompt; headless/tests fall back to stdout.
+  write: (text: string) => void = (text) => void process.stdout.write(text)
 ): void {
   const lines = [
-    "",
     chalk.bold("Agent.Local") + chalk.gray(" — local coding agent (Ollama + MCP)"),
     chalk.gray(`session:   ${sessionLine(session)}`),
     chalk.gray(`project:   ${workspaceRoot}`),
@@ -266,8 +282,8 @@ export function renderBanner(
   if (contextPath) {
     lines.push(chalk.gray(`project context: ${contextPath}`));
   }
-  lines.push(chalk.gray("type /help for commands, /exit to quit"), "");
-  process.stdout.write(lines.join("\n"));
+  lines.push(chalk.gray("type /help for commands, /exit to quit"));
+  write(lines.join("\n"));
 }
 
 /**
