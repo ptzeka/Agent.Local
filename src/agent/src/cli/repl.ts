@@ -64,7 +64,13 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   // auto-wake the session through the same queue — no producer ever races the
   // dispatchAsync running-guard.
   const turnRunner = runtime.startTurnLoop({
-    onTurnEvent: (event) => ui.write(formatTurnEvent(event)),
+    onTurnEvent: (event) => {
+      // Spin while any turn is in flight; drop the loop once the runner idles
+      // (a turn can settle into another via auto-wake, so gate on isBusy).
+      if (event.type === "turn-start") ui.startSpinner();
+      if (event.type === "turn-done" && !turnRunner.isBusy) ui.stopSpinner();
+      ui.write(formatTurnEvent(event));
+    },
   });
 
   const ctx: SlashContext = {
@@ -98,6 +104,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       // it must never enter the queue (where it would be LLM-interpreted after
       // the very work it was meant to halt).
       if (input.toLowerCase() === "stop") {
+        ui.stopSpinner();
         ui.write(stopResultText(runtime.stopAllWork()));
         return;
       }
@@ -115,6 +122,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
       // failures surface through the turn-event renderer, so nothing blocks here.
       const wasBusy = turnRunner.isBusy;
       runtime.injectInput(input, "user");
+      ui.startSpinner(); // immediate feedback; turn-start would also trigger it
       if (wasBusy) {
         ui.write(chalk.gray("(queued — runs at the next step)\n"));
       }
@@ -317,21 +325,28 @@ function handleHistoryCommand(ctx: SlashContext): void {
   ctx.write(out + "\n");
 }
 
+/** Spinner frames — a `***` star that grows then sweeps, looped while a turn runs. */
+const SPINNER_FRAMES = ["*  ", "** ", "***", " **", "  *", "   "];
+const SPINNER_INTERVAL_MS = 150;
+
 /**
- * Owns the bottom prompt. Every line of output is printed ABOVE a `you>` prompt
- * that readline keeps pinned at the bottom: clear the prompt row, write the
- * line, then let readline repaint the prompt + any in-progress input beneath it.
+ * Owns the bottom prompt. Output prints ABOVE a `you>` prompt that readline keeps
+ * pinned at the bottom; while a turn runs an animated `***` line sits just above
+ * it (a two-line readline prompt: `***` ⏎ `you> `).
  *
- * Deliberately horizontal-only — `\r` + clear-line + readline's own refresh,
- * never absolute cursor positioning or a scroll region — so it behaves
- * identically on terminals (ConPTY, basic TTYs) that don't honour DECSTBM. There
- * is exactly ONE repaint per real output line; nothing else (no spinner) touches
- * the prompt, because every extra repaint desyncs readline's hidden row state and
- * leaks blank lines.
+ * Everything is driven through readline's OWN refresh — `setPrompt` + a single
+ * `prompt(true)` per change — so there is no scroll region and no absolute
+ * positioning (which ConPTY ignores). The one place we touch the cursor manually
+ * is output: clear the whole prompt block (however tall — spinner row plus any
+ * wrapped input) using readline's tracked `prevRows`, write the line, then reset
+ * `prevRows` to 0 so readline lays the prompt right under the output instead of
+ * walking back up into it.
  */
 class ScreenLayout {
   private readonly out: NodeJS.WriteStream = process.stdout;
   private readonly tty: boolean = Boolean(process.stdout.isTTY);
+  private spinnerTimer: ReturnType<typeof setInterval> | null = null;
+  private frame = 0;
 
   constructor(private readonly rl: readline.Interface) {
     this.rl.prompt();
@@ -342,9 +357,44 @@ class ScreenLayout {
   write(text: string): void {
     const body = squeezeBlankLines(text);
     if (body.length === 0) return;
-    if (this.tty) this.out.write("\r\x1b[2K"); // wipe the prompt row before output lands
+    if (this.tty) {
+      // Clear the entire current prompt block, not just one row: with the spinner
+      // active (or wrapped input) it spans multiple rows, and readline already
+      // tracks that height as prevRows.
+      const up = this.promptRows();
+      if (up > 0) this.out.write(`\x1b[${up}A`);
+      this.out.write("\r\x1b[0J");
+    }
     this.out.write(body + "\n");
-    this.rl.prompt(true); // repaint prompt + in-progress input beneath the output
+    // Cursor now sits on a fresh line directly below the output; tell readline the
+    // block starts here (prevRows=0) so prompt(true) draws it in place.
+    this.setPromptRows(0);
+    this.rl.prompt(true);
+  }
+
+  /** Begin the `***` loop above the prompt. Idempotent; no-op on a non-TTY. */
+  startSpinner(): void {
+    if (this.spinnerTimer || !this.tty) return;
+    this.repaintSpinner();
+    this.spinnerTimer = setInterval(() => {
+      this.frame = (this.frame + 1) % SPINNER_FRAMES.length;
+      this.repaintSpinner();
+    }, SPINNER_INTERVAL_MS);
+  }
+
+  /** Stop the loop and collapse back to the single-line `you>` prompt. */
+  stopSpinner(): void {
+    if (!this.spinnerTimer) return;
+    clearInterval(this.spinnerTimer);
+    this.spinnerTimer = null;
+    this.rl.setPrompt(PROMPT);
+    this.rl.prompt(true);
+  }
+
+  /** Redraw the two-line spinner prompt in place via readline's own refresh. */
+  private repaintSpinner(): void {
+    this.rl.setPrompt(chalk.yellow(SPINNER_FRAMES[this.frame]) + "\n" + PROMPT);
+    this.rl.prompt(true);
   }
 
   /** Lay a fresh prompt after the user commits a line (readline froze the typed
@@ -354,7 +404,17 @@ class ScreenLayout {
   }
 
   close(): void {
-    /* nothing to tear down: no scroll region or pinned rows were claimed */
+    this.stopSpinner();
+  }
+
+  // readline tracks how many rows below the prompt's top the cursor sits as the
+  // private `prevRows`; we read/reset it to clear and re-anchor the block. Reaching
+  // in is deliberate — it's the value readline itself uses to repaint.
+  private promptRows(): number {
+    return Number((this.rl as unknown as { prevRows?: number }).prevRows ?? 0);
+  }
+  private setPromptRows(rows: number): void {
+    (this.rl as unknown as { prevRows?: number }).prevRows = rows;
   }
 }
 
