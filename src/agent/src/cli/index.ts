@@ -1,19 +1,6 @@
 #!/usr/bin/env node
-/**
- * CLI entry point — the composition root.
- *
- * Boots the shared infrastructure in order:
- *   1. Environment + workspace settings.
- *   2. The MCP tool client (spawns the tools server child process).
- *   3. The model registry (instantiates every provider declared in models.json).
- *
- * Session setup is deferred to each run mode via AgentRuntime's middleware
- * pipeline. Both modes share the same infrastructure but build their own
- * runtime after resolving the session:
- *
- *   Interactive: session picker → AgentRuntime.build() → REPL
- *   Headless:    args.sessionId → AgentRuntime.build() → single dispatch → exit
- */
+// composition root: boots shared infrastructure, then each run mode builds its own runtime after resolving a session
+// interactive: picker → build() → REPL; headless: args.sessionId → build() → single dispatch → exit
 
 import fs from "node:fs";
 import path from "node:path";
@@ -35,14 +22,13 @@ import { bannerSessionOf, runRepl } from "./repl.js";
 import { formatEvent, formatSubSessionNotification, renderSession } from "./render.js";
 import { pickSession } from "./session-picker.js";
 
-/** Exit codes for the headless single-run path. */
+// exit codes for the headless single-run path
 const EXIT_SATISFIED = 0;
 const EXIT_ERROR = 1;
 const EXIT_CAPPED = 2;
 const EXIT_FAILED = 3;
 
-/** Shared infrastructure produced by bootstrap(). Session setup is NOT here —
- *  each run mode builds its own AgentRuntime after choosing a session. */
+// shared infrastructure from bootstrap(); session setup is per run mode, not here
 interface Bootstrap {
   projectRoot: string;
   sandboxRoot: string;
@@ -50,9 +36,9 @@ interface Bootstrap {
   configPath: string;
   mcpConfigPath: string;
   logger: ILogger;
-  /** Process-level cancellation root — every runtime chains under it. */
+  // process-level cancellation root every runtime chains under
   rootSignal: AbortSignal;
-  /** Hand the built runtime to the signal handlers, which exist before it does. */
+  // hands the built runtime to the signal handlers, which exist before it does
   registerRuntime: (runtime: AgentRuntime) => void;
   shutdown: () => Promise<void>;
 }
@@ -101,8 +87,7 @@ async function bootstrap(): Promise<Bootstrap> {
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const configPath = path.join(projectRoot, "models.json");
 
-  // Process-level cancellation root. Runtimes are built later (per run mode),
-  // so the handlers hold a slot the run mode fills via registerRuntime.
+  // runtimes are built later per run mode, so the handlers hold a slot the run mode fills via registerRuntime
   const root = new AbortController();
   const logger = new FileLogger();
   let activeRuntime: AgentRuntime | null = null;
@@ -111,14 +96,13 @@ async function bootstrap(): Promise<Bootstrap> {
   };
 
   const shutdown = async (): Promise<void> => {
-    // Runtime first: its sweep suppresses child report-backs before the scope
-    // cancel; aborting root first would race that sweep.
+    // runtime first: its sweep suppresses child report-backs; aborting root first would race that sweep
     try {
       await activeRuntime?.shutdown({ mode: "abort", timeoutMs: 5_000 });
     } catch {
-      /* teardown must keep unwinding */
+      // teardown must keep unwinding
     }
-    // Backstop for anything not parented under the runtime.
+    // backstop for anything not parented under the runtime
     root.abort("process-shutdown");
   };
 
@@ -165,8 +149,7 @@ function buildRuntime(
     credentials: token ? { token } : {},
     orchestratorRole: "orchestrator",
     parentSignal: boot.rootSignal,
-    // The host's bus: the runtime chains its own under this, so runtime events
-    // bubble up here to the CLI.
+    // host's bus: the runtime chains its own under this, so runtime events bubble up to the CLI
     eventing,
   };
   return buildRuntimeRef(deps, sessionId);
@@ -179,16 +162,13 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const saved = await AgentRuntime.listSavedSessions(sessionsDir);
   const choice = await pickSession(saved);
 
-  // Host bus the runtime chains under. The REPL owns the terminal via its scroll
-  // region (ScreenLayout) and is the SOLE writer; no out-of-band status line here
-  // — a raw write to the shared TTY would land inside the pinned-prompt region.
-  // Activity is already shown by the spinner; completion by the turn events.
+  // no out-of-band status line: the REPL is the sole TTY writer, so a raw write would land in its pinned-prompt region
   const eventing = new Eventing();
 
   const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined).build();
   boot.registerRuntime(runtime);
 
-  // Drain any sub-sessions that outlive a turn before the REPL exits.
+  // surface sub-sessions that report back out-of-band between turns
   const unsubscribe = runtime.onSubSessionEvent((notification) =>
     process.stdout.write(formatSubSessionNotification(notification))
   );
@@ -202,20 +182,19 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
     });
   } finally {
     unsubscribe();
-    // Bounded drain (escalates to abort on expiry) so a hung child can't wedge
-    // the process; the scope cancel releases token-holding resources.
+    // bounded drain (escalates to abort on expiry) so a hung child can't wedge the process
     await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });
   }
 }
 
-// headless e.g. job 1 time run
+// headless: a single run, then exit
 async function runHeadless(
   boot: Bootstrap,
   input: string,
   sessionId?: string
 ): Promise<number> {
   try {
-    // Host bus — same role as interactive; progress already goes to stderr here.
+    // progress goes to stderr here so stdout stays reserved for the final answer
     const eventing = new Eventing();
     eventing.subscribe("runtime-status", (e) =>
       process.stderr.write(chalk.gray(`[runtime] ${String(e.payload.status)}\n`))
@@ -230,20 +209,17 @@ async function runHeadless(
 
     process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 
-    // Turn events arrive on the runtime's bus; map {type,payload} to the
-    // renderer's {type,data} at this boundary. Progress is on stdout here.
+    // map the bus's {type,payload} to the renderer's {type,data} at this boundary
     const unsubEvents = runtime.getEvents().subscribe((event) =>
       process.stdout.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent))
     );
 
     try {
-      // The process root is the turn's cutoff: SIGINT/SIGTERM abort it (via the
-      // bootstrap handlers), cutting the in-flight model/tool/sub-run awaits.
+      // the process root is the turn's cutoff, so SIGINT/SIGTERM cut the in-flight model/tool/sub-run awaits
       const result = await runtime.dispatchAsync(input, { signal: boot.rootSignal });
       await runtime.awaitSubSessions();
       process.stdout.write(result.finalMessage.content + "\n");
-      // Same identity summary the REPL prints on exit; stderr keeps stdout
-      // reserved for the final answer.
+      // to stderr so stdout stays reserved for the final answer
       renderSession(bannerSessionOf(runtime, sessionId !== undefined), (text) =>
         void process.stderr.write(text)
       );

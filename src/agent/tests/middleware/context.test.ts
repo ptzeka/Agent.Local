@@ -9,6 +9,7 @@ import type { ProvidersRegistry } from "../../src/agent/registries/providers-reg
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
+import { SessionToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
@@ -98,9 +99,10 @@ describe("ContextMiddleware", () => {
 
     await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next);
 
-    expect(ctx.session!.contextHashes?.["orchestrator"]).toMatch(/^[0-9a-f]{16}$/);
+    const session = ctx.registry.get(SessionToken);
+    expect(session.contextHashes?.["orchestrator"]).toMatch(/^[0-9a-f]{16}$/);
     const persisted = await store.load("s1");
-    expect(persisted?.contextHashes?.["orchestrator"]).toBe(ctx.session!.contextHashes?.["orchestrator"]);
+    expect(persisted?.contextHashes?.["orchestrator"]).toBe(session.contextHashes?.["orchestrator"]);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -110,7 +112,7 @@ describe("ContextMiddleware", () => {
     await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
 
     const loader = new ContextLoader(contextsDir);
-    const snapshot = await loader.getContextSnapshot(ctx.session!.contextHashes?.["orchestrator"]!);
+    const snapshot = await loader.getContextSnapshot(ctx.registry.get(SessionToken).contextHashes?.["orchestrator"]!);
     expect(snapshot).not.toBeNull();
     expect(snapshot!.role).toBe("orchestrator");
     expect(snapshot!.systemPrompt).toContain("You are a helpful assistant.");
@@ -124,8 +126,8 @@ describe("ContextMiddleware", () => {
     const exec = ctxWith();
     await new ContextMiddleware({ roleName: "executor", contextsDir }).initialize(exec, async () => {});
 
-    const orchHash = orch.session!.contextHashes?.["orchestrator"];
-    const execHash = exec.session!.contextHashes?.["executor"];
+    const orchHash = orch.registry.get(SessionToken).contextHashes?.["orchestrator"];
+    const execHash = exec.registry.get(SessionToken).contextHashes?.["executor"];
     expect(orchHash).toBeDefined();
     expect(execHash).toBeDefined();
     expect(execHash).not.toBe(orchHash);
@@ -137,7 +139,7 @@ describe("ContextMiddleware", () => {
 
     await expect(
       new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next)
-    ).rejects.toThrow(/requires ctx\.session, ctx\.workspace and ctx\.store/);
+    ).rejects.toThrow(/no instance registered for "session"/);
     expect(next).not.toHaveBeenCalled();
   });
 });

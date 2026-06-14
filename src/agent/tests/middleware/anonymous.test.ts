@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import type { Principal } from "../../src/agent/identity/types.js";
 import { AnonymousMiddleware } from "../../src/agent/runtime/middleware/anonymous.js";
+import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -16,8 +17,8 @@ describe("AnonymousMiddleware", () => {
 
     await new AnonymousMiddleware().initialize(ctx, next);
 
-    expect(ctx.user?.sub).toBe("anonymous");
-    expect(ctx.user?.isAuthenticated).toBe(false);
+    expect(ctx.registry.tryGet(UserToken)?.sub).toBe("anonymous");
+    expect(ctx.registry.tryGet(UserToken)?.isAuthenticated).toBe(false);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -32,6 +33,6 @@ describe("AnonymousMiddleware", () => {
 
     await new AnonymousMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(ctx.user).toBe(resolved);
+    expect(ctx.registry.tryGet(UserToken)).toBe(resolved);
   });
 });

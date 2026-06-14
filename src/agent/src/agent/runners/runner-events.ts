@@ -1,8 +1,4 @@
-/**
- * Event types and listeners for orchestrator and executor runners.
- * Centralizes event type definitions so both roles share a consistent system.
- */
-
+// centralised so orchestrator and executor share one event vocabulary
 export const OrchestratorEventTypes = {
   START: "orchestrator-start",
   ITERATION: "orchestrator-iteration",
@@ -52,8 +48,6 @@ export interface ExecutorEvent {
 export type OrchestratorListener = (event: OrchestratorEvent) => void;
 export type ExecutorListener = (event: ExecutorEvent) => void;
 
-/** Union type for events from either role. */
 export type RunnerEvent = OrchestratorEvent | ExecutorEvent;
 
-/** Generic listener that can handle either role's events. */
 export type RunnerListener = (event: RunnerEvent) => void;

@@ -6,11 +6,7 @@ export interface GitContext {
   commitSha: string;
   branch: string;
   isDirty: boolean;
-  /**
-   * Repository identifier: parsed from `remote.origin.url` when available
-   * (`owner/repo`), else a stable id from the resolved filesystem path of
-   * `rootDir` (forward slashes). Never blank.
-   */
+  // owner/repo from remote.origin.url when available, else a stable id from rootDir's resolved path; never blank
   repository: string;
 }
 
@@ -38,10 +34,7 @@ function readGitContextNoRepo(rootDir: string, fallbackBranch: string): Omit<Git
   }
 }
 
-/**
- * Stable repository key when git `origin` is missing: resolved absolute path
- * with symlinks collapsed, `/` separators (Windows-safe for matching).
- */
+// stable repository key when git origin is missing: resolved absolute path, symlinks collapsed, / separators
 export function repositoryIdFromResolvedPath(rootDir: string): string {
   const absolute = resolve(rootDir);
   let canonical: string;
@@ -53,11 +46,8 @@ export function repositoryIdFromResolvedPath(rootDir: string): string {
   return canonical.replace(/\\/g, '/');
 }
 
-/**
- * Reads `git config --get remote.origin.url` and parses it to `owner/repo`
- * form. Returns null when the repo has no origin remote or git is unavailable;
- * the caller is expected to fall back to {@link repositoryIdFromResolvedPath}.
- */
+// owner/repo from remote.origin.url; null when no origin or git is unavailable,
+// so the caller falls back to repositoryIdFromResolvedPath
 export function detectRepositoryName(rootDir: string): string | null {
   let url: string;
   try {
@@ -69,10 +59,7 @@ export function detectRepositoryName(rootDir: string): string | null {
   return parseRepositoryFromOriginUrl(url);
 }
 
-/**
- * Pulls the "owner/repo" tail out of an origin URL. Handles the common Git
- * hosting URL shapes. Exported for unit testing.
- */
+// pulls the "owner/repo" tail out of an origin URL (common Git hosting shapes); exported for unit testing
 export function parseRepositoryFromOriginUrl(url: string): string | null {
   const stripped = url.trim().replace(/\.git$/i, '');
   if (!stripped) return null;

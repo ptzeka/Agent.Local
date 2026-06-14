@@ -2,37 +2,11 @@ import type { ChatMessage, LLMProvider } from "../providers/provider.js";
 import { AgentRuntimeQueryable } from "../runtime/types.js";
 import { EVALUATOR_SYSTEM_PROMPT } from "../context/system-prompt.js";
 
-/**
- * Evaluator.
- *
- * The completion gate for an orchestrator turn. When the orchestrator
- * stops calling tools — its way of signalling "I think I'm done" — the
- * evaluator judges the proposed answer against the ORIGINAL user request
- * and the work actually performed this turn. It returns a binary verdict
- * with a reason:
- *
- *   - satisfied  → the orchestrator loop ends; the proposed answer stands.
- *   - !satisfied → the reason is fed back and the orchestrator keeps
- *                  looping until the request is genuinely fulfilled (or
- *                  the safety iteration cap trips).
- *
- * The evaluator is deliberately conservative about blocking: it only
- * returns UNSATISFIED when something concrete is missing, and it
- * fails OPEN (treats an unparseable response as satisfied) so a flaky
- * judge can never trap the user in an endless loop.
- */
-
+// completion gate: when the orchestrator stops calling tools, judges the proposed answer
+// against the original request; fails OPEN (unparseable → satisfied) so a flaky judge can't trap the user
 const DEFAULT_TEMPERATURE = 0.1;
 
-/**
- * Five-state verdict:
- *   - "satisfied"       → the request is fully met; the orchestrator turn ends.
- *   - "continue"        → real progress, on the right track; nudge to keep going.
- *   - "unsatisfied"     → stuck or off track; force a change of approach.
- *   - "awaiting-input"  → blocked waiting for user clarification; turn pauses.
- *   - "failed"          → the request cannot be completed; stop trying. Terminal,
- *                         unlike "unsatisfied" which keeps looping.
- */
+// "failed" is terminal (stop trying), unlike "unsatisfied" which keeps the orchestrator looping
 export type EvaluationState = "satisfied" | "continue" | "unsatisfied" | "awaiting-input" | "failed";
 
 export interface EvaluationVerdict {
@@ -41,11 +15,9 @@ export interface EvaluationVerdict {
 }
 
 export interface EvaluateParams {
-  /** The user's original request for this turn. */
   question: string;
-  /** The orchestrator's candidate final answer (its tool-free message). */
+  // the orchestrator's tool-free message proposed as the final answer
   proposedAnswer: string;
-  /** The turn's working transcript, used to see what actually happened. */
   transcript: ChatMessage[];
 }
 
@@ -100,11 +72,7 @@ export class Evaluator {
   }
 }
 
-/**
- * Parse the single EVALUATOR verdict line. Fails OPEN: if no recognisable
- * verdict is present, we treat the turn as satisfied so a malformed judge
- * response can never trap the orchestrator in an endless loop.
- */
+// fails OPEN: no recognisable verdict → satisfied, so a malformed judge can't trap the orchestrator
 function parseVerdict(content: string): EvaluationVerdict {
   for (const raw of content.split("\n")) {
     const line = raw.trim();

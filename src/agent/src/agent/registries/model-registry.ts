@@ -1,17 +1,8 @@
 import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
 import { ModelsFile, ModelDefinition, DEFAULT_TOOL_TIMEOUT_MS } from "./configuration-registry.js";
-/**
- * Model registry.
- *
- * Loads models.json, instantiates one provider per declared model, and
- * maps logical roles ("planner", "coder", "summarizer") onto those providers.
- *
- * The orchestrator only ever asks: "give me the provider for role X".
- * Swapping models therefore means editing models.json or calling
- * `assignRole`, never touching agent code.
- */
 
+// maps logical roles onto declared models so swapping a model is a models.json/assignRole change, never code
 export class ModelRegistry {
 
   private definitions: Record<string, ModelDefinition>;
@@ -43,12 +34,7 @@ export class ModelRegistry {
     }
   }
 
-  /**
-   * The per-call ACTIVE REQUEST anchor with the turn's request filled in.
-   * Served through the registry (not imported from the template directly) so
-   * the anchor wording can be swapped — per-deployment, per-model, or from
-   * config — without touching orchestrator code.
-   */
+  // served through the registry, not the template, so anchor wording can be swapped without touching orchestrator code
   public getAnchorText(request: string): string {
     return REQUEST_ANCHOR_TEMPLATE.replace("{REQUEST}", request);
   }
@@ -87,7 +73,7 @@ export class ModelRegistry {
     return model.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
   }
 
-  /** Per-model iteration cap, or undefined when the model defers to the role default. */
+  // undefined when the model defers to the role default
   public getIterationCapForModel(name: string): number | undefined {
     return this.definitions[name]?.iterationCap;
   }

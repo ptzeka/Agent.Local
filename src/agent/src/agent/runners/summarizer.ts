@@ -1,18 +1,8 @@
 import type { ChatMessage } from "../providers/provider.js";
 import { AgentRuntimeQueryable } from "../runtime/types.js";
 
-/**
- * Summarizer.
- *
- * Compresses an old prefix of the orchestrator conversation into a single
- * "conversation-so-far" note. The orchestrator splices the result back in
- * as one `role: "system"` message, preserving the last K messages
- * verbatim so recent tool results remain precise.
- *
- * The summarizer never sees the live system prompts and never invokes
- * tools — it is a pure text-in, text-out role.
- */
-
+// pure text-in/text-out role: compresses an old conversation prefix into one system message,
+// while the orchestrator keeps the last K messages verbatim so recent tool results stay precise
 const DEFAULT_TEMPERATURE = 0.2;
 const ROLE_NAME = "summarizer";
 
@@ -58,19 +48,10 @@ export class Summarizer {
   }
 }
 
-/**
- * Sentinel that marks a spliced "conversation-so-far" system message. Kept as a
- * stable, machine-detectable prefix so other components (e.g. session reset) can
- * recognise the summary without re-parsing prose. Do not localise or reword it.
- */
+// stable machine-detectable prefix so session reset recognises a summary without parsing prose; do not reword
 export const SUMMARY_TAG = "[CONVERSATION SUMMARY]";
 
-/**
- * Build the single `system` message the orchestrator splices in place of the
- * compressed prefix. Beyond the summary text, it tells the reader two things:
- * the summary is ground-truth context, and — crucially for resuming after a
- * reset — the work it describes ALREADY happened and must not be re-executed.
- */
+// the message must tell the reader the work ALREADY happened, so a resumed session doesn't re-execute it
 export function buildSummaryMessage(summaryText: string, summarizedCount: number): ChatMessage {
   return {
     role: "system",
@@ -85,11 +66,7 @@ export function buildSummaryMessage(summaryText: string, summarizedCount: number
   };
 }
 
-/**
- * True when `message` is a spliced summary checkpoint. Used by session reset to
- * preserve the latest summary (so a reset session can continue from it) instead
- * of re-running the summarizer.
- */
+// session reset uses this to preserve the latest summary instead of re-running the summarizer
 export function isSummaryMessage(message: ChatMessage): boolean {
   return message.role === "system" && message.content.startsWith(SUMMARY_TAG);
 }

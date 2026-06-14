@@ -1,19 +1,8 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 
-/**
- * Workspace guard.
- *
- * Every filesystem-touching tool must resolve user-supplied paths through
- * `resolveSafe`. The guard answers two questions:
- *
- *   1. What absolute path does this string refer to?
- *   2. Is that path inside the configured workspace root?
- *
- * If the answer to (2) is no, we throw before any disk access happens.
- * This is the single defense against the model wandering the filesystem.
- */
-
+// the single defence against the model wandering the filesystem: every fs tool resolves user paths
+// through resolveSafe, which throws before any disk access if the path lands outside the workspace root
 export class WorkspaceViolationError extends Error {
   constructor(requestedPath: string, workspaceRoot: string) {
     super(
@@ -34,15 +23,15 @@ export function createWorkspace(rawRoot: string): Workspace {
   const root = path.resolve(rawRoot);
 
   function resolveSafe(userPath: string): string {
-    // Treat a bare "." or "" as "the workspace root itself".
+    // a bare "." or "" means the workspace root itself
     const candidate = userPath === "" || userPath === "." ? root : userPath;
 
-    // If the caller passed a relative path, anchor it at the workspace root.
+    // anchor a relative path at the workspace root
     const absolute = path.isAbsolute(candidate)
       ? path.resolve(candidate)
       : path.resolve(root, candidate);
 
-    // Normalise both sides so "C:\\Foo" and "c:\\foo\\" compare correctly on Windows.
+    // trailing sep on both sides so "C:\\Foo" and "c:\\foo\\" compare correctly on Windows
     const normalisedRoot = path.resolve(root) + path.sep;
     const normalisedAbsolute = absolute + path.sep;
 
@@ -65,16 +54,12 @@ export function createWorkspace(rawRoot: string): Workspace {
   return { root, resolveSafe, relativize };
 }
 
-/**
- * Convenience: read the workspace root from the environment, defaulting
- * to the process's current working directory.
- */
+// reads the workspace root from env, defaulting to cwd
 export async function workspaceFromEnv(): Promise<Workspace> {
   const raw = process.env.AGENT_WORKSPACE ?? ".";
   const workspace = createWorkspace(raw);
 
-  // Confirm the directory exists so we fail fast on misconfiguration
-  // rather than on the first tool call.
+  // fail fast on misconfiguration rather than on the first tool call
   await fs.access(workspace.root);
   return workspace;
 }

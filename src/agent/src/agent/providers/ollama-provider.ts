@@ -8,24 +8,13 @@ import type {
   ToolCall,
 } from "./provider.js";
 
-/**
- * OllamaProvider — talks to a local Ollama daemon over HTTP.
- *
- * One instance binds to one (host, model) pair. The model registry creates
- * a fresh provider per entry in models.json.
- */
-
+// one instance per (host, model); the registry creates a fresh provider per models.json entry
 export interface OllamaProviderConfig {
   host: string;
   model: string;
   supportsNativeTools: boolean;
 
-  /**
-   * If true, strip `<think>...</think>` blocks from the assistant's
-   * reply before exposing it to the agent loop. Used for reasoning
-   * models like deepseek-r1 whose internal monologue should not leak
-   * into the downstream prompt.
-   */
+  // keeps a reasoning model's <think> monologue from leaking into the downstream prompt
   stripThinkBlocks?: boolean;
 }
 
@@ -55,9 +44,7 @@ export class OllamaProvider implements LLMProvider {
       },
     };
 
-    // Only attach tools when the model supports native function calling.
-    // For non-tool models we deliberately omit the field so Ollama doesn't
-    // refuse the request, and rely on the prompted-JSON adapter higher up.
+    // omit tools for non-native models so Ollama doesn't refuse; the prompted-JSON adapter handles those
     if (this.supportsNativeTools && options.tools.length > 0) {
       request.tools = options.tools.map(toOllamaTool);
     }
@@ -99,8 +86,6 @@ export class OllamaProvider implements LLMProvider {
 }
 
 function toOllamaMessage(message: ChatMessage): OllamaMessage {
-  // Ollama treats tool responses as `role: "tool"` with the result in `content`.
-  // Assistant tool-call requests get serialized into the `tool_calls` field.
   if (message.role === "tool") {
     return {
       role: "tool",
@@ -147,29 +132,20 @@ function extractToolCalls(message: OllamaMessage): ToolCall[] {
   if (!rawCalls || rawCalls.length === 0) return [];
 
   return rawCalls.map((raw, index) => ({
-    // Ollama does not assign IDs to tool calls; we synthesise stable ones.
+    // Ollama assigns no tool-call ids, so synthesise stable ones for pairing
     id: `call_${Date.now()}_${index}`,
     name: raw.function.name,
     arguments: raw.function.arguments ?? {},
   }));
 }
 
-/**
- * Reasoning models (deepseek-r1, qwq, etc.) wrap their chain-of-thought in
- * `<think>...</think>` blocks. We keep the thinking off the wire to the
- * executor model so the prompt stays focused on the conclusions.
- */
+// keep a reasoning model's <think> chain-of-thought off the wire so the prompt stays on conclusions
 function stripThinkTags(content: string): string {
   return content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
 }
 
-/**
- * The ollama client offers no per-request AbortSignal, so without this a user
- * stop would hang until a long generation finished. Racing the request against
- * the signal unwinds the agent promptly; the daemon still completes (and
- * discards) the generation server-side — abandoning it is the best the client
- * API allows.
- */
+// the ollama client takes no AbortSignal, so a user stop would hang until generation finished;
+// racing against the signal unwinds promptly while the daemon discards the work server-side
 function raceWithAbort<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;
   return new Promise<T>((resolve, reject) => {

@@ -1,34 +1,19 @@
 import type { Principal } from "../../identity/types.js";
+import { UserToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
-/**
- * IdentityMiddleware — reads credentials from ctx and attempts to resolve a
- * Principal. Sets ctx.user when successful; leaves it undefined otherwise so
- * AnonymousMiddleware (or any downstream fallback) can take over.
- *
- * This implementation is a MOCK: it decodes the JWT payload without verifying
- * the signature. Replace the `resolve` method body with a real authority call
- * (e.g. JWKS fetch + signature verification) when real auth is needed.
- */
+// resolves a Principal from ctx credentials, leaving the user unset on failure so AnonymousMiddleware takes over
+// MOCK: decodes the JWT payload without verifying the signature — swap resolve() for a real authority call in prod
 export class IdentityMiddleware implements IMiddleware {
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     const principal = this.resolve(ctx.credentials.token);
     if (principal) {
-      ctx.user = principal;
+      ctx.registry.set(UserToken, principal);
     }
     await next();
   }
 
-  /**
-   * Attempt to decode a JWT and produce a Principal.
-   *
-   * Mock behaviour: base64url-decodes the payload segment without any
-   * signature check. Extracts standard OIDC claims (`sub`, `iss`, `name`,
-   * `email`, `roles`, `scope`). Returns null when the token is absent, not
-   * three-part, or the payload is not valid JSON.
-   *
-   * Replace this with signature verification + authority validation in prod.
-   */
+  // MOCK: base64url-decodes the payload with no signature check; null when token is absent, malformed, or non-JSON
   private resolve(token: string | undefined): Principal | null {
     if (!token) return null;
 

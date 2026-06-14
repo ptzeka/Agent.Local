@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { StoreMiddleware } from "../../src/agent/runtime/middleware/store.js";
+import { StoreToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
 
@@ -28,12 +29,13 @@ describe("StoreMiddleware", () => {
 
     await new StoreMiddleware().initialize(ctx, next);
 
-    expect(ctx.store).toBeDefined();
+    const store = ctx.registry.tryGet(StoreToken);
+    expect(store).toBeDefined();
     expect(next).toHaveBeenCalledTimes(1);
 
     // Round-trip through the configured directory proves it's a real, usable store.
-    await ctx.store!.save(createSession({ sessionId: "s1", workspaceId: "w1", conversationId: "c1" }));
-    expect((await ctx.store!.load("s1"))?.sessionId).toBe("s1");
+    await store!.save(createSession({ sessionId: "s1", workspaceId: "w1", conversationId: "c1" }));
+    expect((await store!.load("s1"))?.sessionId).toBe("s1");
   });
 
   test("the seeded store is empty — unknown ids load as null, not stale data", async () => {
@@ -41,6 +43,6 @@ describe("StoreMiddleware", () => {
 
     await new StoreMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(await ctx.store!.load("does-not-exist")).toBeNull();
+    expect(await ctx.registry.get(StoreToken).load("does-not-exist")).toBeNull();
   });
 });

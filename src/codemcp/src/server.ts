@@ -45,8 +45,7 @@ async function buildDeps(config: CodeMcpConfig): Promise<{
     await verifySchema(factory, repo, config.expectedMigration, null);
   }
 
-  // Default repo when a tool call omits `repository`: match cwd git origin to
-  // a registered name when possible, else the first registration / discovery order.
+  // default repo when a call omits `repository`: cwd git origin if it matches a registered name, else the first
   const currentRepository = ((): string | null => {
     if (config.repositories.length === 0) {
       return detectCurrentRepository(process.cwd());

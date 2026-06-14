@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { IdentityMiddleware } from "../../src/agent/runtime/middleware/identity.js";
+import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /** Build a (mock, unsigned) JWT with the given payload as the middle segment. */
@@ -24,10 +25,10 @@ describe("IdentityMiddleware", () => {
 
     await new IdentityMiddleware().initialize(ctx, next);
 
-    expect(ctx.user?.sub).toBe("user-42");
-    expect(ctx.user?.isAuthenticated).toBe(true);
-    expect(ctx.user?.scopes).toEqual(["read", "write"]);
-    expect(ctx.user?.claims.roles).toEqual(["admin"]);
+    expect(ctx.registry.tryGet(UserToken)?.sub).toBe("user-42");
+    expect(ctx.registry.tryGet(UserToken)?.isAuthenticated).toBe(true);
+    expect(ctx.registry.tryGet(UserToken)?.scopes).toEqual(["read", "write"]);
+    expect(ctx.registry.tryGet(UserToken)?.claims.roles).toEqual(["admin"]);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -36,8 +37,8 @@ describe("IdentityMiddleware", () => {
 
     await new IdentityMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(ctx.user?.sub).toBe("bare");
-    expect(ctx.user?.scopes).toEqual([]);
+    expect(ctx.registry.tryGet(UserToken)?.sub).toBe("bare");
+    expect(ctx.registry.tryGet(UserToken)?.scopes).toEqual([]);
   });
 
   test("leaves ctx.user undefined for a malformed token, still advancing", async () => {
@@ -46,7 +47,7 @@ describe("IdentityMiddleware", () => {
 
     await new IdentityMiddleware().initialize(ctx, next);
 
-    expect(ctx.user).toBeUndefined();
+    expect(ctx.registry.tryGet(UserToken)).toBeUndefined();
     expect(next).toHaveBeenCalledTimes(1);
   });
 });

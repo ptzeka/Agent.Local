@@ -6,6 +6,7 @@ import path from "node:path";
 import { ANONYMOUS_PRINCIPAL } from "../../src/agent/identity/types.js";
 import type { McpClient } from "../../src/agent/mcp-client.js";
 import { SessionMiddleware } from "../../src/agent/runtime/middleware/session.js";
+import { SessionToken, WorkspaceToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
@@ -52,10 +53,11 @@ describe("SessionMiddleware", () => {
 
     await new SessionMiddleware().initialize(ctx, next);
 
-    expect(ctx.session).toBeDefined();
-    expect(ctx.workspace?.workspaceId).toBe(ctx.session!.workspaceId);
-    expect(ctx.session!.user).toBe(ANONYMOUS_PRINCIPAL);
-    expect((await store.load(ctx.session!.sessionId))?.sessionId).toBe(ctx.session!.sessionId);
+    const session = ctx.registry.tryGet(SessionToken);
+    expect(session).toBeDefined();
+    expect(ctx.registry.tryGet(WorkspaceToken)?.workspaceId).toBe(session!.workspaceId);
+    expect(session!.user).toBe(ANONYMOUS_PRINCIPAL);
+    expect((await store.load(session!.sessionId))?.sessionId).toBe(session!.sessionId);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -67,7 +69,7 @@ describe("SessionMiddleware", () => {
     const ctx = makeContext({ workspaceRoot: root, store, workspaces, tools: fakeTools(root) });
     await new SessionMiddleware({ sessionId: "crashed" }).initialize(ctx, jest.fn(async () => {}));
 
-    expect(ctx.session!.status).toBe("awaiting-input");
+    expect(ctx.registry.get(SessionToken).status).toBe("awaiting-input");
     // Transcript healing (dangling tool_use trim) is ConversationMiddleware's
     // job now — covered in conversation.test.ts.
   });
@@ -77,7 +79,7 @@ describe("SessionMiddleware", () => {
     const next = jest.fn(async () => {});
 
     await expect(new SessionMiddleware().initialize(ctx, next)).rejects.toThrow(
-      /requires ctx\.store and ctx\.workspaces/
+      /no instance registered for "workspaces"/
     );
     expect(next).not.toHaveBeenCalled();
   });

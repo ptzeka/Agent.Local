@@ -3,23 +3,16 @@ import { GeminiProvider } from "./gemini-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
 import type { LLMProvider } from "./provider.js";
 
-/**
- * Provider factory registry.
- *
- * To plug in a new backend, add a case here and ship the implementation
- * file alongside ollama-provider.ts. The model registry calls
- * `createProvider` to materialise providers from models.json entries.
- */
-
+// plug in a new backend by adding a case below; the model registry calls createProvider per models.json entry
 export interface ProviderFactoryInput {
   provider: string;
   model: string;
   supportsTools: boolean;
   reasoning?: boolean;
   host: string;
-  /** API key for cloud providers (e.g. Anthropic, Gemini). Undefined for local backends. */
+  // undefined for local backends
   apiKey?: string;
-  /** Gemini-specific API key. Falls back to apiKey when absent. */
+  // falls back to apiKey when absent
   geminiApiKey?: string;
 }
 

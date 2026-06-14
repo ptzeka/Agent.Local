@@ -2,21 +2,17 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, rmSync } from 'node
 import { resolve } from 'node:path';
 
 export interface WorkflowState {
-  /** Human-readable feature name as passed to start_feature. */
   featureName: string;
-  /** Full branch name (branchPrefix + slugified featureName). */
   branchName: string;
-  /** Slugified feature name (used as BRANCH_SLUG pipeline variable). */
+  // exposed as the BRANCH_SLUG pipeline variable
   branchSlug: string;
-  /** Whether the ephemeral environment has been deployed at least once. */
   envDeployed: boolean;
-  /** ADO run ID of the most recent deploy pipeline run, for status polling. */
+  // kept for status polling of the latest deploy run
   lastDeployRunId?: number;
-  /** ADO run ID of the most recent CI pipeline run, for status polling. */
+  // kept for status polling of the latest CI run
   lastCiRunId?: number;
-  /** Azure DevOps PR ID, set after accept_changes creates or finds the PR. */
+  // set after accept_changes creates or finds the PR
   prId?: number;
-  /** Azure DevOps PR web URL. */
   prUrl?: string;
 }
 
@@ -30,7 +26,7 @@ function ensureDir(dir: string): void {
   }
 }
 
-/** Reads the current workflow state, or null if none exists. */
+// null when no state exists or the file is empty/corrupt
 export function readState(dataDirPath: string): WorkflowState | null {
   const path = statePath(dataDirPath);
   if (!existsSync(path)) return null;
@@ -43,13 +39,12 @@ export function readState(dataDirPath: string): WorkflowState | null {
   }
 }
 
-/** Persists workflow state to disk. */
 export function writeState(dataDirPath: string, state: WorkflowState): void {
   ensureDir(dataDirPath);
   writeFileSync(statePath(dataDirPath), JSON.stringify(state, null, 2), 'utf-8');
 }
 
-/** Merges a partial update into the current state and persists it. */
+// throws when no feature is active, since a patch with no base would silently create a partial state
 export function patchState(dataDirPath: string, patch: Partial<WorkflowState>): WorkflowState {
   const current = readState(dataDirPath);
   if (!current) throw new Error('codemanagermcp: no active feature — call start_feature first.');
@@ -58,13 +53,12 @@ export function patchState(dataDirPath: string, patch: Partial<WorkflowState>): 
   return next;
 }
 
-/** Removes the state file, signalling no active feature. */
+// removing the file is what signals "no active feature"
 export function clearState(dataDirPath: string): void {
   const path = statePath(dataDirPath);
   if (existsSync(path)) rmSync(path);
 }
 
-/** Returns the data directory path used by this config directory. */
 export function dataDir(configDir: string): string {
   return resolve(configDir, 'data');
 }

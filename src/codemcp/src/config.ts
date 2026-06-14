@@ -7,34 +7,14 @@ import { listIndexedRepositoryIds } from './db/file/fileRepository.js';
 export type Backend = 'pg' | 'file';
 export type EmbedProvider = 'local' | 'voyage' | 'openai';
 
-/**
- * A single repository registered at startup via `--repository name` or `--repository name:localPath`.
- *
- * `name` — owner/repo identifier used in commit.json (e.g. "Platform/Rxo.Platform.Web.Sandbox").
- *
- * **Name-only** (no `:`): if `tools/codeindex/data/schema_versions.json` exists next to this
- * package (sibling `codeindex`), file data is read from **`../codeindex/data`** (shared with
- * `codeindex publish` — no copy step). Otherwise falls back to
- * `{packageRoot}/data/{...name.split('/')}`.
- *
- * **With `localPath`**: data at `{localPath}/.codemcp/data/{...name.split('/')}`.
- *
- * Pass multiple registrations by repeating `--repository`, or one flag with
- * values separated by `;` (see {@link parseRepositoryArgList}).
- */
+// registered at startup via --repository name or name:localPath; name is the owner/repo id used in commit.json
 export interface RepositoryEntry {
   name: string;
-  /** When set, index files live under `{localPath}/.codemcp/data/...`. When omitted, under `{packageRoot}/data/...`. */
+  // set → index files under {localPath}/.codemcp/data/...; omitted → under {packageRoot}/data/...
   localPath?: string;
 }
 
-/**
- * Computes the file-backend data directory for a repository entry.
- * Name-only: prefer sibling **`../codeindex/data`** when it already has migrations;
- * else `{packageRoot}/data/{segment0}/...`.
- * With localPath: `{localPath}/.codemcp/data/{segment0}/...`
- * Commit dirs live under `{fileDir}/commits/<sha>/` (nested) or `{fileDir}/<sha>/` (flat).
- */
+// name-only prefers the sibling ../codeindex/data when already migrated (shared with codeindex publish, no copy step)
 export function repoFileDir(entry: RepositoryEntry): string {
   const segments = entry.name.split('/').filter(s => s.length > 0);
   const lp = entry.localPath?.trim();
@@ -48,35 +28,20 @@ export function repoFileDir(entry: RepositoryEntry): string {
   return join(lp, '.codemcp', 'data', ...segments);
 }
 
-/**
- * Effective configuration used at runtime. Sources:
- *
- *   - CLI flags (with defaults)  → backend, branch, embedProvider, embedDim,
- *                                  expectedMigration, repositories
- *   - Config file                → connectionString (also overridable via --pg-dsn)
- *
- * Config file is resolved relative to process.cwd() (default
- * ./codemcp.config.json, or whatever --config <path> points at). No
- * environment-variable fallbacks.
- *
- * File-backend data: with `--repository owner/name` only, under `{packageRoot}/data/{name}/`;
- * with `name:localPath`, under `{localPath}/.codemcp/data/{name}/`.
- * Pass `--repository` once per repo (repeatable), or `name:path` entries separated by `;`.
- */
+// CLI flags + config file (connectionString, also via --pg-dsn) resolved from cwd, no env fallbacks
 export interface CodeMcpConfig {
   backend: Backend;
   branch: string;
   embedProvider: EmbedProvider;
   embedDim: number;
-  /** Legacy single-repo file dir (resolved from packageRoot when no --repository flags given). */
+  // legacy single-repo dir, used when no --repository flags are given
   fileDir: string;
   expectedMigration: string;
   connectionString: string;
-  /** Repositories registered at startup (may be empty for backward-compat single-repo mode). */
+  // may be empty for backward-compat single-repo mode
   repositories: RepositoryEntry[];
 }
 
-/** Overrides supplied by the CLI. Anything undefined falls back to the default below. */
 export interface CliOverrides {
   configPath?: string;
   backend?: Backend;
@@ -109,11 +74,7 @@ export function defaultFileDir(): string {
   return resolve(packageRoot(), 'data');
 }
 
-/**
- * Default on-disk index root for the file backend when no `--repository` flags
- * are given: sibling `tools/codeindex/data` if migrated there, else
- * {@link defaultFileDir}.
- */
+// default file-backend root with no --repository flags: sibling codeindex/data if migrated there, else defaultFileDir
 export function resolveDefaultFileBackendBaseDir(): string {
   const codeindexData = join(packageRoot(), '..', 'codeindex', 'data');
   if (existsSync(join(codeindexData, 'schema_versions.json'))) {
@@ -122,12 +83,7 @@ export function resolveDefaultFileBackendBaseDir(): string {
   return defaultFileDir();
 }
 
-/**
- * When `--backend file` and no `--repository` entries were passed, scan the
- * default file index directory for distinct `repository` ids in published
- * commits and treat each as a registered name-only repo (same layout as
- * repeating `--repository` for each id). Explicit CLI registrations always win.
- */
+// with --backend file and no --repository, treat each distinct published repository id as a name-only repo; explicit CLI wins
 export function discoverFileRepositoriesIfUnset(config: CodeMcpConfig): CodeMcpConfig {
   if (config.backend !== 'file') return config;
   if (config.repositories.length > 0) return config;
@@ -146,11 +102,7 @@ export function discoverFileRepositoriesIfUnset(config: CodeMcpConfig): CodeMcpC
   };
 }
 
-/**
- * Parses a single `--repository` value: `owner/repo` (name-only) or `name:localPath`.
- * With a colon, the separator is the FIRST colon after a non-empty name so
- * `owner/name:C:\...` keeps the drive letter in `localPath`.
- */
+// splits on the FIRST colon after a non-empty name so owner/name:C:\... keeps the drive letter in localPath
 export function parseRepositoryArg(raw: string): RepositoryEntry {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -165,6 +117,7 @@ export function parseRepositoryArg(raw: string): RepositoryEntry {
   if (!name || !localPath) {
     throw new Error(`Invalid --repository value "${raw}": name and localPath must both be non-empty.`);
   }
+  // a colon at index 1 with a slash after is a bare drive letter, not a name:path separator
   const isBareWindowsPath =
     idx === 1 &&
     trimmed.length > 2 &&
@@ -178,12 +131,7 @@ export function parseRepositoryArg(raw: string): RepositoryEntry {
   return { name, localPath };
 }
 
-/**
- * Parses one or more repository specs from a single `--repository`
- * argument. Multiple entries are separated by **`;`** (spaces cannot be used as
- * separators because `localPath` may contain spaces). Each entry is `owner/name`
- * or `owner/name:localPath`.
- */
+// entries are `;`-separated because spaces can't separate them — a localPath may contain spaces
 export function parseRepositoryArgList(raw: string): RepositoryEntry[] {
   const segments = raw
     .split(';')

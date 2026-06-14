@@ -1,10 +1,7 @@
 import type { ChunkRow } from '../db/pgRepository.js';
 
-/**
- * Format a chunk as an LLM-friendly block with line-anchored citation and
- * governing CLAUDE.md files. Designed so an assistant can quote the result
- * without hallucinating line numbers.
- */
+// line-anchored citation + governing CLAUDE.md files, so an assistant can quote
+// the result without hallucinating line numbers
 export function formatChunk(chunk: ChunkRow): string {
   const symbolPart = chunk.symbol ? ` ${chunk.symbol}` : '';
   const parentPart = chunk.parentSymbol ? ` (in ${chunk.parentSymbol})` : '';

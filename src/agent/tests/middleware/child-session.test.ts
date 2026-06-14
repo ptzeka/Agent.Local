@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { ChildSessionMiddleware } from "../../src/agent/runtime/middleware/child-session.js";
 import { ConversationMiddleware } from "../../src/agent/runtime/middleware/conversation.js";
+import { ConversationToken, SessionToken, WorkspaceToken } from "../../src/agent/runtime/tokens.js";
 import type { SessionStore } from "../../src/agent/session/session-store.js";
 import { SessionStore as RealSessionStore } from "../../src/agent/session/session-store.js";
 import type { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
@@ -44,7 +45,7 @@ describe("ChildSessionMiddleware", () => {
         parentSessionId: "parent-1",
         workspaceId: "ws-1",
       }).initialize(ctx, next)
-    ).rejects.toThrow("requires ctx.store and ctx.workspaces");
+    ).rejects.toThrow(/no instance registered for "workspaces"/);
   });
 
   test("creates a child session with correct ids and persists it", async () => {
@@ -66,12 +67,14 @@ describe("ChildSessionMiddleware", () => {
       workspaceId: "ws-1",
     }).initialize(ctx, next);
 
-    expect(ctx.session).toBeDefined();
-    expect(ctx.session!.sessionId).toBe("child-1");
-    expect(ctx.session!.parentSessionId).toBe("parent-1");
-    expect(ctx.session!.workspaceId).toBe("ws-1");
-    expect(ctx.workspace).toBeDefined();
-    expect(ctx.workspace!.workspaceId).toBe("ws-1");
+    const session = ctx.registry.tryGet(SessionToken);
+    expect(session).toBeDefined();
+    expect(session!.sessionId).toBe("child-1");
+    expect(session!.parentSessionId).toBe("parent-1");
+    expect(session!.workspaceId).toBe("ws-1");
+    const workspace = ctx.registry.tryGet(WorkspaceToken);
+    expect(workspace).toBeDefined();
+    expect(workspace!.workspaceId).toBe("ws-1");
     expect(next).toHaveBeenCalledTimes(1);
 
     // Verify the session was persisted
@@ -101,7 +104,7 @@ describe("ChildSessionMiddleware", () => {
     }).initialize(ctx, next);
     await new ConversationMiddleware({ standingContext }).initialize(ctx, next);
 
-    const messages = ctx.conversation!.getMessages();
+    const messages = ctx.registry.get(ConversationToken).getMessages();
     expect(messages.length).toBe(1);
     expect(messages[0].role).toBe("system");
     expect(messages[0].content).toContain(standingContext);
@@ -127,7 +130,7 @@ describe("ChildSessionMiddleware", () => {
     }).initialize(ctx, next);
     await new ConversationMiddleware({ standingContext: "   \n  \t  " }).initialize(ctx, next);
 
-    expect(ctx.conversation!.length).toBe(0);
+    expect(ctx.registry.get(ConversationToken).length).toBe(0);
   });
 
   test("stamps inherited user identity onto the session", async () => {
@@ -155,7 +158,7 @@ describe("ChildSessionMiddleware", () => {
       workspaceId: "ws-1",
     }).initialize(ctx, next);
 
-    expect(ctx.session!.user).toBe(user);
+    expect(ctx.registry.get(SessionToken).user).toBe(user);
   });
 
   test("re-registers workspace when it doesn't exist yet", async () => {
@@ -175,8 +178,9 @@ describe("ChildSessionMiddleware", () => {
       workspaceId: "ws-2",
     }).initialize(ctx, next);
 
-    expect(ctx.workspace).toBeDefined();
-    expect(ctx.workspace!.workspaceId).toBe("ws-2");
-    expect(ctx.workspace!.root).toBe(workspaceRoot);
+    const workspace = ctx.registry.tryGet(WorkspaceToken);
+    expect(workspace).toBeDefined();
+    expect(workspace!.workspaceId).toBe("ws-2");
+    expect(workspace!.root).toBe(workspaceRoot);
   });
 });

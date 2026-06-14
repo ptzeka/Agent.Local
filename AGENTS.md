@@ -22,39 +22,43 @@ The following repositories are indexed and cached:
 
 **Fallback rule:** only reach for `grep` / `Glob` / `Read` when a codemcp tool returns zero results or when the target is outside an indexed repository.
 
-## Comments: 1–2 lines, WHY only
+## Comments: single-line `//`, WHY only
 
-- A comment states **why the code exists** — the decision, constraint, or trade-off — never what it does.
-- Hard cap: **1–2 lines.** If the WHY doesn't fit in two lines, the code needs restructuring, not a longer comment.
-- No narrating behavior visible in the code, no multi-paragraph doc blocks, no restating names/types.
+- A comment states **why the code exists** — the decision, constraint, or trade-off — never what it does. The code already shows what; the comment justifies it.
+- **Every comment is a single-line `//`.** No `/* */` blocks anywhere — not for functions, not for files, not for inline notes. No multi-paragraph doc blocks, no restating names/types.
 - If a comment adds nothing beyond the code, delete it.
 
-### Function comments
+### Line caps by scope
 
-- **1 line preferred** — a single `//` line above the function:
+The cap is on how many `//` lines a single comment may span, set by what it sits above:
+
+- **Inside a method/function body: 1 line.** An in-body note gets exactly one `//` line. If one line can't justify it, the code needs restructuring, not a longer comment.
 
 ```ts
-// this function is main entrypoint
+function main() {
+  // retry once: the upstream lease can race a stale reader
+  reload();
+}
+```
+
+- **Above a function: ≤2 lines.** One line preferred; add a second `//` line only when a real constraint is worth stating.
+
+```ts
+// entrypoint: wires the root signal before any async work
+// must run before middleware so cancellation propagates downward
 function main() { ... }
 ```
 
-- **2 lines max** — add a second `//` line only when there's extra worth stating:
+- **Above a class: ≤3 lines.** Use the extra room only for the class's reason to exist and the invariant it guards.
 
 ```ts
-// this function is main entrypoint
-// sub description
-function main() { ... }
+// owns the single root cancellation signal for a request
+// every downward scope wraps this token; none replaces it
+// see lifetime.ts for the AbortSignal.any wrapping
+class CancellationScope { ... }
 ```
 
-- That's the ceiling: no endless comment stacks above a function.
-- **Top-level functions** may carry a `/* */` summary block when a fuller overview is warranted:
-
-```ts
-/*
- * Summary of the top-level function: its role and why it exists.
- */
-function bootstrap() { ... }
-```
+- These are ceilings, not targets. Never stack more `//` lines than the scope allows.
 
 ### Section headers (grouping, not commenting)
 
@@ -67,6 +71,7 @@ Triple-line headers group related members within a file:
 ```
 
 - Headers are for **grouping areas** (e.g. "Producer API", "Lifecycle", "Queries") — never for annotating a single piece of code.
+- Dividers are structure, not prose, so they are **exempt from the line caps** above.
 - When a file uses headers, **respect them**: new members go under the matching header; add a new header section rather than appending out of place.
 
 ## Cancellation & timeouts: one signal from the source, wrapped downward

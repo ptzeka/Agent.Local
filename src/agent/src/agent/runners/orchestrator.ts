@@ -23,42 +23,14 @@ import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "../../common/eventing.js";
 import { ContextSnapshot } from "../context/context-loader.js";
 
-// Re-export for backwards compatibility
+// re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
-
-/**
- * Orchestrator.
- *
- * Runs the agentic loop for any role (orchestrator or executor). The role
- * determines which model is used, which tools are visible, which system
- * prompt is applied, and the iteration cap.
- *
- * For the "orchestrator" role the loop coordinates via read-only tools plus
- * `executor__dispatch`; for the "executor" role it runs the write tools and
- * terminates on the first tool-free response (no evaluator gate).
- *
- * The Orchestrator is STATELESS. It holds only app-level dependencies
- * (the model registry and tool client); every piece of per-turn state —
- * the transcript and the project context — arrives as arguments to `run`
- * via the `Session` and `Workspace` it is handed. The Initializer owns
- * those objects, their lifecycle, and their persistence.
- */
 
 export interface RunOptions {
   signal: AbortSignal;
-  /**
-   * Coordinator that lets this run spawn and manage sub-sessions. When present,
-   * the orchestrator exposes the synthetic create/status/finalize sub-session
-   * tools and intercepts them. Detached sub-session runs are launched WITHOUT a
-   * coordinator, so sub-sessions are one level deep.
-   */
+  // present → expose the synthetic sub-session tools; detached runs get none, so sub-sessions are one level deep
   coordinator?: SubSessionCoordinator;
-  /**
-   * Pull seam for externally-injected prompts. Called at the top of each loop
-   * iteration; any returned strings are appended to the conversation as user
-   * turns before the model is asked. This is how an outside producer (a REPL
-   * command, a future API call) steers a live run without racing the loop.
-   */
+  // pull seam: returned strings are appended as user turns, so an outside producer steers without racing the loop
   pullInjectedPrompts?: () => string[];
 }
 
@@ -66,27 +38,18 @@ export interface RunResult {
   finalMessage: ChatMessage;
   iterations: number;
   dispatches: number;
-  /**
-   * How the run ended. "satisfied" — the evaluator accepted the final answer;
-   * "capped" — the loop hit the orchestrator iteration cap without a satisfied
-   * verdict (the natural "tried too many times / all fails" bound); "failed" —
-   * the evaluator judged the request unrecoverable and stopped the turn early.
-   * Lets a caller distinguish a real completion from a give-up without inspecting
-   * the transcript, and drives the headless exit code.
-   */
+  // "satisfied" accepted, "capped" hit the iteration bound, "failed" judged unrecoverable; drives the headless exit code
   outcome: "satisfied" | "capped" | "failed";
 }
 
-/**
- * The capability the SessionManager needs to drive a sub-session: run a session
- * to completion. Declared here and satisfied structurally by `Orchestrator`, so
- * the manager depends on this narrow contract rather than the concrete class —
- * keeping the orchestrator ⇄ manager construction acyclic.
- */
+// narrow contract satisfied structurally by Orchestrator, so the manager stays decoupled and construction acyclic
 export interface SessionRunner {
   run(options?: RunOptions): Promise<RunResult>;
 }
 
+// drives the agentic loop for any role; the role selects model, visible tools, prompt, and iteration cap
+// STATELESS: holds only app deps, while per-turn state (transcript, context) arrives via run()'s Session/Workspace
+// orchestrator role gates on the evaluator; executor role ends on the first tool-free response
 export class Orchestrator {
   private runtime!: AgentRuntimeQueryable;
 
@@ -96,22 +59,15 @@ export class Orchestrator {
     }
   }
 
-  /** Set the runtime after construction (used by AgentRuntime.build). */
+  // set after construction by AgentRuntime.build
   setRuntime(runtime: AgentRuntimeQueryable): void {
     this.runtime = runtime;
   }
 
-  /**
-   * Run one user turn end-to-end for the session in the runtime.
-   * Appends to the runtime's Conversation (the turn's work product); holds
-   * no reference to it afterward. The transcript is flushed to its rolling
-   * file at the end of every round; the runtime's finalize() backstops the
-   * tail on every exit path.
-   */
+  // runs one user turn end-to-end, appending to the runtime's Conversation; flushes per round
+  // so a crash loses at most the round in flight, with finalize() backstopping the tail
   public async run(options: RunOptions): Promise<RunResult> {
-    // The turn's event bus, chained under the runtime's so everything published
-    // here bubbles up through the runtime to the host (CLI). The turn publishes
-    // directly; the host subscribes via runtime.getEvents() — no onEvent callback.
+    // chained under the runtime's bus so the host (CLI) sees turn events without an onEvent callback
     const turnEvents = new Eventing();
     this.runtime.getEvents().add(turnEvents);
     const logger = this.runtime.getLogger();
@@ -124,9 +80,7 @@ export class Orchestrator {
 
     const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
     const contextLoader = this.runtime.getContextLoader();
-    // The snapshot stamped by ContextMiddleware is the ONLY source of the
-    // system prompt and project direction — the runner never assembles
-    // context itself, so what ran is always exactly what the hash records.
+    // the ContextMiddleware snapshot is the ONLY source of prompt+direction, so what ran always matches the hash
     const contextHash = session.contextHashes ? session.contextHashes[this.role] : null;
     const context = contextHash ? await contextLoader.getContextSnapshot(contextHash) : null;
     if (!context) {
@@ -137,14 +91,11 @@ export class Orchestrator {
     }
 
     await this.maybeSummarize(conversation, turnEvents, options.signal);
-    // No opening append: every user message for this turn — including the first —
-    // arrives through the inbox drain inside the loop (the single injection path).
+    // no opening append: every user message arrives through the inbox drain inside the loop
 
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
-    // Re-bind the subsessions server to this turn's live coordinator so tool
-    // calls land on the right instance. registerClient is keyed by server name,
-    // so this replaces the placeholder in the registry.
+    // rebind the subsessions server to this turn's live coordinator so tool calls hit the right instance
     const coordinator = options.coordinator;
     if (coordinator) {
       const subsessionToolCtx: ToolContext = {
@@ -157,9 +108,7 @@ export class Orchestrator {
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
     }
 
-    // The MCP layer owns scoping: the registry hands back a client already
-    // fronting this role's server whitelist with the role's tool timeout, built
-    // after the per-turn subsessions rebind above so it sees the live mounts.
+    // built after the subsessions rebind so the scoped client sees the live mounts
     const scopedClient = mcpRegistry.createScopedClient();
     const visibleTools = scopedClient.listTools();
 
@@ -167,16 +116,11 @@ export class Orchestrator {
     const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
     const tracker = new DispatchTracker(maxDispatches, checkInterval);
 
-    // Bind per-turn context on the executor LocalMcp only for roles that
-    // actually dispatch to it (orchestrator-family). The executor sub-run
-    // itself does not dispatch further, so we skip binding there to avoid
-    // overwriting the parent turn's tracker while a dispatch is in-flight.
+    // skip binding for the executor role: its sub-run doesn't dispatch, so binding would clobber the parent's in-flight tracker
     if (this.role !== "executor") {
       const executorMcp = mcpRegistry.getClient("executor");
       if (executorMcp && typeof (executorMcp as unknown as TurnBindable).bindTurn === "function") {
-        // The MCP client's own bus, chained under the turn (parent.add(child)) so
-        // what the executor publishes bubbles up to the turn. Handed to the client
-        // in place of an emit callback — it publishes rather than calls up.
+        // chained under the turn so what the executor publishes bubbles up
         const mcpClientEvents = new Eventing();
         turnEvents.add(mcpClientEvents);
         (executorMcp as unknown as TurnBindable).bindTurn(options.signal, tracker, mcpClientEvents);
@@ -192,15 +136,13 @@ export class Orchestrator {
     const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation.getMessages()];
 
-    // The turn's user input arrives via the inbox drain below; capture where its
-    // first message will land so the evaluator sees the request onward.
+    // capture where the first drained message lands so the evaluator sees the request onward
     const turnStartIndex = workingMessages.length;
 
-    // The request that anchors the evaluator is the FIRST drained batch — set on
-    // the opening iteration, then held for the rest of the turn.
+    // the evaluator's anchor is the FIRST drained batch, set on the opening iteration and held for the turn
     let turnRequest: string | null = null;
 
-    // The model's own iterationCap wins; absent it, fall back to the role default.
+    // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
         ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
@@ -218,8 +160,7 @@ export class Orchestrator {
         throw new Error("turn aborted: user requested stop");
       }
 
-      // The inbox is the sole source of user input — drain it before asking the
-      // model. The first non-empty drain is THIS turn's request (the anchor).
+      // inbox is the sole source of user input; the first non-empty drain is this turn's request
       const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
       for (const text of injectedPrompts) {
         const injected: ChatMessage = { role: "user", content: text };
@@ -231,11 +172,9 @@ export class Orchestrator {
         turnRequest = injectedPrompts.join("\n");
       }
 
-      // Trace the drain so an empty turn vs a real request is visible in logs.
       logger.debug("turn input drained", { iteration, drained: injectedPrompts.length, hasRequest: turnRequest !== null });
 
-      // A wake with nothing queued (the scheduling turn already drained it):
-      // no request to act on, so settle cleanly without calling the model.
+      // a wake with nothing queued has no request, so settle without calling the model
       if (turnRequest === null) {
         logger.debug("empty turn — no queued input, settling without model call", { sessionId: session.sessionId });
         return {
@@ -248,9 +187,7 @@ export class Orchestrator {
 
       turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
 
-      // Re-assert the request as the LAST message of every chat call (transient,
-      // never pushed) so the model stays anchored as the transcript grows — the
-      // same verbatim re-grounding the evaluator gets.
+      // transient last message every call so the model stays anchored as the transcript grows
       const requestAnchor: ChatMessage = {
         role: "system",
         content: modelsRegistry.getAnchorText(turnRequest),
@@ -317,8 +254,7 @@ export class Orchestrator {
           };
         }
 
-        // Terminal failure: the evaluator judged the request unrecoverable.
-        // Stop trying rather than nudge-and-loop until the cap.
+        // terminal: stop trying rather than nudge-and-loop until the cap
         if (verdict.state === "failed") {
           return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
         }
@@ -358,9 +294,7 @@ export class Orchestrator {
           options.signal
         );
         logger.debug("tool call end", { name: call.name, isError: execution.isError });
-        // Tools that ran a model of their own (executor dispatch) report the
-        // delegated cost on the result; it lands in the *Tallied counters so
-        // own chat spend and dependency spend stay separately readable.
+        // delegated cost lands in the tallied counters so own spend and dependency spend stay separately readable
         foldDelegatedUsage(session.counters, execution.usage);
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
@@ -370,8 +304,7 @@ export class Orchestrator {
       conversation.append(...toolMessages);
       workingMessages.push(...toolMessages);
 
-      // Periodic progress gate (orchestrator only). Every N successful dispatches,
-      // run the validator mid-flight to catch no-progress loops before they cap.
+      // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
       if (this.role !== "executor" && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
           turnRequest,
@@ -397,8 +330,7 @@ export class Orchestrator {
         }
       }
 
-      // End of round: persist this iteration's appends to the rolling file so
-      // a crash mid-turn loses at most the round in flight.
+      // persist this round so a crash mid-turn loses at most the round in flight
       await conversation.flush();
     }
 
@@ -423,11 +355,7 @@ export class Orchestrator {
 
   // --------------------------------------------------------------------------
 
-  /**
-   * Terminal failure exit: the evaluator judged the request unrecoverable.
-   * Records a system-failure notice in the transcript, surfaces it as an event,
-   * and returns with outcome "failed" so the caller stops trying.
-   */
+  // records a system-failure notice and returns outcome "failed" so the caller stops trying
   private async failTurn(
     reason: string,
     iterations: number,
@@ -508,7 +436,7 @@ export class Orchestrator {
       });
       return verdict;
     } catch (err) {
-      // Fail open — never trap the user because the judge errored.
+      // fail open: never trap the user because the judge errored
       events.publish(OrchestratorEventTypes.WARNING, {
         message: `evaluation failed, treating as satisfied: ${(err as Error).message}`,
       });
@@ -533,8 +461,7 @@ export class Orchestrator {
       });
     }
 
-    // Prompted-JSON instructions stay per-turn: the live tool set can differ
-    // from the snapshot's (the subsessions server is rebound each turn).
+    // built per-turn because the live tool set can differ from the snapshot's (subsessions rebound each turn)
     const promptedInstructions = provider.supportsNativeTools
       ? ""
       : buildPromptedToolInstructions(visibleTools);
@@ -590,10 +517,6 @@ export class Orchestrator {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Wrap a tool result into a role:"tool" message.
-// ---------------------------------------------------------------------------
-
 function wrapToolResult(call: ToolCall, content: string): ChatMessage {
   return {
     role: "tool",
@@ -603,17 +526,8 @@ function wrapToolResult(call: ToolCall, content: string): ChatMessage {
   };
 }
 
-/**
- * Find a tail-start index that begins on a turn which can legally HEAD a
- * provider contents array: a `user` turn, or an `assistant` turn that is NOT
- * itself a tool-call. Two kinds of head are orphans and must be skipped:
- *
- *   - a `role:"tool"` message — it must follow the assistant turn that called
- *     it; kept alone it breaks providers that validate tool_call_id pairing.
- *   - an `assistant` turn carrying `toolCalls` — it becomes a model
- *     functionCall turn, which Gemini rejects unless it immediately follows a
- *     user turn or a functionResponse.
- */
+// finds a tail-start that can legally HEAD a provider contents array (a user turn, or a
+// non-tool-call assistant turn), skipping orphan tool results and tool-call turns that providers reject
 function findCleanTailStart(messages: readonly ChatMessage[], desiredTailLen: number): number {
   const initial = Math.max(0, messages.length - desiredTailLen);
   for (let i = initial; i < messages.length; i += 1) {

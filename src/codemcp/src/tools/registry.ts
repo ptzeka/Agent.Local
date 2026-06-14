@@ -12,32 +12,14 @@ export interface ToolDeps {
   repo: PgReaderRepository;
   embedder: EmbedAdapter;
   defaultBranch: string;
-  /**
-   * Repository auto-detected (or taken from the first `--repository` entry /
-   * file-index discovery) at server startup. Used as the default repo filter
-   * when a tool call omits `repository`. When git `origin` matches a registered
-   * name, that name is used instead. `null` means unknown — `resolveCommit`
-   * then refuses to silently search "any repository". Never substitute a guess
-   * (e.g. basename).
-   */
+  // default repo filter when a call omits `repository`; null means unknown, so resolveCommit
+  // refuses to search "any repository" rather than guessing a name
   currentRepository: string | null;
-  /**
-   * Per-repository readers for the file backend in multi-repo mode.
-   * Keyed by repository name (e.g. "Platform/Rxo.Platform.Web.Sandbox") — the
-   * `name` from each `--repository name:path` or from file-index discovery.
-   * Search tools resolve one repo per call via {@link pickReader}; omitting
-   * `repository` uses {@link currentRepository} (git origin when it matches a
-   * registered name, else the first registration).
-   * Empty for Postgres backend or single-repo legacy file mode.
-   */
+  // per-repository readers for the file backend in multi-repo mode, keyed by repository name; empty otherwise
   repoReaders: Map<string, { factory: DbConnectionFactory; repo: PgReaderRepository }>;
 }
 
-/**
- * Returns the effective repository name from a tool call's explicit input
- * and the server's detected default. Mirrors the logic in resolveCommit so
- * callers can pick the right reader before opening a connection.
- */
+// effective repo from explicit input then server default; mirrors resolveCommit so callers pick a reader first
 export function effectiveRepo(
   repositoryInput: string | undefined,
   currentRepository: string | null,
@@ -47,11 +29,7 @@ export function effectiveRepo(
   return currentRepository;
 }
 
-/**
- * Returns the `{factory, repo}` pair that should service a request for the
- * given repository name. Falls back to the primary (Postgres or single-file)
- * reader when the repo is not in `repoReaders`.
- */
+// reader pair for a repo name, falling back to the primary reader when the repo is not in repoReaders
 export function pickReader(
   deps: ToolDeps,
   repoName: string | null,

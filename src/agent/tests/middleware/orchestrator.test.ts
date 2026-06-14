@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import { Orchestrator } from "../../src/agent/runners/orchestrator.js";
 import { OrchestratorMiddleware } from "../../src/agent/runtime/middleware/orchestrator.js";
+import { OrchestratorToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -15,7 +16,7 @@ describe("OrchestratorMiddleware", () => {
     
     await new OrchestratorMiddleware({ role: "orchestrator"}).initialize(ctx, next);
 
-    expect(ctx.orchestrator).toBeInstanceOf(Orchestrator);
+    expect(ctx.registry.tryGet(OrchestratorToken)).toBeInstanceOf(Orchestrator);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -27,6 +28,6 @@ describe("OrchestratorMiddleware", () => {
 
     await new OrchestratorMiddleware({ role: "orchestrator"}).initialize(ctx, jest.fn(async () => {}));
 
-    expect(ctx.orchestrator).toBeInstanceOf(Orchestrator);
+    expect(ctx.registry.tryGet(OrchestratorToken)).toBeInstanceOf(Orchestrator);
   });
 });

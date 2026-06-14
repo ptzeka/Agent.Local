@@ -20,6 +20,21 @@ import { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
 import { ILogger } from "../../common/ilogger.js";
+import {
+  ConfigurationToken,
+  ContextLoaderToken,
+  ConversationToken,
+  InboxToken,
+  McpRegistryToken,
+  ModelsToken,
+  OrchestratorToken,
+  ProvidersToken,
+  SessionManagerToken,
+  SessionToken,
+  StoreToken,
+  WorkspaceToken,
+  WorkspacesToken,
+} from "./tokens.js";
 
 export interface ResetResult {
   projectContext: string | null;
@@ -32,46 +47,12 @@ export interface CompactResult {
   summary: string | null;
 }
 
-/**
- * AgentRuntime — the stateful owner of a single session.
- *
- * Replaces the old Initializer with a fluent middleware pipeline that runs
- * once during build() to set up the session, then exposes a clean set of
- * per-session operations.
- *
- * Construction (via the fluent builder):
- *
- *   const runtime = await new AgentRuntime({ registry, tools, sessionsDir, workspaceRoot })
- *     .add(new StoreMiddleware())
- *     .add(new WorkspaceRegistryMiddleware())
- *     .add(new SessionMiddleware({ sessionId }))
- *     .add(new OrchestratorMiddleware({ includeSubSessions: true }))
- *     .add(new InputInboxMiddleware())
- *     .add(new SessionManagerMiddleware())
- *     .build();
- *
- * Per-turn operations:
- *   await runtime.dispatchAsync(input);   // turn events flow out via getEvents()
- *   runtime.injectInput(content);
- *   await runtime.finalize();     // explicit persist (called automatically by dispatchAsync)
- *   await runtime.reset();
- *   await runtime.compact();
- *
- * Ownership tree (mirrors the old Initializer tree, now per-session):
- *   AgentRuntime   (stateful session owner)
- *   ├─ Session                 run state (status, counters, links)
- *   ├─ Conversation            the live transcript (rolling JSONL file)
- *   ├─ Workspace               resolved project context
- *   ├─ Orchestrator            ONE stateless instance drives this session
- *   ├─ InputInbox              external input injection seam
- *   ├─ SessionStore            persistence
- *   ├─ WorkspaceRegistry       workspace → root/context map
- *   └─ SessionManager          owns sub-sessions spawned within this session
- */
+// stateful owner of a single session: a fluent middleware pipeline runs once in build() to
+// assemble every subsystem, then this exposes the per-session operations (dispatch/reset/compact)
 export class AgentRuntime implements AgentRuntimeQueryable {
   private readonly middlewares: IMiddleware[] = [];
 
-  // Populated by build() — all required after construction
+  // populated by build() — all required after construction
   private logger!: ILogger;
   private session!: Session;
   private conversation!: Conversation;
@@ -87,24 +68,19 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private store!: SessionStore;
   private workspaces!: WorkspaceRegistry;
 
-  // Turn loop (optional — hosts opt in via startTurnLoop; headless single runs
-  // keep calling dispatchAsync directly and never construct these).
+  // optional: hosts opt in via startTurnLoop; headless single runs call dispatchAsync directly
   private turnRunner: TurnRunner | null = null;
   private unsubscribeTurnWake: (() => void) | null = null;
 
-  /** This runtime's cutoff in the cancellation chain — parent of every turn,
-   *  sub-session, and MCP client it owns. */
+  // parent cutoff for every turn, sub-session, and MCP client this runtime owns
   private readonly scope: CancellationToken;
-  /** This runtime's bus in the event chain — the upward mirror of `scope`, and
-   *  like `scope` created ONCE for the runtime's lifetime. A rebuild (reset/
-   *  compact) re-runs the pipeline but must not re-mint this bus: hosts subscribe
-   *  to it once and a fresh bus would strand that subscription on a dead object. */
+  // created ONCE for the runtime's lifetime: a rebuild must not re-mint it or it strands host subscriptions
   private readonly events: Eventing = new Eventing();
-  /** First shutdown() call wins; later callers join its promise. */
+  // first shutdown() wins; later callers join its promise
   private shutdownPromise: Promise<void> | null = null;
 
   constructor(private readonly deps: AgentRuntimeDeps) {
-    // Constructor body, not field initializer: must not race `deps` assignment.
+    // constructor body, not field initializer: must not race `deps` assignment
     this.scope = new CancellationToken(deps.parentSignal);
   }
 
@@ -117,15 +93,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this;
   }
 
-  /**
-   * Seed the context with the raw deps, run the initialize pipeline, then claim
-   * ownership of every subsystem the pipeline built. build() constructs nothing
-   * itself — each subsystem is produced by a middleware step (see RuntimeContext
-   * for the pipeline convention). Must be called (and awaited) before any other
-   * method.
-   */
+  // constructs nothing itself: every subsystem is produced by a middleware step
+  // must be awaited before any other method
   async build(): Promise<this> {
-    const ctx: RuntimeContext = {
+    // registry is created by ContainerMiddleware (first step); RuntimeContext is assignable to this seed, so the cast is sound
+    const ctx = {
       configPath: this.deps.configPath,
       sessionsDir: this.deps.sessionsDir,
       workspaceRoot: this.deps.workspaceRoot,
@@ -134,71 +106,33 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       credentials: this.deps.credentials ?? {},
       logger: this.deps.logger,
       runtimeSignal: this.scope.signal,
-      // Seed the lifetime-stable bus so EventingMiddleware chains it under the
-      // host rather than minting a new one — a rebuild must not orphan subscribers.
+      // seed the lifetime-stable bus so a rebuild chains under the host rather than orphaning subscribers
       eventing: this.events,
-      configurationRegistry: undefined,
-      modelsRegistry: undefined,
-      mcpRegistry: undefined,
-      contextLoader: undefined,
-      providerRegistry: undefined,      
-      store: undefined,
-      workspaces: undefined,
-      user: undefined,
-      session: undefined,
-      conversation: undefined,
-      workspace: undefined,
-      orchestrator: undefined,
-      inbox: undefined,
-      sessionManager: undefined,
-    };
+    } as RuntimeContext;
 
     await this.runPipeline(ctx, 0);
 
-    // Every owned field must have been set by a pipeline step. Report all gaps
-    // at once so a misordered/incomplete pipeline is easy to fix.
-    const missing = [
-      !ctx.eventing && "eventing (EventingMiddleware)",
-      !ctx.logger && "logger (LoggerMiddleware)",
-      !ctx.store && "store (StoreMiddleware)",
-      !ctx.workspaces && "workspaces (WorkspaceRegistryMiddleware)",
-      !ctx.session && "session (SessionMiddleware)",
-      !ctx.conversation && "conversation (ConversationMiddleware)",
-      !ctx.workspace && "workspace (SessionMiddleware)",
-      !ctx.orchestrator && "orchestrator (OrchestratorMiddleware)",
-      !ctx.inbox && "inbox (InputInboxMiddleware)",
-      !ctx.sessionManager && "sessionManager (SessionManagerMiddleware)",
-    ].filter(Boolean);
-    if (missing.length > 0) {
-      throw new Error(
-        `AgentRuntime.build(): pipeline left these unset: ${missing.join(", ")}. ` +
-          "Add the listed step(s) to the pipeline."
-      );
-    }
+    // events is lifetime-owned (see the field), so it is not re-claimed here
+    // each get() throws naming its token, so a misordered/incomplete pipeline fails loudly at the gap
+    this.logger = ctx.logger;
+    this.configurationRegistry = ctx.registry.get(ConfigurationToken);
+    this.modelsRegistry = ctx.registry.get(ModelsToken);
+    this.mcpClientRegistry = ctx.registry.get(McpRegistryToken);
+    this.contextLoader = ctx.registry.get(ContextLoaderToken);
+    this.providersRegistry = ctx.registry.get(ProvidersToken);
+    this.store = ctx.registry.get(StoreToken);
+    this.workspaces = ctx.registry.get(WorkspacesToken);
+    this.session = ctx.registry.get(SessionToken);
+    this.conversation = ctx.registry.get(ConversationToken);
+    this.workspace = ctx.registry.get(WorkspaceToken);
+    this.orchestrator = ctx.registry.get(OrchestratorToken);
+    this.inbox = ctx.registry.get(InboxToken);
+    this.sessionManager = ctx.registry.get(SessionManagerToken);
 
-    // events is seeded from this.events and owned for the runtime's lifetime, so
-    // it is not re-claimed here (see the field declaration).
-    this.configurationRegistry = ctx.configurationRegistry!;
-    this.logger = ctx.logger!;
-    this.modelsRegistry = ctx.modelsRegistry!;
-    this.mcpClientRegistry = ctx.mcpRegistry!;
-    this.contextLoader = ctx.contextLoader!;
-    this.providersRegistry = ctx.providerRegistry!;
-    this.store = ctx.store!;
-    this.workspaces = ctx.workspaces!;
-    this.session = ctx.session!;
-    this.conversation = ctx.conversation!;
-    this.workspace = ctx.workspace!;
-    this.orchestrator = ctx.orchestrator!;
-    this.inbox = ctx.inbox!;
-    this.sessionManager = ctx.sessionManager!;
-
-    // Wire the runtime into the orchestrator so it can query for dependencies
+    // wire the runtime into the orchestrator so it can query for dependencies
     this.orchestrator.setRuntime(this);
 
-    // reset() re-runs build(), which constructs a NEW SessionManager — an
-    // active turn loop's wake subscription would silently point at the dead
-    // manager, so re-bind it to the one that will actually fire.
+    // reset() rebuilds the SessionManager, so re-bind the wake or it points at the dead one
     this.rewireTurnWake();
 
     this.logger.debug("runtime initialized", { sessionId: this.session.sessionId });
@@ -209,20 +143,13 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Per-turn operations
   // --------------------------------------------------------------------------
 
-  /**
-   * Run one user turn. Manages the running-guard, status transitions, the turn
-   * counter, and calls finalize() in the finally block so every exit path
-   * (clean, capped, thrown) persists the session.
-   */
+  // finalize() runs in finally so every exit path (clean, capped, thrown) persists the session
   async dispatchAsync(input: string, options: RunOptions): Promise<RunResult> {
     if (this.session.status === "running") {
       throw new Error(`Session "${this.session.sessionId}" is already running a turn.`);
     }
 
-    // Seed the opening prompt through the inbox — the single injection conduit —
-    // so even a direct dispatch hands the orchestrator no separate first message.
-    // Hosts with a turn loop never pass `input`; they injectInput() and let the
-    // pump drive (so this never wakes a second concurrent turn).
+    // seed the opening prompt through the inbox so even a direct dispatch has no separate first-message path
     if (input !== undefined && input.trim().length > 0) {
       this.inbox.push(this.session.sessionId, input);
     }
@@ -249,8 +176,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       });
       return result;
     } catch (err) {
-      // A user stop is an abandonment, not a failure — the session must come
-      // back ready for input, not flagged broken.
+      // a user stop is abandonment, not failure: come back ready for input, not flagged broken
       this.session.status = options.signal?.aborted ? "awaiting-input" : "error";
       throw err;
     } finally {
@@ -259,11 +185,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
   }
 
-  /**
-   * Inject a prompt from outside the orchestrator loop. The prompt is queued
-   * and drained at the start of the next orchestrator iteration — safe to call
-   * whether or not a turn is currently in flight.
-   */
+  // queued and drained at the next iteration, so safe whether or not a turn is in flight
   injectInput(content: string, source?: string): void {
     this.inbox.push(this.session.sessionId, content, source);
   }
@@ -278,16 +200,15 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
     this.turnRunner = new TurnRunner(
       async (signal) => {
-        // Contentless: the dispatch drains the inbox itself for this turn's input.
+        // contentless: the dispatch drains the inbox itself for this turn's input
         const result = await this.dispatchAsync('', { signal });
         return { outcome: result.outcome };
       },
       {
         onEvent: options.onTurnEvent,
-        // Chained under the scope so a runtime cancel reaches turns without enumeration.
+        // chained under the scope so a runtime cancel reaches turns without enumeration
         parentSignal: this.scope.signal,
-        // Run a turn only when the inbox holds input — a wake whose content the
-        // running turn already drained settles without spawning an empty turn.
+        // run only when the inbox holds input, so a wake the running turn already drained doesn't run empty
         shouldRun: () => this.inbox.hasPending(this.session.sessionId),
       }
     );
@@ -323,7 +244,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   }
 
   private async runShutdown(options: { mode: "drain" | "abort"; timeoutMs?: number }): Promise<void> {
-    // Unhook first: a child settling mid-teardown must not enqueue a wake turn.
+    // unhook first: a child settling mid-teardown must not enqueue a wake turn
     this.unsubscribeTurnWake?.();
     this.unsubscribeTurnWake = null;
 
@@ -336,7 +257,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       ]).then(() => undefined);
 
     if (options.mode === "abort") {
-      // Sweep before scope cancel: finalize() suppresses children's report-backs.
+      // sweep before scope cancel: finalize() suppresses children's report-backs
       this.stopAllWork();
       this.scope.cancel("shutdown");
       await settledWithin(quiescence(), timeoutMs);
@@ -354,69 +275,45 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       this.turnRunner = null;
     }
 
-    // Cancel even after a clean drain — releases token-holding resources (MCP clients).
+    // cancel even after a clean drain to release token-holding resources (MCP clients)
     this.scope.cancel("shutdown");
     await this.finalize();
   }
 
-  /**
-   * (Re-)subscribe the turn loop's auto-wake to the CURRENT session manager.
-   * Called from startTurnLoop and from build() so a reset() (which rebuilds
-   * the manager) cannot leave the wake bound to a stale instance.
-   */
+  // called from startTurnLoop and build() so a reset() (which rebuilds the manager) can't leave the wake stale
   private rewireTurnWake(): void {
     this.unsubscribeTurnWake?.();
     this.unsubscribeTurnWake = null;
     if (!this.turnRunner || !this.sessionManager) return;
 
-    // The inbox is the wake source: pushing content un-parks the pump. Wired
-    // here (not just in startTurnLoop) because reset() rebuilds the inbox, so a
-    // fresh one must be re-pointed at the live runner. shouldRun reads
-    // this.inbox dynamically, so it already tracks the swap.
+    // re-pointed here because reset() rebuilds the inbox, so the fresh one must drive the live runner
     this.inbox.setOnPush((source) => this.turnRunner?.wake(source as TurnSource | undefined));
 
-    // A settled child reports back through the ONE interface: push its report to
-    // the inbox tagged "subsession" so the wake (and the auto-wake notice) carry
-    // the right source. Several reports pile up and drain together next turn.
+    // route a settled child's report through the one inbox interface, tagged so the wake carries the right source
     this.unsubscribeTurnWake = this.sessionManager.onNotification((notification) => {
       this.injectInput(formatSubSessionReport(notification), "subsession");
     });
   }
 
-  /**
-   * Persist the current session state. Called automatically by dispatchAsync,
-   * reset, and compact — expose as public so callers can flush ad-hoc changes.
-   */
+  // public so callers can flush ad-hoc changes; dispatchAsync/reset/compact call it automatically
   async finalize(): Promise<void> {
     this.session.updatedAt = Date.now();
-    // Backstop flush: rounds flush as they complete, but a turn that threw
-    // between rounds may still hold an unpersisted tail.
+    // backstop: rounds flush as they complete, but a turn that threw between rounds may hold a tail
     await this.conversation.flush();
     await this.store.save(this.session);
   }
 
-  /**
-   * Clear the conversation transcript and re-read the workspace context from
-   * disk, picking up any edits to agentcontext.md since last load.
-   *
-   * Reset means ABANDON: in-flight work is stopped (current turn, queued
-   * turns, sub-sessions) and awaited down to quiescence first — clearing
-   * while a turn unwinds would let the dying turn write into the fresh
-   * conversation.
-   */
+  // reset means ABANDON: in-flight work is stopped and awaited to quiescence first, or a dying
+  // turn would write into the fresh conversation; also re-reads agentcontext.md edits since last load
   async reset(): Promise<boolean> {
     this.stopAllWork();
     await this.turnRunner?.awaitIdle();
     if (this.session.status === "running") {
-      // Backstop for hosts that dispatch directly (no turn loop): we hold no
-      // abort handle for such a turn, so refusing is the only safe option.
+      // direct-dispatch hosts give no abort handle for the turn, so refusing is the only safe option
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot reset now.`);
     }
 
-    // Reset is a SOFT delete: the transcript is flushed, marked deleted
-    // (deletedAt stamped, file kept as <id>.deleted.json for audit), and the
-    // session relinks to a fresh conversation — the old file is never
-    // appended to again. build() below opens the new transcript.
+    // SOFT delete: the old transcript is kept as <id>.deleted.json for audit; build() opens a fresh one
     await this.conversation.flush();
     await this.conversation.markDeleted();
     this.session.conversationId = randomUUID();
@@ -430,20 +327,13 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return true;
   }
 
-  /**
-   * Fold the entire conversation into a single summary checkpoint. Unlike the
-   * orchestrator's automatic threshold-gated summarization, this collapses the
-   * whole transcript — no verbatim tail is kept.
-   *
-   * Like reset, compacting implies stopping: the transcript must be quiescent
-   * while the summarizer reads it, so in-flight work is cancelled and awaited
-   * down rather than raced or refused.
-   */
+  // collapses the WHOLE transcript (no verbatim tail), unlike the orchestrator's threshold-gated pass
+  // stops in-flight work first so the summarizer reads a quiescent transcript, never a racing one
   async compact(options: { signal?: AbortSignal } = {}): Promise<CompactResult> {
     this.stopAllWork();
     await this.turnRunner?.awaitIdle();
     if (this.session.status === "running") {
-      // Backstop for direct-dispatch hosts — no abort handle, so refuse.
+      // direct-dispatch hosts give no abort handle, so refuse
       throw new Error(`Session "${this.session.sessionId}" is running a turn; cannot compact now.`);
     }
 
@@ -466,26 +356,17 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Sub-session coordination
   // --------------------------------------------------------------------------
 
-  /**
-   * Subscribe to sub-session completions. Returns an unsubscribe function.
-   * The REPL listens here so finished background tasks surface out-of-band.
-   */
+  // the REPL listens here so finished background tasks surface out-of-band
   onSubSessionEvent(listener: SubSessionNotificationListener): () => void {
     return this.sessionManager.onNotification(listener);
   }
 
-  /**
-   * Block until every sub-session spawned by THIS session has settled. Used
-   * by the headless single-run path to drain background tasks before exit.
-   */
+  // headless single-run path drains this session's background tasks before exit
   awaitSubSessions(): Promise<void> {
     return this.sessionManager.awaitActive(this.session.sessionId);
   }
 
-  /**
-   * Block until every sub-session across the internal session manager has
-   * settled. Called on normal process exit so no detached task is abandoned.
-   */
+  // called on normal process exit so no detached task is abandoned
   awaitAllSubSessions(): Promise<void> {
     return this.sessionManager.awaitAllActive();
   }
@@ -538,7 +419,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.logger;
   }
 
-  /** This runtime's event bus — host subscribes here (or chains it under its own). */
+  // host subscribes here, or chains it under its own bus
   getEvents(): Eventing {
     return this.events;
   }
@@ -547,11 +428,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Static utilities (pre-session)
   // --------------------------------------------------------------------------
 
-  /**
-   * List persisted top-level sessions for a session picker. Static so it can
-   * be called before a runtime instance is built — the picker runs before the
-   * user has chosen which session to open or resume.
-   */
+  // static so the picker can call it before any runtime is built (before a session is chosen)
   static listSavedSessions(sessionsDir: string): Promise<SessionSummary[]> {
     return SessionStore.create(sessionsDir).summaries();
   }
@@ -567,12 +444,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   }
 }
 
-/**
- * Shape a settled child's notification into the round content the parent's
- * orchestrator receives. Self-describing: the orchestrator's system prompt
- * knows nothing about sub-session reports, so the message itself carries the
- * facts AND what to do with them.
- */
+// self-describing: the system prompt knows nothing about sub-session reports, so the message carries the facts AND what to do
 function formatSubSessionReport(notification: SubSessionNotification): string {
   const header =
     notification.status === "done"

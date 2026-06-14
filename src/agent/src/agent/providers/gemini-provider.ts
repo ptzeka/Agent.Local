@@ -27,8 +27,7 @@ const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_TEMPERATURE = 0.2;
 const CACHE_TTL_SECONDS = 300;
 const CACHE_TTL = `${CACHE_TTL_SECONDS}s`;
-/** Recreate the cache this long before server-side expiry, so an in-flight
- *  request can't reference an entry that lapses mid-call. */
+// margin before server-side expiry so an in-flight request can't reference an entry that lapses mid-call
 const CACHE_EXPIRY_MARGIN_MS = 30_000;
 
 export class GeminiProvider implements LLMProvider {
@@ -39,10 +38,8 @@ export class GeminiProvider implements LLMProvider {
   private readonly client: GoogleGenAI;
   private readonly defaultMaxTokens: number;
 
-  // Prompt cache for the stable prefix (system instruction + tools).
-  // One cache entry per provider instance; invalidated when the key changes
-  // or the server-side TTL lapses (entries are deleted server-side at
-  // expireTime — reusing a lapsed name fails the request outright).
+  // one cache entry per instance for the stable system+tools prefix; reusing a lapsed name 400s,
+  // so it is invalidated when the key changes or the server-side TTL nears expiry
   private cachedContentName: string | undefined;
   private cacheKey: string | undefined;
   private cacheExpiresAtMs: number | undefined;
@@ -64,9 +61,8 @@ export class GeminiProvider implements LLMProvider {
     const startedAt = Date.now();
 
     const cachedContent = await this.ensureCache(systemInstruction, tools);
-    
-    // When a cache is active it already contains system + tools, so they must
-    // be omitted from the per-request config to avoid an API conflict.
+
+    // an active cache already holds system+tools, so omit them per-request to avoid an API conflict
     const config: Record<string, unknown> = {
       temperature: options.temperature ?? DEFAULT_TEMPERATURE,
       maxOutputTokens: options.maxTokens ?? this.defaultMaxTokens,
@@ -109,19 +105,14 @@ export class GeminiProvider implements LLMProvider {
       usage: {
         inputTokens: response.usageMetadata?.promptTokenCount ?? undefined,
         outputTokens: response.usageMetadata?.candidatesTokenCount ?? undefined,
-        // Tokens served from the cache (~0.1x input price).
         cacheReadInputTokens: response.usageMetadata?.cachedContentTokenCount ?? undefined,
         totalDurationMs,
       },
     };
   }
 
-  /**
-   * Create or reuse a Gemini context cache for the stable system+tools prefix.
-   * Cache creation silently fails when the content is below Gemini's minimum
-   * token threshold (typically 32 K) or the model doesn't support caching;
-   * in those cases we fall through to passing system/tools inline every call.
-   */
+  // creation silently fails below Gemini's min token threshold or on models without caching;
+  // those cases fall through to passing system/tools inline every call
   private async ensureCache(
     systemInstruction: string | undefined,
     tools: Tool[]
@@ -153,7 +144,7 @@ export class GeminiProvider implements LLMProvider {
       this.cacheExpiresAtMs = cacheExpiryMs(cache.expireTime, Date.now());
       return cache.name;
     } catch {
-      // Too few tokens or model doesn't support context caching — inline fallback.
+      // too few tokens or no caching support: fall back to inline system/tools
       this.cachedContentName = undefined;
       this.cacheKey = undefined;
       this.cacheExpiresAtMs = undefined;
@@ -162,27 +153,14 @@ export class GeminiProvider implements LLMProvider {
   }
 }
 
-/**
- * Resolve when a created cache entry lapses, as epoch millis. Prefers the
- * server-reported `expireTime` (authoritative — the server deletes the entry
- * then); falls back to now + the requested TTL when the field is absent or
- * unparseable, which errs on the early side and merely recreates sooner.
- */
+// prefers the authoritative server expireTime; falls back to now+TTL, which errs early and just recreates sooner
 export function cacheExpiryMs(expireTime: string | undefined, nowMs: number): number {
   const parsed = expireTime ? Date.parse(expireTime) : NaN;
   return Number.isFinite(parsed) ? parsed : nowMs + CACHE_TTL_SECONDS * 1000;
 }
 
-/**
- * Split a flat ChatMessage[] into Gemini's (systemInstruction, Content[]) pair.
- *
- * Differences from the Anthropic format:
- *  - System messages become the top-level systemInstruction string.
- *  - Assistant messages use role "model" instead of "assistant".
- *  - Tool calls are functionCall parts inside a model turn.
- *  - Tool results are functionResponse parts inside a user turn, merged with
- *    any immediately preceding user turn to keep role alternation intact.
- */
+// splits flat ChatMessage[] into Gemini's (systemInstruction, Content[]); assistant→"model",
+// tool results become functionResponse parts merged into a user turn to keep role alternation intact
 export function toGeminiMessages(messages: ChatMessage[]): {
   systemInstruction: string | undefined;
   contents: Content[];
@@ -217,8 +195,7 @@ export function toGeminiMessages(messages: ChatMessage[]): {
             const part: Part = {
               functionCall: { id: call.id, name: call.name, args: call.arguments },
             };
-            // Echo the thinking-model signature back verbatim. Gemini 400s on a
-            // replayed functionCall part that is missing its original signature.
+            // Gemini 400s on a replayed functionCall missing its original signature, so echo it back
             if (call.signature) part.thoughtSignature = call.signature;
             parts.push(part);
           }
@@ -229,8 +206,7 @@ export function toGeminiMessages(messages: ChatMessage[]): {
       }
 
       case "tool": {
-        // functionResponse blocks belong in user turns. Merge into the previous
-        // user turn when possible (same pattern as Anthropic's tool_result batch).
+        // functionResponse parts belong in a user turn; merge into the prior one to keep alternation
         const part: Part = {
           functionResponse: {
             id: message.toolCallId,
@@ -255,16 +231,8 @@ export function toGeminiMessages(messages: ChatMessage[]): {
   };
 }
 
-/**
- * Reduce a Gemini response to (content, toolCalls).
- *
- * We walk `candidates[0].content.parts` directly rather than using the SDK's
- * `response.functionCalls` / `response.text` getters, because those convenience
- * getters discard the per-part `thoughtSignature`. Thinking models require that
- * signature to be echoed back on the next turn, so we must read it off the raw
- * part and carry it on the ToolCall. `thought` parts are the model's reasoning
- * summary, not answer text, so they're skipped when assembling `content`.
- */
+// walks raw parts instead of the SDK getters because those discard the per-part thoughtSignature
+// thinking models need echoed back; `thought` parts are reasoning, not answer text, so they're skipped
 export function fromGeminiResponse(response: GenerateContentResponse): {
   content: string;
   toolCalls: ToolCall[];
@@ -277,8 +245,7 @@ export function fromGeminiResponse(response: GenerateContentResponse): {
     if (part.functionCall) {
       const fc = part.functionCall;
       toolCalls.push({
-        // Gemini function call ids are optional; fall back to the name so the
-        // toolCallId on the matching tool-result message stays consistent.
+        // ids are optional here; fall back to the name so the matching tool-result's id stays consistent
         id: fc.id ?? fc.name ?? "unknown",
         name: fc.name ?? "unknown",
         arguments: fc.args ?? {},

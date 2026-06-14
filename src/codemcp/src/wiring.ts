@@ -12,19 +12,11 @@ export interface WiredReader {
   repo: PgReaderRepository;
 }
 
-/**
- * Wires the primary backend reader.
- *
- * For the file backend in single-repo (legacy) mode this points to `config.fileDir`
- * (the package-root data directory). In multi-repo mode the callers should use
- * `wireMultiRepoReaders` for the per-repo readers; the primary reader returned
- * here is kept as a fallback / for Postgres usage.
- */
+// Primary backend reader, kept as a fallback / for Postgres; multi-repo callers
+// use wireMultiRepoReaders for the per-repo readers.
 export function wireReader(config: CodeMcpConfig): WiredReader {
   if (config.backend === 'file') {
-    // In multi-repo mode we still need a primary WiredReader for the serve()
-    // shutdown path. Use the first configured repo's fileDir if available,
-    // otherwise fall back to the package-root data directory (legacy).
+    // first configured repo's dir, else the package-root data dir (legacy single-repo)
     const firstRepo = config.repositories[0];
     const dir = firstRepo ? repoFileDir(firstRepo) : config.fileDir;
     return {
@@ -38,12 +30,7 @@ export function wireReader(config: CodeMcpConfig): WiredReader {
   };
 }
 
-/**
- * Builds a per-repository reader map for the file backend multi-repo mode.
- * Keyed by repository name (e.g. "Platform/Rxo.Platform.Web.Sandbox").
- * Each value has its own `FileConnectionFactory` pointing at
- * {@link repoFileDir} for that entry (package `data/` or `{localPath}/.codemcp/data/...`).
- */
+// per-repository file-backend readers keyed by repository name, each with its own connection factory
 export function wireMultiRepoReaders(
   config: CodeMcpConfig,
 ): Map<string, WiredReader> {

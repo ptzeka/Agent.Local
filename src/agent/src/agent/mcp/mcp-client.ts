@@ -6,23 +6,12 @@ import type { Mcp, ToolExecutionResult } from "./mcp.js";
 
 export type { ToolExecutionResult } from "./mcp.js";
 
-/**
- * Minimal tool-dispatch surface. Both the concrete `McpClient` and the
- * per-workspace `ScopedToolClient` satisfy it, so callers that only need to
- * invoke a tool (the executor, the orchestrator's direct read calls) can depend
- * on the abstraction rather than the concrete client.
- */
+// minimal dispatch surface so callers that only invoke tools depend on this, not the concrete client
 export interface ToolInvoker {
   callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
 }
 
-/**
- * Single-server MCP client.
- *
- * Wraps one MCP server connection. Manages tool discovery and invocation
- * for that server only. Stateless — returns POCO results to the caller,
- * which decides what to do (emit, log, etc.).
- */
+// wraps one MCP server connection; stateless, returns POCO results for the caller to act on
 export class McpClient {
   private tools: ToolDescriptor[];
   private readonly toolIndex = new Map<string, string>();
@@ -39,8 +28,7 @@ export class McpClient {
     for (const tool of tools) {
       this.toolIndex.set(tool.name, tool.name);
     }
-    // Self-disposal: nobody tracks clients for teardown — holding the owning
-    // scope's signal IS the lifecycle contract.
+    // self-disposal: nobody tracks clients for teardown, so the owning scope's signal is the lifecycle
     if (signal) {
       if (signal.aborted) {
         void this.shutdown();
@@ -54,8 +42,7 @@ export class McpClient {
     return this.serverName;
   }
 
-  // Chainable per-model timeout injection, mirroring LocalMcp so both server
-  // kinds satisfy the same Mcp wiring contract.
+  // mirrors LocalMcp so both server kinds satisfy the same Mcp wiring contract
   public setTimeout(t: number): Mcp {
     this.timeout = t;
     return this as unknown as Mcp;
@@ -81,8 +68,7 @@ export class McpClient {
       };
     }
 
-    // Derive this call's cutoff from the caller's signal and add the injected
-    // timeout, so a cancel from above OR a local timeout aborts the RPC.
+    // a cancel from above OR a local timeout must abort the RPC, so wrap both into one token
     const cutoff = new CancellationToken(signal);
     let timer: NodeJS.Timeout | null = null;
     try {
@@ -118,14 +104,14 @@ export class McpClient {
     try {
       await this.client.close();
     } catch {
-      // Best-effort
+      // best-effort: a failed close on teardown has nowhere useful to surface
     }
   }
 
   public static async createFromConnection(
     serverName: string,
     client: Client,
-    /** Owning scope's signal — the client closes itself when it aborts. */
+    // owning scope's signal: the client closes itself when it aborts
     signal?: AbortSignal
   ): Promise<McpClient> {
     const toolsResponse = await client.listTools();

@@ -40,12 +40,8 @@ export function languageForPath(relPath: string): string {
   }
 }
 
-/**
- * Walk upward from the file's directory collecting every CLAUDE.md and
- * CLAUDE.BASE.md until rootDir. The closest file is most specific; the
- * root-level one is the base contract. The returned list is ordered from
- * most-specific to least-specific.
- */
+// collects every CLAUDE.md / CLAUDE.BASE.md from the file's dir up to rootDir,
+// ordered most-specific (closest) to least-specific (the root base contract)
 export function claudeMdLineageForFile(rootDir: string, relPath: string): string[] {
   const out: string[] = [];
   let current = dirname(join(rootDir, relPath));

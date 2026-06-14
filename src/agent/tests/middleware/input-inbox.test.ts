@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { InputInboxMiddleware } from "../../src/agent/runtime/middleware/input-inbox.js";
+import { InboxToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -14,11 +15,12 @@ describe("InputInboxMiddleware", () => {
 
     await new InputInboxMiddleware().initialize(ctx, next);
 
-    expect(ctx.inbox).toBeDefined();
+    const inbox = ctx.registry.tryGet(InboxToken);
+    expect(inbox).toBeDefined();
     expect(next).toHaveBeenCalledTimes(1);
 
-    ctx.inbox!.push("s1", "hello");
-    expect(ctx.inbox!.drain("s1")).toEqual(["hello"]);
+    inbox!.push("s1", "hello");
+    expect(inbox!.drain("s1")).toEqual(["hello"]);
   });
 
   test("the seeded inbox starts empty — draining an unknown session yields nothing", async () => {
@@ -26,7 +28,8 @@ describe("InputInboxMiddleware", () => {
 
     await new InputInboxMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(ctx.inbox!.hasPending("s1")).toBe(false);
-    expect(ctx.inbox!.drain("s1")).toEqual([]);
+    const inbox = ctx.registry.get(InboxToken);
+    expect(inbox.hasPending("s1")).toBe(false);
+    expect(inbox.drain("s1")).toEqual([]);
   });
 });

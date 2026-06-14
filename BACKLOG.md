@@ -329,6 +329,97 @@ header per the MCP spec (OAuth 2.1 for remote servers).
 - [ ] This is interim — M3's store gets an `audit` table; keep the write
       behind a small `AuditSink` interface so the swap is one class.
 
+### M2-7 · CLI interactive SSO login — Google + GitHub PKCE — `~2d` · P1
+The CLI currently only carries a static `AGENT_API_TOKEN` (`cli/index.ts` ~L157).
+For real user identity it needs an interactive login that yields the OIDC token
+M2-1 verifies — without ever handling the user's password or holding a client
+secret. Use OAuth 2.0 Authorization Code + **PKCE** with a loopback redirect
+(the `gcloud`/`gh` pattern): public client, no secret, browser does the SSO/MFA.
+- [ ] **Prereq — register one OAuth app per provider (manual, one-time).**
+      Google: Cloud Console → Credentials → OAuth client ID, type **Desktop app**
+      (loopback `http://127.0.0.1:<any-port>` allowed without registering the
+      port; its "client secret" is non-confidential — PKCE covers it). GitHub:
+      Developer settings → OAuth App; secret IS confidential and callback matches
+      host+**port** (no random port) — so GitHub uses the **device flow** as its
+      primary path to avoid shipping a secret, not the loopback. Client IDs are
+      public (config, e.g. `flags.json`/env); NO secret in the repo or binary.
+      No callback URL hosting is needed — the redirect is `127.0.0.1` on the
+      user's own machine.
+- [ ] `agent-local login <provider>` command (`cli/`): start a transient
+      `http://127.0.0.1:<ephemeral-port>` server, open the system browser to the
+      provider authorize URL with `code_challenge` (S256) + `state`, capture the
+      `code` on the loopback redirect, then shut the server down. Validate
+      `state`; bind the listener to loopback only.
+- [ ] Exchange code + `code_verifier` for tokens at the provider token endpoint;
+      store `{access, refresh, expiry, idToken}` per provider in an OS-appropriate
+      location (`%APPDATA%`/`~/.config/agent-local/`), file perms `0600`, never
+      in the committed config. Refresh silently when expired.
+- [ ] **Google**: OAuth 2.0 / OIDC endpoints (`google-auth-library`'s
+      `OAuth2Client` does loopback+PKCE+refresh); the `idToken` feeds M2-1's
+      issuer/audience verification directly.
+- [ ] **GitHub**: GitHub's OAuth device/web flow now supports PKCE for the web
+      flow; GitHub issues no OIDC `idToken`, so map the `access` token → identity
+      via `GET /user` and synthesize the `IdentityContext.sub`/claims the pipeline
+      expects (document that GitHub is an OAuth-not-OIDC provider — the claim
+      mapping lives next to M2-1's, not duplicated).
+- [ ] Headless/SSH fallback: Device Authorization Grant (`--use-device-code`)
+      printing a URL + user code and polling the token endpoint — no loopback
+      server, for boxes with no browser.
+- [ ] One `SsoProvider` interface (authorize URL builder, token exchange, refresh,
+      identity mapping) with `google`/`github` implementations behind it, so a
+      third IdP is one class; the token cache is provider-agnostic.
+- [ ] `agent-local logout` clears the cache; redact tokens from all logs/errors.
+- [ ] Tests: PKCE verifier/challenge round-trips (S256); `state` mismatch is
+      rejected; expired access token triggers refresh, not re-login; token absent
+      from logs; a fake authorize/token server drives the loopback flow end-to-end.
+
+**Done when:** `agent-local login google` opens a browser, completes with no
+secret in the binary, and a subsequent dispatch runs under the SSO identity that
+M2-1 verifies; `agent-local login github` yields a mapped `IdentityContext`; both
+refresh silently and never write a token to a committed file.
+
+### M2-8 · Argument-level scoping (bound args) — `~1.5d` · P1
+Tool scoping today stops at *which server/tool* a role may call
+(`scoped-tool-client.ts`, per-model `mcp` list). The grant is "can use the
+excel server" = every workbook — too coarse to be a real safety claim. Bound
+args push the boundary one level deeper, into the *arguments*, so a grant
+becomes "excel write, to **these** sheets" — the primitive a capability-block
+palette (validator / excel-modifier / api-caller dropped into a workflow,
+each scoped to its resource) is built from. Lands in the ToolPort SCOPE layer
+(MR-1), *not* a new chokepoint: a thin decorator around each `Mcp` client,
+same `ToolInvoker` interface, enforced server-side before disk/network — never
+in the prompt (same by-construction rule as the `fsreadonly` mounts).
+- [ ] Data model: a flat `{ "<server>__<tool>": { "<arg>": <bound> } }` map.
+      Two flavors — **pinned** (runtime stamps a fixed value; arg dropped from
+      the model-facing schema so small models can't supply it) and
+      **constrained** (model supplies, validated against an exact-match
+      allowlist; reject → corrective error naming the allowed set, reusing the
+      existing `ScopedToolClient` corrective-error pattern).
+- [ ] **v1 = pinned-only** (no matching logic at all): inject fixed values,
+      strip the param from the advertised descriptor. Delivers
+      "excel-modifier locked to one workbook" with zero matcher code and is net
+      schema-*simplifying*. Ship this first.
+- [ ] Constrained/allowlist flavor second, exact-string match ONLY. Add glob
+      for path args (`reports/**`) only when a real workflow spans resources;
+      never regex/expressions (that rebuilds the config-hell the few-roles
+      posture avoids — keep it opinionated).
+- [ ] Arg normalization before the check: canonicalize path/URL args via the
+      same sandbox-root resolution the fs servers already use, so
+      `./Q3.xlsx` ≡ `Q3.xlsx` ≡ abs path — loose matching is a hole, strict
+      mismatch is an annoyance. Reuse, don't reinvent.
+- [ ] Decouple capability-grant from model: a bound-arg block is a
+      (tool-subset + bound-args) descriptor, composable independently of which
+      LLM runs it — prerequisite for the workflow-block product direction
+      (sub-server tool selection rides the same descriptor).
+- [ ] Tests: pinned arg overrides a hallucinated value and never reaches the
+      tool unstamped; out-of-allowlist constrained value is rejected with the
+      allowed set surfaced; in-allowlist passes; path normalization treats
+      equivalent forms as one; pinned param absent from advertised schema.
+
+**Done when:** a test proves an excel-modifier block pinned to `Q3.xlsx`
+cannot write any other workbook even when the model names one, and the pinned
+arg is absent from the tool schema the model sees.
+
 ---
 
 ## M3 — User-keyed store (≈ 1.5–2 weeks) — *supersedes disk-store findings*
@@ -632,7 +723,7 @@ MR-1 → MR-2                                            (the gate — was M0-1)
 M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, disjoint files)
 MR-3 → MR-4 → MR-5 → MR-6                              (finish the unified runtime)
 M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-2 closed by MR-4)
-M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6                (identity/policy — after MR)
+M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6 → M2-7 → M2-8  (identity/policy — after MR)
 M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)
 ```

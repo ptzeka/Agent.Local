@@ -1,16 +1,6 @@
-// File-backed implementation of PgReaderRepository for debugging. Reads the
-// JSON / JSONL layout written by tools/codeindex's FileWriterRepositoryImpl.
-//
-// Supported layouts (same schema_versions.json at base):
-//
-//   (A) Flat — legacy / hand-copied:
-//       <baseDir>/<commitSha>/commit.json, chunks.jsonl
-//
-//   (B) Nested `commits/` — tools/codeindex file backend output:
-//       <baseDir>/commits/<commitSha>/commit.json, chunks.jsonl
-//
-// baseDir is typically: {localPath}/.codemcp/data/{repoOwner}/{repoName}
-// (computed by config.repoFileDir() from a RepositoryEntry)
+// File-backed PgReaderRepository for debugging, reading the JSON/JSONL layout codeindex writes.
+// Supports flat (<baseDir>/<sha>/) and nested (<baseDir>/commits/<sha>/) layouts sharing one schema_versions.json.
+// baseDir is typically {localPath}/.codemcp/data/{owner}/{repo} (from config.repoFileDir()).
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join } from 'node:path';
@@ -145,7 +135,7 @@ function readSchemaVersions(base: string): SchemaVersionEntry[] {
   return JSON.parse(raw) as SchemaVersionEntry[];
 }
 
-/** SHA-only directory pattern: exactly 40 hex characters. */
+// SHA-only directory pattern: exactly 40 hex characters
 const SHA_DIR_RE = /^[0-9a-f]{40}$/i;
 
 function commitShaDirsToScan(base: string): string[] {
@@ -155,11 +145,8 @@ function commitShaDirsToScan(base: string): string[] {
   return roots;
 }
 
-/**
- * Lists distinct non-empty `repository` values found under `baseDir` (flat or
- * nested `commits/` layout). Used when the file backend starts with no
- * `--repository` flags to auto-register every indexed logical repository.
- */
+// distinct non-empty `repository` values under baseDir; used to auto-register every indexed
+// repo when the file backend starts with no --repository flags
 export function listIndexedRepositoryIds(baseDir: string): string[] {
   const seen = new Set<string>();
   for (const row of readAllCommits(baseDir)) {
@@ -194,7 +181,7 @@ function readAllCommits(base: string): CommitRow[] {
           chunkCount: stored.chunkCount,
         });
       } catch {
-        // Skip malformed commit files rather than blow up search.
+        // skip malformed commit files rather than fail the whole search
       }
     }
   }
@@ -221,7 +208,7 @@ function readChunksJsonl(base: string, commitSha: string): StoredChunk[] {
     try {
       out.push(JSON.parse(line) as StoredChunk);
     } catch {
-      // Skip malformed lines.
+      // skip malformed lines
     }
   }
   return out;

@@ -1,18 +1,7 @@
 import type { Principal } from "../identity/types.js";
 
-/**
- * Session — the unit of run state (status, counters, identity, links).
- *
- * The transcript itself lives in a separate `Conversation` (rolling JSONL
- * file), linked by `conversationId`: appending a message is then an O(1) file
- * append instead of a full session rewrite, and the session file stays small
- * metadata. ConversationMiddleware follows the link at init.
- *
- * `workspaceId` is deliberately separate from `sessionId`: several sessions
- * working toward a common goal can share one workspace (and therefore one
- * project context), while still keeping independent transcripts.
- */
-
+// run-state metadata only; the transcript lives in a linked Conversation so appends stay O(1) and this file small
+// workspaceId is separate from sessionId so several sessions toward a common goal share one workspace + context
 export type SessionStatus =
   | "idle" // created, never run
   | "running" // a turn is in flight (guards against overlapping dispatches)
@@ -21,42 +10,22 @@ export type SessionStatus =
   | "error"; // last turn threw; transcript may be partial
 
 export interface SessionCounters {
-  /** Completed user turns. */
   turns: number;
 
-  /**
-   * Cumulative model token usage for THIS session's own chat calls only —
-   * delegated work (executor dispatches, sub-sessions) is kept apart in the
-   * `*Tallied` fields below so the two figures can't be confused. A running
-   * tally for cost/cache visibility — not a per-turn figure. Fields may be
-   * absent on sessions persisted before this was added; read them through
-   * `?? 0`.
-   */
+  // THIS session's own chat spend only; delegated work is kept in the *Tallied fields so the two can't be confused
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
 
-  /**
-   * Cumulative token usage of dependencies — child runs whose cost this
-   * session caused but did not spend itself: executor dispatches (reported on
-   * the tool result) and settled sub-sessions (folded by the SessionManager).
-   * Each fold adds the child's TOTAL (its own usage plus its own tallied
-   * dependencies), so a parent's tallied figure covers the whole tree below
-   * it. Session total cost = own fields + these.
-   */
+  // dependency cost this session caused but didn't spend; each fold adds the child's TOTAL, so this covers the whole subtree
   inputTokensTallied: number;
   outputTokensTallied: number;
   cacheReadInputTokensTallied: number;
   cacheCreationInputTokensTallied: number;
 }
 
-/**
- * A token-usage tally as exposed by a producer (a chat response, a tool
- * result carrying a child run's cost). All fields optional so providers and
- * tools that can't report a figure simply omit it. The `*Tallied` fields are
- * present when the producer is itself a session that had dependencies.
- */
+// all fields optional so a producer that can't report a figure omits it; *Tallied present when the producer had dependencies
 export interface TokenUsage {
   inputTokens?: number;
   outputTokens?: number;
@@ -68,11 +37,7 @@ export interface TokenUsage {
   cacheCreationInputTokensTallied?: number;
 }
 
-/**
- * Fold a chat response's usage into the session's OWN counters. Only for
- * tokens this session's loop spent directly — delegated cost goes through
- * `foldDelegatedUsage` instead.
- */
+// only for tokens this session's loop spent directly; delegated cost goes through foldDelegatedUsage
 export function foldCounters(into: SessionCounters, usage: TokenUsage | undefined): void {
   if (!usage) return;
   into.inputTokens = (into.inputTokens ?? 0) + (usage.inputTokens ?? 0);
@@ -83,11 +48,7 @@ export function foldCounters(into: SessionCounters, usage: TokenUsage | undefine
     (into.cacheCreationInputTokens ?? 0) + (usage.cacheCreationInputTokens ?? 0);
 }
 
-/**
- * Fold a dependency's usage into the session's `*Tallied` counters. Adds the
- * dependency's own usage AND its tallied dependencies, so the receiving
- * session's tallied figure is the full cost of the tree it delegated.
- */
+// adds the dependency's own usage AND its tallied dependencies, so the figure is the full delegated tree cost
 export function foldDelegatedUsage(into: SessionCounters, usage: TokenUsage | undefined): void {
   if (!usage) return;
   into.inputTokensTallied =
@@ -107,33 +68,16 @@ export function foldDelegatedUsage(into: SessionCounters, usage: TokenUsage | un
 export interface Session {
   sessionId: string;
   workspaceId: string;
-  /** Reserved for sub-sessions; unused until the background-agent work lands. */
   parentSessionId?: string;
-  /**
-   * Link to this session's transcript (a rolling JSONL file owned by the
-   * ConversationStore). Stamped at creation; sessions persisted before the
-   * conversation split lack it and get a fresh one minted on resume.
-   */
+  // link to the rolling transcript; a pre-split session lacks it and gets a fresh one minted on resume
   conversationId: string;
   status: SessionStatus;
   counters: SessionCounters;
-  /** Epoch millis. */
   createdAt: number;
-  /** Epoch millis; bumped on every persist. */
   updatedAt: number;
-  /**
-   * Identity of the caller that opened this session. Always set on in-memory
-   * sessions (anonymous when no credentials were presented). May be absent on
-   * sessions persisted before identity was added — treat as anonymous.
-   */
+  // absent on pre-identity sessions; treat that as anonymous
   user?: Principal;
-  /**
-   * Content-addressed context snapshots by role name (e.g., "orchestrator", "executor").
-   * Each maps to a hash pointing to `<contextsDir>/<hash>.json` recording the
-   * system prompt + project direction + tool block that role ran on.
-   * Stamped by ContextMiddleware at init for each role. Absent on sessions
-   * persisted before context snapshots were added.
-   */
+  // per-role hash into <contextsDir>/<hash>.json, recording what each role ran on; stamped by ContextMiddleware
   contextHashes?: Record<string, string>;
 }
 
@@ -144,10 +88,7 @@ export interface CreateSessionParams {
   parentSessionId?: string;
 }
 
-/**
- * Build a fresh session in the `idle` state. Pure: persistence and id
- * minting are the Initializer's job, so this never touches disk or randomness.
- */
+// pure: persistence and id minting stay with the caller, so this touches neither disk nor randomness
 export function createSession(params: CreateSessionParams): Session {
   const now = Date.now();
   return {

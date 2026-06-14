@@ -1,21 +1,7 @@
 import type { ChatMessage, ToolCall, ToolDescriptor } from "./providers/provider.js";
 
-/**
- * Tool adapter.
- *
- * Two strategies for getting tool calls out of a model:
- *
- *   - NATIVE: the model speaks Ollama/OpenAI-style function calling.
- *             The provider returns `message.toolCalls` directly. Easy mode.
- *
- *   - PROMPTED-JSON: the model can't call tools natively (e.g. deepseek-r1).
- *             We append an instruction block to the system prompt telling
- *             it to emit a fenced ```json block describing the call, and
- *             we extract those blocks from the assistant text after the fact.
- *
- * The orchestrator picks the strategy based on `provider.supportsNativeTools`.
- */
-
+// prompted-JSON fallback for models without native function calling: instruct them to emit a fenced
+// ```json block and extract it afterward; the orchestrator picks this vs native by supportsNativeTools
 const TOOL_INSTRUCTION_HEADER =
   "When you need to use a tool, respond with a single fenced JSON block in this exact shape:";
 
@@ -38,11 +24,7 @@ const TOOL_INSTRUCTION_RULES = [
   "  - Never invent a tool that isn't in the list.",
 ].join("\n");
 
-/**
- * Build the addendum to inject into the system prompt when the active
- * model does not support native function calling. The orchestrator
- * appends this to the existing system message at agent-loop startup.
- */
+// the orchestrator appends this to the system message when the model lacks native function calling
 export function buildPromptedToolInstructions(tools: ToolDescriptor[]): string {
   if (tools.length === 0) return "";
 
@@ -69,11 +51,7 @@ export function buildPromptedToolInstructions(tools: ToolDescriptor[]): string {
   ].join("\n");
 }
 
-/**
- * Inspect an assistant message and pull out any prompted-JSON tool calls.
- * Returns the calls and a `cleanedContent` string with the JSON blocks
- * removed so it doesn't pollute the visible chat transcript.
- */
+// returns cleanedContent with the JSON blocks stripped so they don't pollute the visible transcript
 export function extractPromptedToolCalls(message: ChatMessage): {
   toolCalls: ToolCall[];
   cleanedContent: string;
@@ -91,8 +69,7 @@ export function extractPromptedToolCalls(message: ChatMessage): {
     try {
       parsed = JSON.parse(jsonText);
     } catch {
-      // Not a valid JSON block. Leave it in the visible content so the model
-      // can see its own mistake on the next turn, and skip extraction.
+      // leave an invalid block in the visible content so the model sees its own mistake next turn
       continue;
     }
 
@@ -105,16 +82,11 @@ export function extractPromptedToolCalls(message: ChatMessage): {
       });
       counter += 1;
 
-      // Strip the recognised JSON block from the visible content.
       cleaned = cleaned.replace(match[0], "").trim();
     }
   }
 
-  // Fallback: some models (including native-tool ones that misfire) emit the
-  // call as bare, unfenced JSON in prose. If the fenced pass found nothing,
-  // scan for balanced top-level { … } spans and recover any that clearly look
-  // like a tool call (name + arguments object). We require `arguments` here to
-  // avoid misreading a model legitimately answering with JSON.
+  // fallback for calls emitted as bare unfenced JSON; arguments is required so we don't misread a JSON answer as a call
   if (calls.length === 0) {
     for (const candidate of extractBalancedJsonObjects(cleaned)) {
       let parsed: unknown;
@@ -140,13 +112,7 @@ export function extractPromptedToolCalls(message: ChatMessage): {
   return { toolCalls: calls, cleanedContent: cleaned };
 }
 
-/**
- * Scan text for top-level, balanced `{ … }` substrings, returning each as a
- * candidate JSON string. Brace counting ignores braces inside string literals
- * and honours backslash escapes, so JSON containing `{`/`}` or quotes inside
- * values is captured whole. Nested objects are returned as part of their
- * outermost parent, not separately.
- */
+// brace counting ignores braces inside string literals and honours escapes, so values with braces/quotes are captured whole
 function extractBalancedJsonObjects(text: string): string[] {
   const objects: string[] = [];
   let depth = 0;
@@ -202,8 +168,7 @@ function parseToolCallShape(
   if (args !== undefined && !argsIsObject) {
     return null;
   }
-  // For bare-JSON recovery we insist on a real arguments object so we don't
-  // misread arbitrary JSON prose as a call.
+  // bare-JSON recovery insists on a real arguments object so arbitrary JSON prose isn't misread as a call
   if (options.requireArguments && !argsIsObject) {
     return null;
   }

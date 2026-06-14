@@ -8,46 +8,27 @@ export interface ModelDefinition {
   reasoning?: boolean;
   description?: string;
   mcp?: string[];
-  /** Upper bound, in ms, on any single tool call made by this model's loop.
-   *  Omitted → DEFAULT_TOOL_TIMEOUT_MS; <= 0 disables the bound. */
+  // omitted → DEFAULT_TOOL_TIMEOUT_MS; <= 0 disables the bound
   toolTimeoutMs?: number;
-  /** Per-model override of the role's iteration cap. Omitted → fall back to
-   *  the role default (maxExecutorIterationsPerAsk / maxOrchestratorIterations). */
+  // omitted → the role default (maxExecutorIterationsPerAsk / maxOrchestratorIterations)
   iterationCap?: number;
 }
 
-/** Fallback tool-call timeout when a model omits `toolTimeoutMs`. */
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 
 
 export interface OrchestrationConfig {
-  /** Hard cap on orchestrator LLM turns per user message. */
   maxOrchestratorIterations: number;
-  /** Hard cap on executor__dispatch calls per user message. */
   maxExecutorDispatchesPerTurn: number;
-  /** Hard cap on executor LLM turns per single dispatch. */
   maxExecutorIterationsPerAsk: number;
   orchestratorTemperature: number;
   executorTemperature: number;
-  /** Sampling temperature for the evaluator (completion-gate) judge. */
   evaluatorTemperature: number;
-  /**
-   * Run the evaluator as a progress check every this-many successful
-   * executor dispatches, not only at completion. Catches no-progress
-   * loops mid-flight. Set very high to effectively disable.
-   */
+  // mid-flight progress check every N dispatches catches no-progress loops; set very high to disable
   validatorCheckIntervalDispatches: number;
-  /**
-   * Summarize the conversation prefix once it grows beyond this many
-   * messages. Lower = more aggressive compaction, more summarizer LLM
-   * calls. Set very high to effectively disable.
-   */
+  // compact the prefix past this many messages; lower = more summarizer calls, set very high to disable
   summarizeAtMessages: number;
-  /**
-   * After summarizing, keep this many recent messages verbatim. The
-   * orchestrator may keep slightly more to avoid splitting a tool-call /
-   * tool-result pairing.
-   */
+  // recent messages kept verbatim after summarizing; a few more may stay to avoid splitting a tool pairing
   summarizerKeepLastN: number;
 }
 
@@ -104,7 +85,7 @@ export class ConfigurationRegistry
         ): OrchestrationConfig {
         if (!raw) return { ...DEFAULT_ORCHESTRATION };
 
-        // Strip the legacy keys before merging.
+        // strip legacy keys before merging so defaults win for anything not explicitly set
         const {
             ...current
         } = raw;

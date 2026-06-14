@@ -1,4 +1,5 @@
 import { Orchestrator } from "../../runners/orchestrator.js";
+import { McpRegistryToken, OrchestratorToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface OrchestratorMiddlewareParams {
@@ -6,29 +7,15 @@ export interface OrchestratorMiddlewareParams {
   role: "orchestrator" | "executor";
 }
 
-/**
- * OrchestratorMiddleware — assembles tool descriptors and creates the Orchestrator.
- *
- * Combines the work of the removed ToolsMiddleware: assembles all tool descriptors
- * (MCP tools + executor + synthetic tools) and creates an orchestrator with a
- * deferred runtime reference (to be set by AgentRuntime.build() after the runtime
- * is fully initialized).
- *
- * Requires ctx.tools (McpClientRegistry) and sets ctx.toolDescriptors and
- * ctx.orchestrator before calling next().
- */
+// creates the Orchestrator with a deferred runtime reference, which AgentRuntime.build() sets once init completes
 export class OrchestratorMiddleware implements IMiddleware {
   constructor(private readonly params: OrchestratorMiddlewareParams) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    if (!ctx.mcpRegistry) {
-      throw new Error(
-        "OrchestratorMiddleware: requires ctx.tools (McpClientRegistry). " +
-          "Ensure the registry is set up before this middleware."
-      );
-    }
+    // get() throws if the MCP registry step has not run; the orchestrator's tools come from it
+    ctx.registry.get(McpRegistryToken);
     const role = this.params.role ?? "orchestrator";
-    ctx.orchestrator = new Orchestrator(role);
+    ctx.registry.set(OrchestratorToken, new Orchestrator(role));
     await next();
   }
 }

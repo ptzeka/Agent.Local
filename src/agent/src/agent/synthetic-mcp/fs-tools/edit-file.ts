@@ -46,8 +46,7 @@ export async function editFile(
   const absolutePath = workspace.resolveSafe(input.path);
   const original = await fs.readFile(absolutePath, "utf8");
 
-  // Disallow editing if the target text never appears in the file.
-  // The model must read the file first; otherwise we fail loudly so it can adjust.
+  // fail loudly on a missing target so the model re-reads and adjusts instead of editing blind
   if (!original.includes(input.old_string)) {
     throw new EditFileError(
       `old_string was not found in ${workspace.relativize(absolutePath)}. ` +

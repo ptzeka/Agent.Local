@@ -1,21 +1,16 @@
 import type { Principal } from "../../identity/types.js";
+import { UserToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
-/**
- * InheritedUserMiddleware — the sub-runtime's replacement for the Identity +
- * Anonymous steps. A sub-session does not authenticate; it adopts its parent's
- * resolved identity wholesale, so the child's persisted record carries the same
- * principal the parent ran under. Sets ctx.user before calling next().
- *
- * The value is whatever the parent resolved to (an authenticated principal, or
- * the anonymous fallback the top-level pipeline always lands on) — undefined is
- * tolerated but should not occur, since the top-level chain guarantees a user.
- */
+// sub-runtime's replacement for Identity+Anonymous: a sub-session adopts the parent's resolved principal wholesale
 export class InheritedUserMiddleware implements IMiddleware {
   constructor(private readonly user: Principal | undefined) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    ctx.user = this.user;
+    // skip an absent parent principal: get() throws on undefined, so a missing user must stay unset, not stored
+    if (this.user) {
+      ctx.registry.set(UserToken, this.user);
+    }
     await next();
   }
 }

@@ -5,6 +5,7 @@ import { LocalMcp } from "../mcp/local-mcp.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { McpClientRegistry } from "../registries/index.js";
 import type { RuntimeContext } from "../runtime/types.js";
+import { SessionToken } from "../runtime/tokens.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
@@ -12,57 +13,34 @@ import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 import { CancellationToken } from "../../common/lifetime.js";
 import { Eventing } from "../../common/eventing.js";
 
-/**
- * ExecutorLocalMcp — in-process MCP server for executor coordination:
- * `executor__dispatch` (run one mutation) and `executor__list_tools`
- * (introspect what dispatch can target). Each dispatch builds a BRAND-NEW
- * child runtime from scratch with role "executor" — its own session
- * (parent-linked), context snapshot, registries, and persistence. Nothing is
- * shared with the parent runtime besides the workspace, so dispatches cannot
- * pollute each other or the parent; an executor child is ephemeral, sized to
- * one tool-call-shaped ask, and its persisted session is the future resume
- * point for the sub-task.
- *
- * Constructed ONCE at middleware startup with a `RuntimeContext` reference.
- * All context fields are resolved lazily at call time (the ctx object is fully
- * populated by the time any tool call arrives). Per-turn state (signal, emit,
- * tracker) is injected by the orchestrator via `bindTurn` before each turn.
- *
- * Only one executor dispatch can run at a time: a promise-chain mutex ensures
- * sequential execution without blocking the caller's microtask queue.
- */
-
-
+// in-process server for executor__dispatch (run one mutation) and executor__list_tools (introspect targets)
+// each dispatch builds a brand-new role-"executor" child from scratch, sharing only the workspace, so dispatches can't pollute each other
+// constructed ONCE; per-turn state (signal, events, tracker) is injected via bindTurn before each turn
+// a promise-chain mutex serialises dispatches without blocking the caller's microtask queue
 export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
-  // Promise-chain mutex: each dispatch chains after the previous one settles.
+  // each dispatch chains after the previous one settles
   private runLock: Promise<void> = Promise.resolve();
 
-  // Bootstrap cutoff for the Mcp contract: shutdown() cancels it, killing every
-  // child this server dispatched — independent of any turn's signal.
+  // bootstrap cutoff for the Mcp contract: shutdown() cancels it, killing every child, independent of any turn
   private readonly scope = new CancellationToken();
 
-  // Per-turn context — set by the orchestrator before each user turn.
   private turnSignal: AbortSignal | undefined = undefined;
   private turnTracker: DispatchTracker | undefined = undefined;
-  // The turn's MCP bus: we PUBLISH up it instead of calling an emit callback.
-  // Defaulted so an unbound turn (the executor sub-run never binds) is a no-op.
+  // PUBLISH up this bus instead of an emit callback; defaulted so an unbound turn (the executor sub-run) is a no-op
   private turnEvents: Eventing = new Eventing();
 
   constructor(
     private readonly ctx: RuntimeContext,
-    // Advertisement-only registry of the EXECUTOR role's servers. Distinct from
-    // ctx.mcpRegistry (the owning role's mounts): the executor's write tools
-    // must NOT be enumerable through the parent's scoped client, only here.
+    // separate from ctx.mcpRegistry so the executor's write tools are enumerable only here, never via the parent's scoped client
     private readonly executorServers: McpClientRegistry
   ) {
-    // Handlers close over `this`, so tools register after super(). Registered
-    // descriptors are routing keys only — listTools() advertises live ones.
+    // handlers close over `this`, so tools register after super(); these descriptors are routing keys, listTools() advertises live ones
     super(EXECUTOR_SERVER_NAME, []);
     this.registerTool({
       descriptor: buildDispatchDescriptor([]),
       invoke: (args) => this.dispatch(args),
     });
-    // Read-only introspection — answered in-process, never spawns an executor.
+    // read-only introspection, answered in-process; never spawns an executor
     this.registerTool({
       descriptor: LIST_TOOLS_DESCRIPTOR,
       invoke: async () => ({
@@ -72,11 +50,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     });
   }
 
-  /**
-   * Called by the orchestrator at the start of every turn that may dispatch.
-   * Binds the current abort signal, event bus, and dispatch tracker so the
-   * executor sub-run shares them without needing them in the tool args.
-   */
+  // binds signal/tracker/events so the executor sub-run shares them without carrying them in tool args
   public bindTurn(
     signal: AbortSignal | undefined,
     tracker: DispatchTracker,
@@ -87,10 +61,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     this.turnEvents = events;
   }
 
-  /**
-   * Overrides the base's static advertisement: the dispatch descriptor embeds
-   * the executor's LIVE tool enum, so it must be rebuilt on every call.
-   */
+  // rebuilt every call because the dispatch descriptor embeds the executor's LIVE tool enum
   public override listTools(): ToolDescriptor[] {
     return [
       buildDispatchDescriptor(this.resolveExecutorTools().map((tool) => tool.name)),
@@ -98,13 +69,8 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     ].map((descriptor) => ({ ...descriptor, name: `${this.name}__${descriptor.name}` }));
   }
 
-  /**
-   * Full descriptors of the tools the executor role may run. The advertisement
-   * registry already holds exactly the executor role's mounted servers (built
-   * from its models.json `mcp` list), so declared-but-unmounted servers — e.g.
-   * `codemcp` — are simply absent. The executor server itself is never mounted
-   * into that registry, so a dispatch can never target dispatch.
-   */
+  // sourced from the advertisement registry, which holds only the executor role's mounted servers,
+  // so declared-but-unmounted servers are absent and a dispatch can never target dispatch itself
   private resolveExecutorTools(): ToolDescriptor[] {
     return this.executorServers.listTools();
   }
@@ -119,8 +85,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     if (!tool) return { isError: true, content: "[dispatch-error] tool is required" };
     if (!intent) return { isError: true, content: "[dispatch-error] intent is required" };
 
-    // Cap and duplicate guard run BEFORE entering the mutex so we fail fast
-    // without queuing behind a running dispatch.
+    // cap and duplicate guard run BEFORE the mutex so we fail fast without queuing behind a running dispatch
     const tracker = this.turnTracker;
     if (tracker) {
       const reservation = tracker.reserve();
@@ -142,7 +107,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       }
     }
 
-    // Mutex: chain this dispatch after any currently-running one.
+    // chain this dispatch after any currently-running one
     const prev = this.runLock;
     let resolve!: () => void;
     this.runLock = new Promise((r) => (resolve = r));
@@ -154,13 +119,11 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     }
   }
 
-  // The Mcp contract's kill path: dispatches run under scope OR turn signal,
-  // so this reaches in-flight children even when no turn abort fires.
+  // dispatches run under scope OR turn signal, so this reaches in-flight children even when no turn abort fires
   public override async shutdown(): Promise<void> {
     this.scope.cancel("executor-server-shutdown");
   }
 
-  /** Signal handed to dispatched children: the server scope OR the turn. */
   private dispatchSignal(): AbortSignal {
     return this.turnSignal
       ? AbortSignal.any([this.turnSignal, this.scope.signal])
@@ -176,21 +139,15 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     tracker: DispatchTracker | undefined
   ): Promise<ToolExecutionResult> {
     const signal = this.dispatchSignal();
-    // Construct the canonical ask message the executor Orchestrator will receive.
     const askMessage =
       `Tool: ${tool}\n` +
       `Args: ${JSON.stringify(toolArgs, null, 2)}\n` +
       `Intent: ${intent}`;
 
-    // Publish up the MCP bus instead of an emit callback: this bubbles
-    // mcpClientEvents → turnEvents → runtime → host (CLI).
     this.turnEvents.publish(OrchestratorEventTypes.DISPATCH_START, { tool, intent, args: toolArgs });
 
-    // Brand-new child runtime per dispatch: own session (parent-linked, fresh
-    // id), own registries and context snapshot, persisted by its own store.
-    // Deliberately built from scratch — no parent state leaks in, no dispatch
-    // sees another's transcript; a failed ask is simply dispatched again.
-    const parentSession = this.ctx.session!;
+    // built from scratch so no parent state leaks in and no dispatch sees another's transcript
+    const parentSession = this.ctx.registry.get(SessionToken);
     const childRuntime = buildSubRuntime(
       {
         logger: this.ctx.logger,
@@ -207,8 +164,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
         parentSessionId: parentSession.sessionId,
         workspaceId: parentSession.workspaceId,
         user: parentSession.user,
-        // Chained under the turn's signal OR the server scope: a turn abort and
-        // an Mcp shutdown() both kill the child's run and resources.
+        // a turn abort and an Mcp shutdown() both kill the child's run and resources through this signal
         parentSignal: signal,
       }
     );
@@ -221,9 +177,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
 
     try {
       runtime = await childRuntime.build();
-      // The child is its own event root; bridge its turn events up as
-      // `executor-event` so the renderer tags them as the sub-run's, not the
-      // parent's. This is the MCP-bus link the parent reaches the child through.
+      // bridge the child's events up as `executor-event` so the renderer tags them as the sub-run's, not the parent's
       const detach = runtime.getEvents().subscribe((event) =>
         this.turnEvents.publish(OrchestratorEventTypes.EXECUTOR_EVENT, {
           ...event.payload,
@@ -244,9 +198,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       ok = false;
     }
 
-    // The child accumulated its own model usage while running; expose it on
-    // the tool result so the parent folds the delegated cost into its tally.
-    // A failed dispatch still burned tokens, so this sits outside the try.
+    // exposed on the result so the parent folds the delegated cost; outside the try since a failed dispatch still burned tokens
     if (runtime) usage = { ...runtime.getSession().counters };
 
     if (tracker && ok) {
@@ -265,22 +217,11 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch descriptor builder. The "tool" property carries a strict enum of
-// the executor-side tool names AND repeats them in the description: the enum
-// rejects invented names at the schema level, the prose list keeps the names
-// visible to models that ignore enums (prompted-JSON fallbacks). Built per
-// listTools() call so it tracks live server mounts.
-// ---------------------------------------------------------------------------
-
 export const EXECUTOR_ROLE = "executor" as const;
 
-// Server mount name — same string as the role, but a distinct concept.
+// same string as the role, but a distinct concept
 export const EXECUTOR_SERVER_NAME = "executor";
 
-// Read-only safety net beside the dispatch enum: when the orchestrator is
-// unsure of a target tool's exact name or argument shape, it can fetch the
-// full descriptors (name, description, inputSchema) instead of guessing.
 const LIST_TOOLS_DESCRIPTOR: ToolDescriptor = {
   name: "list_tools",
   description:
@@ -294,6 +235,7 @@ const LIST_TOOLS_DESCRIPTOR: ToolDescriptor = {
   },
 };
 
+// the enum rejects invented names at the schema level; the prose list repeats them for models that ignore enums
 function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
   const toolListBlock =
     executorToolNames.length > 0
@@ -324,7 +266,7 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
       properties: {
         tool: {
           type: "string",
-          // Omit an empty enum rather than emit an unsatisfiable schema.
+          // omit an empty enum rather than emit an unsatisfiable schema
           ...(executorToolNames.length > 0 ? { enum: executorToolNames } : {}),
           description:
             "Fully-namespaced executor-side tool name. Must be one of the names " +
@@ -343,11 +285,7 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
   };
 }
 
-// ---------------------------------------------------------------------------
-// Parse helpers — the executor emits structured lines; we pull the key bits
-// for the dispatch-feedback event without requiring a full regex suite.
-// ---------------------------------------------------------------------------
-
+// pulls one structured line the executor emits, for the dispatch-feedback event, without a full regex suite
 function extractFirstLine(content: string, prefix: string): string {
   const line = content.split("\n").find((l) => l.startsWith(prefix));
   return line ?? "";

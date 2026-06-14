@@ -1,46 +1,16 @@
 import type { ToolDescriptor } from "../providers/provider.js";
 
-/**
- * Substitute the {TOOLS_LIST} placeholder in a role prompt template.
- */
+// role prompts carry a {TOOLS_LIST} placeholder so the advertised tool set stays live, not hard-coded
 export function fillToolsList(template: string, tools: ToolDescriptor[]): string {
   const list = tools.map((t) => `  - ${t.name}`).join("\n");
   return template.replace("{TOOLS_LIST}", list);
 }
 
-/**
- * System prompts for the three roles.
- *
- * The architecture is orchestrator + executor + evaluator:
- *
- *   ORCHESTRATOR  — coordinates. Read-only tools (read_file, list_dir, glob,
- *                   grep, codemcp.*). Its only mutation channel is the
- *                   `executor__dispatch` tool.
- *
- *   EXECUTOR      — executes. Sub-agent spawned per dispatch. Holds the
- *                   write/edit/exec tools. Must ACK first, run the tool,
- *                   independently re-read or check exit code to validate,
- *                   and emit a RESULT line with evidence.
- *
- *   EVALUATOR     — completion gate. Judges whether the orchestrator's
- *                   proposed answer fulfills the user's request. Emits one
- *                   of four verdicts: SATISFIED, CONTINUE, UNSATISFIED,
- *                   AWAITING-INPUT.
- *
- * Every line the executor emits is prefixed `EXECUTOR:`. Orchestrator
- * status lines are prefixed `ORCHESTRATOR:`. Evaluator verdicts are prefixed
- * `EVALUATOR:` for the same reason: at any point in the transcript the reader
- * can tell which role is talking.
- */
+// role prompts for orchestrator + executor + evaluator; each role prefixes its lines
+// (ORCHESTRATOR:/EXECUTOR:/EVALUATOR:) so any transcript reader can tell who is talking
 
-/**
- * Per-call request anchor. `{REQUEST}` is replaced with the turn's user input
- * verbatim. Appended transiently as the LAST message of every orchestrator
- * chat call so the active request can never be buried by context growth or
- * summarization — the same anchoring the evaluator gets by construction.
- * Lives here with the other steering text; consumers fetch it through
- * `ModelRegistry.getAnchorText()` rather than binding to this constant.
- */
+// appended as the LAST message every orchestrator call so the active request
+// can't be buried by context growth or summarization; reached via ModelRegistry.getAnchorText()
 export const REQUEST_ANCHOR_TEMPLATE =
   `ACTIVE REQUEST (this turn): «{REQUEST}»\n` +
   "Act only on this request — execute exactly what it asks, nothing more. " +

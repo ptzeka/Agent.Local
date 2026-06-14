@@ -1,26 +1,7 @@
 import { z, type ZodTypeAny } from "zod";
 
-/**
- * Minimal Zod → JSON Schema converter.
- *
- * MCP tools (and Ollama's tool-calling API) both expect each tool to advertise
- * a JSON Schema for its arguments. Rather than pull in the full `zod-to-json-schema`
- * package, we implement just enough of the conversion to cover the schemas our
- * tools actually use: objects of primitives with optionals, defaults, and descriptions.
- *
- * Supported node types:
- *   - ZodObject          → { type: "object", properties, required }
- *   - ZodString          → { type: "string" }
- *   - ZodNumber          → { type: "number" } or { type: "integer" } if .int() applied
- *   - ZodBoolean         → { type: "boolean" }
- *   - ZodOptional        → unwraps inner type; key omitted from `required`
- *   - ZodDefault         → unwraps inner type; copies default into the schema
- *   - ZodEnum            → { type: "string", enum: [...] }
- *
- * Anything else falls back to `{}` so the tool still works even if the model
- * sees a slightly loose schema.
- */
-
+// just enough Zod→JSON Schema to cover our tools' schemas, avoiding the full zod-to-json-schema dependency
+// an unsupported node falls back to {} so the tool still works even with a slightly loose schema
 interface JsonSchemaNode {
   type?: string;
   description?: string;

@@ -5,37 +5,23 @@ import { ConversationStore } from "../conversation/conversation-store.js";
 import type { ChatMessage } from "../providers/provider.js";
 import type { Session } from "./session.js";
 
-/**
- * Lightweight description of a persisted session, enough for a picker to show
- * a useful row without the caller having to load and parse every file itself.
- */
+// the small shape a picker needs without loading and parsing every session file itself
 export interface SessionSummary {
   sessionId: string;
-  /** Epoch millis of the last persist; drives most-recent-first ordering. */
+  // drives most-recent-first ordering
   updatedAt: number;
-  /** Completed user turns. */
   turns: number;
-  /** Truncated first user message, or null when the transcript has none yet. */
+  // null when the transcript has no user turn yet
   preview: string | null;
 }
 
-/** Cap on preview length so a long opening message can't wreck the layout. */
+// caps preview length so a long opening message can't wreck the layout
 const PREVIEW_MAX_LENGTH = 60;
 
-/**
- * SessionStore — Repository layer.
- *
- * Persists one JSON file per session under a single directory. Chosen for
- * zero new dependencies and trivial inspectability; it mirrors the
- * file-repository pattern already used in codeindex.
- *
- * Durability is turn-boundary: the Initializer calls `save` after each
- * completed turn. Writes go through a temp file + rename so a crash
- * mid-write can never corrupt an existing session file.
- */
+// one JSON file per session: zero new deps and trivially inspectable; writes go temp+rename so a crash can't corrupt
+// durability is turn-boundary, save() runs after each completed turn
 export class SessionStore {
-  /** Sibling store for transcript previews — sessions only carry the
-   *  conversationId link, so summaries() must follow it. */
+  // sessions carry only the conversationId link, so summaries() follows it through this sibling store
   private readonly conversations: ConversationStore;
 
   private constructor(private readonly directory: string) {
@@ -76,17 +62,7 @@ export class SessionStore {
     }
   }
 
-  /**
-   * Summaries of every persisted top-level session, most-recently-updated
-   * first. Loads each file once and projects it to the small shape a picker
-   * needs; files that fail to parse (partial/corrupt) are skipped rather than
-   * aborting the whole listing.
-   *
-   * Sub-sessions (any session carrying a `parentSessionId`) are deliberately
-   * omitted: they are persisted for durability/inspection but are not
-   * resumable as standalone sessions, so the startup picker must never offer
-   * them.
-   */
+  // corrupt files are skipped, not fatal; sub-sessions are omitted since they aren't standalone-resumable
   public async summaries(): Promise<SessionSummary[]> {
     const ids = await this.list();
     const summaries: SessionSummary[] = [];
@@ -107,20 +83,14 @@ export class SessionStore {
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  /**
-   * Map a sessionId to its file. The id is sanitised so a hostile or
-   * malformed value can't escape the store directory via path traversal.
-   */
+  // sanitises the id so a hostile or malformed value can't escape the store via path traversal
   private fileFor(sessionId: string): string {
     const safe = sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
     return path.join(this.directory, `${safe}.json`);
   }
 }
 
-/**
- * First user message of a transcript, whitespace-collapsed and truncated, to
- * hint at what the session was about. Returns null when no user turn exists yet.
- */
+// whitespace-collapsed, truncated first user message to hint what the session was about; null when none yet
 function firstUserPreview(messages: readonly ChatMessage[]): string | null {
   const firstUser = messages.find((message) => message.role === "user");
   if (!firstUser) return null;

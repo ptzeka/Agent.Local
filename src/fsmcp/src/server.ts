@@ -1,15 +1,5 @@
 #!/usr/bin/env node
-/**
- * MCP tools server.
- *
- * This process is launched by the agent (or by any MCP-capable client that
- * reads mcp.json) over stdio. It registers a small set of filesystem and
- * search tools, all confined to the workspace directory configured via the
- * AGENT_WORKSPACE environment variable.
- *
- * Architecture role: Repository / External layer. No agent logic here — just
- * pure tool handlers and a thin MCP transport wrapper.
- */
+// stdio MCP server registering filesystem/search tools, all confined to AGENT_WORKSPACE
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -34,14 +24,7 @@ import { grep, grepSchema } from "./search/grep.js";
 import type { ZodTypeAny } from "zod";
 import type { Workspace } from "./workspace.js";
 
-/**
- * A registered tool, ready to be exposed over MCP.
- *
- * `defineTool` accepts a typed schema + typed handler and packs them into a
- * uniform shape: the runtime handler takes `unknown` arguments and does the
- * Zod parse itself. This keeps the tools array a single concrete type so
- * `Array.find` and `Array.map` don't tangle TypeScript with a generic union.
- */
+// the runtime handler takes unknown args and Zod-parses itself, keeping the tools array a single concrete type
 interface RegisteredTool {
   name: string;
   description: string;
@@ -129,11 +112,7 @@ async function main(): Promise<void> {
     }),
   ] as const;
 
-  // Build the table the MCP list_tools handler returns: each entry has a JSON Schema
-  // derived from the underlying Zod schema so MCP clients (and Ollama, via the bridge)
-  // can pass arguments correctly. Every tool input is a ZodObject at the top level,
-  // so the converter always produces `type: "object"` here — we cast accordingly to
-  // satisfy the SDK's literal-typed `inputSchema` field.
+  // every tool input is a top-level ZodObject, so the converter always yields type:"object"; cast to satisfy the SDK's literal field
   const toolListing: ListToolsResult = {
     tools: tools.map((tool) => ({
       name: tool.name,
@@ -217,8 +196,7 @@ function formatToolError(err: unknown): string {
 }
 
 main().catch((err) => {
-  // Surfaces startup failures to whoever launched us (the parent agent).
-  // We deliberately write to stderr so it doesn't corrupt the MCP stdio channel.
+  // stderr, not stdout, so a startup failure doesn't corrupt the MCP stdio channel
   process.stderr.write(`[fsmcp] fatal: ${(err as Error).stack ?? err}\n`);
   process.exit(1);
 });

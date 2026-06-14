@@ -1,13 +1,10 @@
-// Shared "what commit am I searching?" resolution for the three search tools.
-// Picks the effective repository (explicit input → server-detected current →
-// any) and the effective commit SHA (explicit input → latest indexed for the
-// branch+repository pair), and renders the header that the tools prepend to
-// their output so the caller can see which slice of the index they got.
+// Shared commit/repository resolution for the search tools: picks the effective repo and commit SHA,
+// and renders the header tools prepend so callers see which slice of the index they got.
 
 import type { DbConnection } from '../db/types.js';
 import type { PgReaderRepository } from '../db/pgRepository.js';
 
-/** Enough rows to detect multiple SHAs for one repo+branch; not a hard cap on index size. */
+// enough rows to detect multiple SHAs for one repo+branch; not a hard cap on index size
 const COMMIT_RESOLUTION_ROW_CAP = 500;
 
 export interface ResolveCommitOptions {
@@ -29,23 +26,8 @@ export type ResolveCommitResult =
       message: string;
     };
 
-/**
- * Resolves to a concrete commit SHA + the labels the tools print in the
- * response header. Returns a `missing` result (with a user-facing message) when
- * no commit matches — callers should return that message verbatim instead of
- * querying chunks against a nonexistent commit.
- *
- * Repository precedence: explicit input > server-detected. If neither is set,
- * we refuse the query — searching "any repository" silently picks whatever
- * happens to be indexed and leads to the agent reasoning about the wrong code.
- * The returned message tells the caller exactly how to recover (pass
- * `repository`, or call `list_commits` to see what's available).
- *
- * When several distinct commit SHAs are indexed for the same repository **and**
- * git branch, omitting \`commit\` is ambiguous — the tool refuses until the
- * caller passes an explicit full SHA (from \`list_commits\` or the user).
- * Detection uses up to {@link COMMIT_RESOLUTION_ROW_CAP} newest rows per query.
- */
+// Refuses rather than guesses: an unknown repo or several SHAs for one repo+branch returns a `missing`
+// message telling the caller how to recover, so the agent never reasons about the wrong code.
 export async function resolveCommit(
   conn: DbConnection,
   repo: PgReaderRepository,
@@ -113,9 +95,7 @@ export async function resolveCommit(
     };
   }
 
-  // `--branch` is a single global default; indexed snapshots record the real
-  // git branch name. When they differ (common in multi-repo MCP configs),
-  // fall back to the newest indexed commit for this repository on any branch.
+  // indexed snapshots record the real git branch, which often differs from the global --branch default
   const anyBranch = await repo.listCommits(conn, null, repository, COMMIT_RESOLUTION_ROW_CAP);
   if (anyBranch.length === 0) {
     return {
@@ -145,13 +125,9 @@ export async function resolveCommit(
   };
 }
 
-/**
- * One-line header all three search tools prepend so the caller can see which
- * repository / branch / commit was actually queried.
- */
+// header the search tools prepend so the caller sees which repo/branch/commit was queried
 export function formatResolutionHeader(resolved: Extract<ResolveCommitResult, { kind: 'resolved' }>): string {
-  // `repository` can no longer be null on a resolved result — `resolveCommit`
-  // refuses unknown-repo queries up front. The fallback is defensive only.
+  // repository is non-null on a resolved result; this fallback is defensive only
   const repoLabel = resolved.repository ?? '(unknown)';
   const shortSha = resolved.commitSha.slice(0, 12);
   return `repository: ${repoLabel}  branch: ${resolved.branch}  commit: ${shortSha}\n---\n`;

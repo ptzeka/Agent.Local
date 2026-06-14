@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import { InheritedUserMiddleware } from "../../src/agent/runtime/middleware/inherited-user.js";
 import type { Principal } from "../../src/agent/identity/types.js";
+import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -23,7 +24,7 @@ describe("InheritedUserMiddleware", () => {
 
     await new InheritedUserMiddleware(principal).initialize(ctx, next);
 
-    expect(ctx.user).toBe(principal);
+    expect(ctx.registry.tryGet(UserToken)).toBe(principal);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -33,7 +34,7 @@ describe("InheritedUserMiddleware", () => {
 
     await new InheritedUserMiddleware(undefined).initialize(ctx, next);
 
-    expect(ctx.user).toBeUndefined();
+    expect(ctx.registry.tryGet(UserToken)).toBeUndefined();
     expect(next).toHaveBeenCalledTimes(1);
   });
 });

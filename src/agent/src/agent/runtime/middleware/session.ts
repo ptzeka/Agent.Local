@@ -2,89 +2,61 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { createSession } from "../../session/session.js";
+import { createSession, type Session } from "../../session/session.js";
+import { SessionToken, StoreToken, UserToken, WorkspaceToken, WorkspacesToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface SessionMiddlewareParams {
-  /**
-   * Session id to resume from disk. Omit (or leave undefined) to open a
-   * fresh session.
-   */
+  // omit to open a fresh session
   sessionId?: string;
-  /**
-   * Workspace id to join. When resuming an existing session this is ignored
-   * (the session already carries its workspaceId). When opening a new session
-   * it lets multiple sessions share one workspace — omit to mint a fresh one.
-   */
+  // ignored when resuming; on a new session it lets multiple sessions share one workspace, else minted fresh
   workspaceId?: string;
 }
 
-/**
- * SessionMiddleware — initialize-pipeline step that either resumes a persisted
- * session from disk or opens a brand-new one, then registers its workspace so
- * the project context is available for the rest of the pipeline.
- *
- * Expects ctx.user to already be set by IdentityMiddleware + AnonymousMiddleware.
- * Stamps session.user from ctx.user so the identity is durable on the session.
- *
- * Sets ctx.session and ctx.workspace before calling next().
- */
+// resumes a persisted session or opens a new one, then registers its workspace for the rest of the pipeline
+// stamps session.user from ctx.user (set by Identity+Anonymous) so identity is durable on the session
 export class SessionMiddleware implements IMiddleware {
   constructor(private readonly params: SessionMiddlewareParams = {}) {}
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
-    if (!ctx.store || !ctx.workspaces) {
-      throw new Error(
-        "SessionMiddleware: requires ctx.store and ctx.workspaces. Add StoreMiddleware " +
-          "and WorkspaceRegistryMiddleware earlier in the pipeline."
-      );
+    const session = this.params.sessionId
+      ? await this.resume(ctx, this.params.sessionId)
+      : await this.open(ctx);
+
+    const user = ctx.registry.tryGet(UserToken);
+    if (user) {
+      session.user = user;
     }
+    ctx.registry.set(SessionToken, session);
 
-    if (this.params.sessionId) {
-      await this.resume(ctx, this.params.sessionId);
-    } else {
-      await this.open(ctx);
-    }
+    const workspace = ctx.registry.get(WorkspacesToken).get(session.workspaceId);
+    ctx.registry.set(WorkspaceToken, workspace);
 
-    // Stamp the resolved identity onto the session so it's persisted with it.
-    if (ctx.user) {
-      ctx.session!.user = ctx.user;
-    }
-
-    ctx.workspace = ctx.workspaces!.get(ctx.session!.workspaceId);
-
-    // Materialise the session's workspace segment on disk. ScopedToolClient
-    // confines tool I/O to {sandboxRoot}/{workspaceId}; without the directory
-    // the first list_dir/glob fails with ENOENT (scandir). recursive: true is
-    // idempotent, so a resumed session with an existing segment is a no-op.
-    const segmentDir = path.join(ctx.sandboxRoot, ctx.session!.workspaceId);
+    // create the sandbox segment up front or the first list_dir/glob fails with ENOENT; recursive is idempotent on resume
+    const segmentDir = path.join(ctx.sandboxRoot, session.workspaceId);
     await mkdir(segmentDir, { recursive: true });
 
     await next();
   }
 
-  private async resume(ctx: RuntimeContext, sessionId: string): Promise<void> {
-    const session = await ctx.store!.load(sessionId);
+  private async resume(ctx: RuntimeContext, sessionId: string): Promise<Session> {
+    const session = await ctx.registry.get(StoreToken).load(sessionId);
     if (!session) {
       throw new Error(`No persisted session "${sessionId}" to resume.`);
     }
 
-    // A "running" status left over from a crashed process has no live turn
-    // behind it after restart — reset so the session is dispatchable again.
+    // a "running" status from a crashed process has no live turn after restart; reset so it's dispatchable
     if (session.status === "running") {
       session.status = "awaiting-input";
     }
 
-    // Transcript healing (dangling tool_use trim) happens where the transcript
-    // now lives: ConversationMiddleware, after it loads the rolling file.
-
-    await ctx.workspaces!.register(session.workspaceId, ctx.workspaceRoot);
-    ctx.session = session;
+    await ctx.registry.get(WorkspacesToken).register(session.workspaceId, ctx.workspaceRoot);
+    return session;
   }
 
-  private async open(ctx: RuntimeContext): Promise<void> {
+  private async open(ctx: RuntimeContext): Promise<Session> {
     const workspaceId = this.params.workspaceId ?? randomUUID();
-    await ctx.workspaces!.register(workspaceId, ctx.workspaceRoot);
+    await ctx.registry.get(WorkspacesToken).register(workspaceId, ctx.workspaceRoot);
 
     const session = createSession({
       sessionId: randomUUID(),
@@ -92,7 +64,7 @@ export class SessionMiddleware implements IMiddleware {
       conversationId: randomUUID(),
     });
 
-    await ctx.store!.save(session);
-    ctx.session = session;
+    await ctx.registry.get(StoreToken).save(session);
+    return session;
   }
 }

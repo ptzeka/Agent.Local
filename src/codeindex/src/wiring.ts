@@ -9,11 +9,7 @@ import { FileWriterRepositoryImpl } from './db/file/fileRepository.js';
 export interface WiredWriter {
   factory: DbConnectionFactory;
   repo: PgWriterRepository;
-  /**
-   * True when the backend supports executing raw SQL (i.e. Postgres). The
-   * migration runner uses this to decide whether to apply .sql files or just
-   * seed the schema_versions journal.
-   */
+  // Postgres-only; the migration runner uses this to apply .sql files vs. just seed the schema_versions journal
   supportsSql: boolean;
 }
 

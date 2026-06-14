@@ -3,20 +3,9 @@ import type { Eventing } from "../common/eventing.js";
 import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
 import type { ToolDescriptor } from "./providers/provider.js";
 
-/**
- * Routes `<server>__<tool>` calls to the correct in-process MCP server and
- * publishes TOOL_CALL / TOOL_RESULT events for the REPL renderer.
- *
- * Path confinement is NOT the responsibility of this class. Each synthetic fs
- * server is constructed with its workspace segment as root (sandboxRoot +
- * workspaceId), so the Workspace guard inside the server enforces confinement
- * deterministically — before any disk access, without client-side rewriting.
- *
- * Tolerant routing: small models routinely drop the `<server>__` namespace
- * prefix. When the name is bare (no `__`), we search all mounted servers for
- * a unique tail match and route it. Ambiguous or missing names return a
- * corrective error that names the real candidates.
- */
+// routes <server>__<tool> calls to the right MCP server and emits TOOL_CALL/TOOL_RESULT events
+// path confinement is NOT here: each fs server is rooted at its workspace segment and guards itself
+// tolerant routing: small models drop the namespace prefix, so a bare name is matched by unique tail
 export class ScopedToolClient implements ToolInvoker {
   private readonly clientsByServer: Map<string, Mcp>;
 
@@ -46,8 +35,7 @@ export class ScopedToolClient implements ToolInvoker {
     const { client, toolTail } = resolved;
 
     events?.publish(OrchestratorEventTypes.TOOL_CALL, { id: "", name, arguments: args });
-    // Timeout policy lives in the server (it wraps this signal in its own
-    // CancellationToken); the client only routes and forwards the turn's signal.
+    // timeout policy lives in the server; the client only routes and forwards the turn's signal
     const result = await client.callTool(toolTail, args, signal);
     events?.publish(OrchestratorEventTypes.TOOL_RESULT, {
       id: "",
@@ -85,7 +73,7 @@ export class ScopedToolClient implements ToolInvoker {
         const tail = tool.name.slice(tool.name.indexOf("__") + 2);
         if (tail === name) {
           owners.push({ client, toolTail: name });
-          break; // one match per server is enough
+          break;
         }
       }
     }

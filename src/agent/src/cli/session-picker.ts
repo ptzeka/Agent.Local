@@ -4,40 +4,27 @@ import chalk from "chalk";
 
 import type { SessionSummary } from "../agent/session/session-store.js";
 
-/**
- * Startup session picker (UI layer).
- *
- * A hand-rolled arrow-key selector so resuming a session needs no prompt
- * library — the store already commits to a zero-dependency ethos and this
- * keeps the CLI in step. It drives raw-mode keypress events directly and,
- * crucially, fully restores the terminal before returning so the REPL's own
- * readline interface (created afterward) starts from a clean slate.
- */
-
+// hand-rolled arrow-key selector to keep the CLI's zero-dependency ethos; restores the terminal
+// fully before returning so the REPL's readline (created afterward) starts from a clean slate
 export type PickResult =
   | { kind: "new" }
   | { kind: "resume"; sessionId: string };
 
-/** Sentinel index for the always-present "create new session" row. */
 const CREATE_NEW = 0;
 
-/**
- * Present the saved sessions and let the user choose one to resume or start a
- * new one. ↑/↓ (or k/j) move, Enter selects, Esc/Ctrl+C aborts to a new
- * session. Falls back to "new" without prompting when stdin is not a TTY
- * (piped input, CI), where an interactive menu can't work.
- */
+// falls back to "new" without prompting when stdin is not a TTY (piped input, CI), where a menu can't work
 export async function pickSession(summaries: SessionSummary[]): Promise<PickResult> {
   if (!process.stdin.isTTY) return { kind: "new" };
 
-  // Row 0 is "create new"; the rest map 1:1 onto summaries.
+  // row 0 is "create new"; the rest map 1:1 onto summaries
   const rowCount = summaries.length + 1;
   let selected = CREATE_NEW;
-  let rendered = 0; // lines emitted last paint, so we can rewind and redraw.
+  // lines emitted last paint, so we can rewind and redraw
+  let rendered = 0;
 
   const paint = (): void => {
     if (rendered > 0) {
-      // Rewind to the top of the previous block and clear downward.
+      // rewind to the top of the previous block and clear downward
       process.stdout.write(`\x1b[${rendered}A\x1b[0J`);
     }
 
@@ -69,7 +56,7 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
       ): void => {
         if (!key) return;
 
-        // Abort paths resolve to a brand-new session.
+        // abort paths resolve to a brand-new session
         if (key.name === "escape" || (key.ctrl && key.name === "c")) {
           cleanup();
           resolve({ kind: "new" });
@@ -105,24 +92,21 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
 
     return choice;
   } finally {
-    // Restore the terminal so the REPL's readline starts clean. Leave stdin
-    // resumed — readline takes it over next.
+    // restore the terminal so the REPL's readline starts clean; leave stdin resumed for it to take over
     process.stdin.setRawMode(wasRaw);
   }
 }
 
-/** A menu row: highlighted (inverse) when selected, indented otherwise. */
 function rowFor(selected: boolean, label: string, detail: string): string {
   const body = detail ? `${label}  ${chalk.gray(detail)}` : label;
   return selected ? chalk.inverse(`▶ ${body} `) : `  ${body}`;
 }
 
-/** First segment of a UUID — enough to recognise a session at a glance. */
+// first UUID segment, enough to recognise a session at a glance
 function shortId(sessionId: string): string {
   return sessionId.split("-")[0] ?? sessionId.slice(0, 8);
 }
 
-/** "3 turns · 5m ago · <preview>" style detail for a saved session. */
 function describe(summary: SessionSummary): string {
   const turns = `${summary.turns} turn${summary.turns === 1 ? "" : "s"}`;
   const when = relativeTime(summary.updatedAt);
@@ -130,7 +114,6 @@ function describe(summary: SessionSummary): string {
   return `${turns} · ${when} · ${preview}`;
 }
 
-/** Coarse "Nx ago" relative time; precise enough for an at-a-glance list. */
 function relativeTime(epochMillis: number): string {
   const seconds = Math.max(0, Math.round((Date.now() - epochMillis) / 1000));
   if (seconds < 60) return `${seconds}s ago`;

@@ -7,16 +7,8 @@ export const SUBSESSION_STATUS_TOOL = "get_subsession_status";
 export const LIST_SUBSESSIONS_TOOL = "list_subsessions";
 export const FINALIZE_SUBSESSION_TOOL = "finalize_subsession";
 
-/**
- * Sub-session synthetic tools.
- *
- * Each is intercepted before MCP and routed to the SubSessionCoordinator.
- * `parentSessionId` is always taken from the context's session — the LLM never
- * supplies it, so it can't be spoofed or get out of sync, and it never appears
- * in any schema. These tools are only built (and therefore only advertised) when
- * a coordinator is wired in, which enforces the one-level-deep guard at source.
- */
-
+// parentSessionId always comes from the context session, never the LLM, so it can't be spoofed or drift
+// only built when a coordinator is wired in, which enforces the one-level-deep guard at source
 export function createSubSessionTools(): SyntheticMcp[] {
   return [
     {
@@ -64,13 +56,11 @@ async function handleCreate(
     workspace: ctx.workspace,
     intent,
     context,
-    // Inherit the parent's identity so the child runs (and persists) under the
-    // same principal rather than as a fresh anonymous session.
+    // inherit the parent's identity so the child runs and persists under the same principal, not anonymous
     user: ctx.session.user,
   });
 
-  // Rejected by the per-parent cap — surface as an error so the model waits on
-  // or finalizes an existing child instead of retrying blindly.
+  // surface a cap rejection as an error so the model waits on or finalizes a child instead of retrying blindly
   if (result.outcome === "rejected" || !result.snapshot) {
     return {
       isError: true,
@@ -79,8 +69,7 @@ async function handleCreate(
     };
   }
 
-  // created or reused — both return the live child's snapshot. The reused note
-  // tells the model it already has this work in flight.
+  // the reused prefix tells the model it already has this work in flight
   const prefix = result.outcome === "reused" ? `[subsession-reused] ${result.reason}\n` : "";
   return {
     isError: false,
@@ -107,8 +96,7 @@ async function handleStatus(
     return toolError(`[subsession-error] unknown subSessionId "${subSessionId.value}" for this session`);
   }
 
-  // When a backoff was applied the status hasn't changed since last poll — tell
-  // the model to stop hammering and do other work before re-checking.
+  // a backoff means the status is unchanged since last poll, so steer the model to do other work before re-checking
   const note =
     result.backoffMs > 0
       ? `[backoff ${result.backoffMs}ms — status unchanged ("${result.snapshot.status}") since your last check; ` +

@@ -1,17 +1,14 @@
 import type { Conversation } from "../conversation/conversation.js";
-import type { IdentityContext, Principal } from "../identity/types.js";
-import type { InputInbox } from "../runners/input-inbox.js";
+import type { IdentityContext } from "../identity/types.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
-import type { Orchestrator } from "../runners/orchestrator.js";
 import type { Session } from "../session/session.js";
-import type { SessionManager } from "../session/session-manager.js";
-import type { SessionStore } from "../session/session-store.js";
-import type { Workspace, WorkspaceRegistry } from "../registries/workspace-registry.js";
+import type { Workspace } from "../registries/workspace-registry.js";
 import type { Eventing } from "../../common/eventing.js";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
 import { ILogger } from "../../common/ilogger.js";
+import type { Container } from "../../common/container.js";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;
@@ -23,8 +20,7 @@ export interface AgentRuntimeQueryable {
   getMcpClientRegistry(): McpClientRegistry;
   getContextLoader(): ContextLoader;
   getLogger(): ILogger;
-  /** This runtime's event bus — a turn chains its own bus under it and publishes
-   *  there, so turn events bubble up through the runtime to the host. */
+  // a turn chains its own bus under this one, so turn events bubble up through the runtime to the host
   getEvents(): Eventing;
 }
 
@@ -37,19 +33,15 @@ export interface AgentRuntimeDeps {
   mcpConfigPath: string;
   logger: ILogger;
   credentials?: IdentityContext;
-  /** Cancellation chain link — an ancestor cancel reaches everything this
-   *  runtime owns. Omitted, the runtime is its own root. */
+  // ancestor cancel reaches everything this runtime owns; omitted, the runtime is its own root
   parentSignal?: AbortSignal;
-  /** Parent event bus — the host's. The runtime chains its OWN bus under this
-   *  (parent.add(child)), so its events bubble up to the host. The event mirror
-   *  of parentSignal: cancellation flows down, events bubble up. Omitted, the
-   *  runtime's bus is its own root with no upward consumer. */
+  // host's bus; the runtime chains its own under it, so cancellation flows down and events bubble up
   eventing?: Eventing;
 }
 
 export interface RuntimeContext {
-
-  mcpRegistry: McpClientRegistry | undefined;
+  // per-runtime service container: ContainerMiddleware creates it first, later steps set() services, consumers get()
+  registry: Container;
   readonly configPath: string;
   readonly sessionsDir: string;
   readonly workspaceRoot: string;
@@ -57,39 +49,14 @@ export interface RuntimeContext {
   readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
   logger: ILogger;
-  /** Owning runtime's scope signal — steps hand it to resources that must die
-   *  with the runtime (MCP clients, sub-session children). */
+  // steps hand this to resources that must die with the runtime (MCP clients, sub-session children)
   readonly runtimeSignal: AbortSignal;
-  /** This runtime's event bus, chained under the host's by EventingMiddleware —
-   *  the upward mirror of runtimeSignal. Steps and the orchestrator publish here. */
+  // chained under the host's by EventingMiddleware; steps and the orchestrator publish here
   eventing: Eventing | undefined;
-  providerRegistry: ProvidersRegistry | undefined;
-  modelsRegistry: ModelRegistry | undefined;
-  configurationRegistry: ConfigurationRegistry | undefined;
-  store: SessionStore | undefined;
-  contextLoader: ContextLoader| undefined,
-  workspaces: WorkspaceRegistry | undefined;
-  user: Principal | undefined;
-  session: Session | undefined;
-  conversation: Conversation | undefined;
-  workspace: Workspace | undefined;
-  orchestrator: Orchestrator | undefined;
-  inbox: InputInbox | undefined;
-  sessionManager: SessionManager | undefined;
 }
 
-/**
- * A single step in the initialize pipeline.
- *
- * Each handler receives the context accumulated so far and a `next` function
- * that advances the chain. To short-circuit (e.g. on a fatal auth failure),
- * return without calling next. To enrich and continue, mutate ctx then call
- * next.
- *
- * Order matters: earlier middleware runs first and sees an empty context;
- * later middleware (e.g. preferences enrichment) can build on what earlier
- * ones set.
- */
+// return without calling next to short-circuit (e.g. fatal auth failure); mutate ctx then call next to continue
+// order matters: a later step builds on what earlier ones set
 export interface IMiddleware {
   initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void>;
 }

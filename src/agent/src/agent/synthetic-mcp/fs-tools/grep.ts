@@ -44,8 +44,7 @@ export interface GrepResult {
   files_scanned: number;
 }
 
-// Cheap binary-file heuristic: if the first 4 KB contains a null byte we treat
-// it as binary and skip it. Misses obscure formats but is fast and safe.
+// a null byte in the first 4 KB marks a file binary and skips it: misses obscure formats but is fast and safe
 const BINARY_PROBE_BYTES = 4096;
 
 export async function grep(input: GrepInput, workspace: Workspace): Promise<GrepResult> {

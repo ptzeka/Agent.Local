@@ -1,26 +1,11 @@
-// Git-context detection for the reader.
-//
-// Only the URL parser ({@link parseRepositoryFromOriginUrl}) is duplicated from
-// tools/codeindex/src/publisher/git.ts — keep those two implementations in
-// lock-step. The entry point here intentionally diverges from the publisher:
-// the publisher MUST always come up with a repository name (it has nothing to
-// write into commit.json otherwise), so it falls back to basename(rootDir).
-// The reader, by contrast, is strict: if we cannot read it from git, we return
-// null and force the caller (the agent) to either pass `repository` explicitly
-// or ask the user. A wrong default here silently mis-targets every query.
+// Git-context detection for the reader. Strict by design: if the repo can't be read from git we return
+// null and force the caller to pass `repository` or ask — a wrong default silently mis-targets every query.
+// parseRepositoryFromOriginUrl is duplicated from codeindex/src/publisher/git.ts; keep them in lock-step.
 
 import { execSync } from 'node:child_process';
 
-/**
- * Resolves the repository identifier for `rootDir` in `owner/repo` form by
- * reading `remote.origin.url` and parsing it via
- * {@link parseRepositoryFromOriginUrl}.
- *
- * Returns `null` when git is unavailable, the directory is not a git
- * repository, or the repository has no `origin` remote. Callers MUST treat
- * `null` as "unknown" — never substitute a guess (e.g. `basename(cwd)`),
- * because in practice the launching tool's cwd is rarely the repo root.
- */
+// repository id for rootDir in owner/repo form from remote.origin.url; null when unavailable —
+// callers must treat null as unknown and never guess (the launching tool's cwd is rarely the repo root)
 export function detectCurrentRepository(rootDir: string): string | null {
   return readOriginRepository(rootDir);
 }
@@ -39,10 +24,7 @@ function readOriginRepository(rootDir: string): string | null {
   return parseRepositoryFromOriginUrl(url);
 }
 
-/**
- * Pulls the "owner/repo" tail out of an origin URL. Handles the common Git
- * hosting URL shapes (HTTPS, SSH, Azure DevOps). Exported for unit testing.
- */
+// pulls the "owner/repo" tail out of an origin URL (HTTPS, SSH, Azure DevOps); exported for unit testing
 export function parseRepositoryFromOriginUrl(url: string): string | null {
   const stripped = url.trim().replace(/\.git$/i, '');
   if (!stripped) return null;

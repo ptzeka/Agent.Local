@@ -4,23 +4,10 @@ import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import type { SubSessionNotification } from "../agent/runners/subsession.js";
 import type { TurnRunnerEvent } from "../agent/runners/turn-runner.js";
 
-/**
- * REPL renderer.
- *
- * The CLI layer keeps all colour/formatting decisions here so the
- * orchestrator stays UI-agnostic. The orchestrator emits structured
- * events; this module turns them into human-readable lines.
- *
- * Two role labels are used consistently:
- *   ORCHESTRATOR — cyan, coordinator messages and read-only tool calls.
- *   EXECUTOR     — magenta, ack/execute/validate/report inside one dispatch.
- */
+// all colour/formatting lives here so the orchestrator stays UI-agnostic and just emits structured events
+// consistent labels: ORCHESTRATOR cyan (coordinator + read tools), EXECUTOR magenta (one dispatch's ack/run/validate)
 
-/**
- * Format a runner event into a display string (empty when the event renders
- * nothing). Returns rather than writes so the REPL can emit it through the
- * single "write above the pinned prompt" path — see writeAbovePrompt.
- */
+// returns rather than writes so the REPL can route it through its single write-above-the-prompt path
 export function formatEvent(event: RunnerEvent): string {
   switch (event.type) {
     case "orchestrator-start": {
@@ -54,8 +41,7 @@ export function formatEvent(event: RunnerEvent): string {
       const label = isError ? "tool-error" : "tool-ok";
       let out = colour(`  ← ${label}: ${name}\n`);
       if (preview.length > 0) {
-        // Response body is transient context, not the signal: collapse to one
-        // gray line so the colored label stays the thing being scanned for.
+        // collapse the body to one gray line so the colored label stays the thing being scanned for
         out += "    " + chalk.gray(collapseLine(preview)) + "\n";
       }
       return out;
@@ -101,8 +87,7 @@ export function formatEvent(event: RunnerEvent): string {
     }
 
     case "evaluation-start": {
-      // The spinner already signals work in flight; only the verdict is worth a
-      // line, so the gate reads as one [EVALUATOR] line, not two.
+      // the spinner already signals work, so only the verdict gets a line — the gate reads as one [EVALUATOR] line
       return "";
     }
 
@@ -119,9 +104,7 @@ export function formatEvent(event: RunnerEvent): string {
               : state === "failed"
                 ? chalk.redBright("FAILED")
                 : chalk.yellowBright(state.toUpperCase() || "UNSATISFIED");
-      // Verdicts are turn-transient (events only, never persisted to the
-      // conversation): gray label per the saved-keeps-color convention, but
-      // the verdict word stays colored — it's the line being scanned for.
+      // turn-transient (never persisted), so gray label per the saved-keeps-color convention; verdict word stays colored
       return chalk.gray("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`);
     }
 
@@ -140,23 +123,17 @@ export function formatEvent(event: RunnerEvent): string {
   }
 }
 
-/**
- * Render turn-loop scheduling events. Deliberately quiet for plain user turns
- * (the prompt/await flow already narrates those); only out-of-band activity —
- * auto-wake turns from settling sub-sessions, queued/coalesced work — gets a
- * line, so the user can see WHY the agent started talking unprompted.
- */
+// quiet for plain user turns (the prompt flow narrates those); only out-of-band activity gets a line
+// so the user can see WHY the agent started talking unprompted
 export function formatTurnEvent(event: TurnRunnerEvent): string {
   switch (event.type) {
     case "turn-start":
-      // A turn the user did not type (a settling sub-session woke the session)
-      // is the only one worth announcing — own input already shows the spinner.
+      // only a turn the user did not type is worth announcing — own input already shows the spinner
       return event.source !== "user"
         ? chalk.gray(`\n(auto-wake: processing ${event.source} report)\n`)
         : "";
     case "turn-done":
-      // The REPL never awaits a turn's settle (the prompt stays live for
-      // mid-turn injection), so a failure must surface here or nowhere.
+      // the REPL never awaits a turn's settle (prompt stays live for injection), so a failure surfaces here or nowhere
       if (event.status === "error") {
         return chalk.red(`\n[error] turn failed\n`);
       }
@@ -166,12 +143,7 @@ export function formatTurnEvent(event: TurnRunnerEvent): string {
   }
 }
 
-/**
- * Render a sub-session completion that arrived out-of-band (the child settled
- * after the parent's turn ended). Prefixed with a newline so it doesn't smear
- * the live `you>` prompt, and tagged so it's clearly an async report rather
- * than part of the current turn's output.
- */
+// leading newline so an out-of-band child report doesn't smear the live prompt; tagged as an async report
 export function formatSubSessionNotification(notification: SubSessionNotification): string {
   const shortId = notification.subSessionId.split("-")[0] ?? notification.subSessionId.slice(0, 8);
   const intent = notification.intent.replace(/\s+/g, " ").trim();
@@ -194,21 +166,16 @@ export function formatSubSessionNotification(notification: SubSessionNotificatio
   );
 }
 
-// Executor sub-run lines render gray: they persist in the CHILD session's
-// transcript, not this conversation, so by the saved-keeps-color convention
-// they are transient here. Errors stay red — failure must remain visible.
+// gray because executor lines persist in the CHILD's transcript, not this one (saved-keeps-color); errors stay red
 function formatExecutorEvent(data: Record<string, unknown>): string {
   const kind = String(data.kind ?? "");
   switch (kind) {
-    // Orchestrator-style events forwarded from the executor sub-run.
     case "orchestrator-start": {
       const model = String(data.orchestratorModel ?? "");
       return chalk.gray(`  [EXECUTOR] running (${model})\n`);
     }
     case "orchestrator-message": {
-      // The executor stamps every line `EXECUTOR:` by protocol (transcript
-      // attribution); the `[EXECUTOR]` label below already says that, so the
-      // marker is dropped for display only — raw content keeps it for parsing.
+      // drop the protocol `EXECUTOR:` marker for display only (the label says it); raw content keeps it for parsing
       const content = stripRoleMarker(String(data.content ?? ""), "EXECUTOR").trim();
       return content.length > 0 ? chalk.gray(`  [EXECUTOR] ${content}\n`) : "";
     }
@@ -225,9 +192,7 @@ function formatExecutorEvent(data: Record<string, unknown>): string {
     }
     case "warning": {
       const message = String(data.message ?? "");
-      // Executor warnings aren't persisted to this conversation: gray the line
-      // per the saved-keeps-color convention, but the "warning" word stays
-      // colored — it's the signal being scanned for.
+      // gray line per saved-keeps-color, but the "warning" word stays colored as the signal being scanned for
       return chalk.gray("  [EXECUTOR] ") + chalk.yellowBright("warning") + chalk.gray(`: ${message}\n`);
     }
     default:
@@ -235,9 +200,7 @@ function formatExecutorEvent(data: Record<string, unknown>): string {
   }
 }
 
-// Strip a leading `ROLE:` marker from each line. The executor stamps every line
-// with its role by protocol; the renderer's own label makes that redundant on
-// screen, so it is removed for display only.
+// the renderer's own label makes the protocol role marker redundant on screen, so strip it for display only
 function stripRoleMarker(text: string, role: string): string {
   const marker = new RegExp(`^\\s*${role}:\\s?`, "i");
   return text
@@ -246,20 +209,16 @@ function stripRoleMarker(text: string, role: string): string {
     .join("\n");
 }
 
-/** Identity of the session this REPL drives, shown in the startup banner. */
+// session identity shown in the startup banner
 export interface BannerSession {
   sessionId: string;
-  /** Transcript link — the session's rolling conversation file. */
   conversationId: string;
-  /** Workspace the session is bound to. */
   workspaceId: string;
-  /** Content-addressed pointer to the captured context, when one was stamped. */
+  // per-role pointer to the captured context, when one was stamped
   contextHashes: Record<string, string>;
-  /** True when resumed from disk, false for a freshly bootstrapped session. */
   resumed: boolean;
-  /** Completed user turns (0 for a new session). */
   turns: number;
-  /** Short description — the first user message, or null when none yet. */
+  // first user message, or null when none yet
   preview: string | null;
 }
 
@@ -268,8 +227,7 @@ export function renderBanner(
   sandboxRoot: string,
   session: BannerSession,
   contextPath?: string | null,
-  // Routes through the REPL's scroll-region writer so the banner lands in the
-  // scrollback above the pinned prompt; headless/tests fall back to stdout.
+  // routed through the REPL's writer so the banner lands above the pinned prompt; headless/tests use stdout
   write: (text: string) => void = (text) => void process.stdout.write(text)
 ): void {
   const lines = [
@@ -286,12 +244,7 @@ export function renderBanner(
   write(lines.join("\n"));
 }
 
-/**
- * "id=b1557363 · conv=9c2e11d4 · ctx=3f8a1c2b · ws=ad2f457f · new" identity
- * line. On a resumed session the origin is followed by the turn count and a
- * description of the opening message. ctx falls back to "none" when no
- * snapshot was stamped.
- */
+// "id=… · conv=… · ctx=… · ws=… · origin" line; ctx falls back to "none" when no snapshot was stamped
 function sessionLine(session: BannerSession): string {
   const id = `id=${short(session.sessionId)}`;
   const conv = `conv=${short(session.conversationId)}`;
@@ -308,15 +261,13 @@ function sessionLine(session: BannerSession): string {
   return `${id} · ${conv} · ${ctx} · ${ws} · ${origin}`;
 }
 
-/** First 8 chars — enough to eyeball/grep an id without wrapping the banner. */
 function short(value: string): string {
   return value.slice(0, 8);
 }
 
 export function renderSession(
   session: BannerSession,
-  // Headless runs keep stdout reserved for the final answer, so they route the
-  // summary to stderr; the REPL routes through its pinned-prompt writer.
+  // headless routes to stderr to keep stdout for the answer; the REPL routes through its pinned-prompt writer
   write: (text: string) => void = (text) => void process.stdout.write(text)
 ): void {
   write(chalk.gray(`session:   ${sessionLine(session)}\n`));
@@ -341,10 +292,7 @@ export function renderHelp(write: (text: string) => void = (text) => void proces
   write(lines.join("\n"));
 }
 
-/**
- * Collapse a (possibly pretty-printed) tool response to a single line. JSON is
- * re-stringified compactly; anything else just has its whitespace runs folded.
- */
+// JSON is re-stringified compactly; anything else just has its whitespace runs folded
 function collapseLine(text: string): string {
   try {
     return JSON.stringify(JSON.parse(text));

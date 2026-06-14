@@ -40,16 +40,14 @@ export async function deleteFile(
 ): Promise<DeleteFileResult> {
   const absolutePath = workspace.resolveSafe(input.path);
 
-  // Never let a delete remove the workspace root itself — that would wipe the
-  // entire sandbox and is almost certainly a mistake, not an intent.
+  // deleting the workspace root would wipe the whole sandbox — almost certainly a mistake, not an intent
   if (path.resolve(absolutePath) === path.resolve(workspace.root)) {
     throw new DeleteFileError(
       "Refusing to delete the workspace root. Target a specific file or subdirectory instead."
     );
   }
 
-  // Stat without following symlinks so a link is removed as a link, and so a
-  // missing path fails loudly rather than silently succeeding.
+  // lstat so a link is removed as a link and a missing path fails loudly rather than silently succeeding
   let stats;
   try {
     stats = await fs.lstat(absolutePath);
@@ -73,7 +71,6 @@ export async function deleteFile(
     return { path: workspace.relativize(absolutePath), deleted: true, kind: "directory" };
   }
 
-  // Regular file or symlink: remove the entry itself.
   await fs.rm(absolutePath, { force: false });
   return { path: workspace.relativize(absolutePath), deleted: true, kind: "file" };
 }

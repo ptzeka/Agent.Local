@@ -5,18 +5,8 @@ import { fileURLToPath } from 'node:url';
 export type EmbedProvider = 'local' | 'voyage' | 'openai';
 export type Backend = 'pg' | 'file';
 
-/**
- * Effective configuration used at runtime. Three sources, in a strict
- * precedence order — no env-var fallbacks, no implicit autodetection:
- *
- *   - CLI flags (with defaults)  → backend, branch, embedProvider, embedDim
- *   - Config file                → connectionString, excludeGlobs
- *   - `--root <path>` / process.cwd() → rootDir (what to index)
- *
- * File-backend data always lives at `<package-root>/data` — there is no
- * `--file-dir` flag. Keep the file backend simple: write to the folder next
- * to the binary, manually copy to codemcp's `data/` to consume.
- */
+// strict precedence with no env fallbacks or autodetection: CLI flags, then config file, then --root/cwd
+// file-backend data always lives at <package-root>/data (no --file-dir flag) to keep that backend simple
 export interface CodeIndexConfig {
   backend: Backend;
   branch: string;
@@ -26,18 +16,13 @@ export interface CodeIndexConfig {
   rootDir: string;
   connectionString: string;
   excludeGlobs: string[];
-  /**
-   * Optional repository identifier override. When unset, the publisher
-   * uses `owner/repo` from `git config --get remote.origin.url` when
-   * available, otherwise the resolved absolute path of `rootDir`.
-   */
+  // unset → publisher derives owner/repo from git remote, else the absolute rootDir
   repository?: string;
 }
 
-/** Overrides supplied by the CLI. Anything undefined falls back to the default below. */
 export interface CliOverrides {
   configPath?: string;
-  /** Absolute path to the tree to index; when omitted, `process.cwd()` is used. */
+  // tree to index; omitted → process.cwd()
   rootDir?: string;
   backend?: Backend;
   branch?: string;
@@ -67,13 +52,9 @@ const DEFAULTS = {
   ] as string[],
 };
 
-/**
- * Path to the package root (the directory that contains `dist/`, `migrations/`,
- * `package.json`). Used as the home for the default file-backend data folder.
- */
+// home for the default file-backend data folder
 export function packageRoot(): string {
-  // import.meta.url at runtime points at the compiled file under dist/. From
-  // dist/config.js, the package root is one directory up.
+  // import.meta.url resolves under dist/ at runtime, so the package root is one directory up
   return resolve(dirname(fileURLToPath(import.meta.url)), '..');
 }
 

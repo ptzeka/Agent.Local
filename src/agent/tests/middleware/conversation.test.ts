@@ -6,6 +6,7 @@ import path from "node:path";
 import { Conversation } from "../../src/agent/conversation/conversation.js";
 import { ConversationStore } from "../../src/agent/conversation/conversation-store.js";
 import { ConversationMiddleware } from "../../src/agent/runtime/middleware/conversation.js";
+import { ConversationToken } from "../../src/agent/runtime/tokens.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import { createSession, type Session } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
@@ -127,8 +128,8 @@ describe("ConversationMiddleware", () => {
 
     await new ConversationMiddleware().initialize(ctx, next);
 
-    expect(ctx.conversation).toBeDefined();
-    expect(ctx.conversation!.conversationId).toBe("c1");
+    expect(ctx.registry.tryGet(ConversationToken)).toBeDefined();
+    expect(ctx.registry.get(ConversationToken).conversationId).toBe("c1");
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -156,14 +157,14 @@ describe("ConversationMiddleware", () => {
 
     // The deleted conversation must never be resurrected — new id, empty transcript.
     expect(session.conversationId).not.toBe("c3");
-    expect(ctx.conversation!.conversationId).toBe(session.conversationId);
-    expect(ctx.conversation!.length).toBe(0);
+    expect(ctx.registry.get(ConversationToken).conversationId).toBe(session.conversationId);
+    expect(ctx.registry.get(ConversationToken).length).toBe(0);
   });
 
   test("throws without a session step earlier in the pipeline", async () => {
     const ctx = makeContext({ sessionsDir, store: sessionStore });
     await expect(
       new ConversationMiddleware().initialize(ctx, jest.fn(async () => {}))
-    ).rejects.toThrow(/requires ctx\.session and ctx\.store/);
+    ).rejects.toThrow(/no instance registered for "session"/);
   });
 });

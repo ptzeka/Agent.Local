@@ -1,6 +1,5 @@
-// All SQL for the reader side lives in this file. No other module in
-// src/codemcp/src may contain SQL statements. See tools/codeindex's writer
-// repository for the symmetric rule on the writer side.
+// All reader-side SQL lives here; no other module in src/codemcp/src contains SQL.
+// Symmetric to the writer repository in codeindex.
 
 import type { DbConnection } from './types.js';
 
@@ -40,11 +39,7 @@ export interface SearchFilters {
 
 export interface PgReaderRepository {
   getLatestAppliedMigration(conn: DbConnection): Promise<string | null>;
-  /**
-   * Latest indexed commit on `branch`, optionally scoped to a repository.
-   * `repository === null` means "any repository" — used when the server can't
-   * detect a current repo and the caller didn't provide one.
-   */
+  // repository === null means "any repository" — used when the server can't detect one and the caller gave none
   latestCommitFor(
     conn: DbConnection,
     branch: string,
@@ -177,7 +172,7 @@ export class PgReaderRepositoryImpl implements PgReaderRepository {
       const first = result.rows[0];
       return first?.script_name ?? null;
     } catch {
-      // schema_versions table doesn't exist yet — interpret as "no migrations applied".
+      // missing schema_versions table means no migrations applied yet
       return null;
     }
   }

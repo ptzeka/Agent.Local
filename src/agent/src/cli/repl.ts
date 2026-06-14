@@ -8,14 +8,8 @@ import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { formatEvent, formatSubSessionNotification, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
 
-/**
- * Interactive REPL.
- *
- * Wraps a single session's AgentRuntime with a readline prompt and a small set
- * of slash commands. All model and tool logic lives in the runtime — the REPL
- * only routes input in and events out.
- */
-
+// wraps one session's runtime with a readline prompt and slash commands; all logic lives in the runtime,
+// so the REPL only routes input in and events out
 export interface ReplOptions {
   workspaceRoot: string;
   sandboxRoot: string;
@@ -29,11 +23,8 @@ const PROMPT = chalk.bold.cyan("you> ");
 export async function runRepl(options: ReplOptions): Promise<void> {
   const { workspaceRoot, sandboxRoot, runtime, resumed } = options;
 
-  // Single owner of terminal layout. Output prints ABOVE a prompt that readline
-  // keeps pinned at the bottom: each line clears the prompt row, writes itself,
-  // then readline repaints prompt + in-progress input beneath it. Horizontal-only
-  // (\r + clear-line + readline refresh), so it works on terminals without
-  // scroll-region support and never smears live typing.
+  // horizontal-only repaint (\r + clear-line + readline refresh) so output prints above a pinned prompt
+  // without scroll-region support and never smears live typing
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,
@@ -42,31 +33,23 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   });
   const ui = new ScreenLayout(rl);
 
-  // The banner is the first thing scrolled into the region, so it sits just
-  // above the pinned prompt at startup.
+  // first thing into the region, so it sits just above the pinned prompt at startup
   renderBanner(workspaceRoot, sandboxRoot, bannerSessionOf(runtime, resumed), null, (text) => ui.write(text));
 
-  // Sub-session completions fire out-of-band (after the parent turn that
-  // spawned them has ended). Surface them as they arrive, above the prompt.
+  // surface out-of-band sub-session completions as they arrive, above the prompt
   const unsubscribe = runtime.onSubSessionEvent((notification) => {
     ui.write(formatSubSessionNotification(notification));
   });
 
-  // Turn events arrive on the runtime's bus (the turn publishes; we subscribe),
-  // not through a callback. Map the bus shape {type,payload} to the renderer's
-  // {type,data} at this single boundary.
+  // map the bus shape {type,payload} to the renderer's {type,data} at this single boundary
   const unsubEvents = runtime.getEvents().subscribe((event) =>
     ui.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent))
   );
 
-  // All turns flow through the runner's single pump: the REPL SUBMITS user
-  // input fire-and-forget (the prompt never blocks), and settling sub-sessions
-  // auto-wake the session through the same queue — no producer ever races the
-  // dispatchAsync running-guard.
+  // every turn flows through the runner's single pump, so no producer ever races the dispatchAsync guard
   const turnRunner = runtime.startTurnLoop({
     onTurnEvent: (event) => {
-      // Spin while any turn is in flight; drop the loop once the runner idles
-      // (a turn can settle into another via auto-wake, so gate on isBusy).
+      // gate on isBusy because a turn can settle into another via auto-wake
       if (event.type === "turn-start") ui.startSpinner();
       if (event.type === "turn-done" && !turnRunner.isBusy) ui.stopSpinner();
       ui.write(formatTurnEvent(event));
@@ -82,27 +65,20 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     write: (text) => ui.write(text),
   };
 
-  // Event-driven input: readline keeps the prompt live and repaintable. A
-  // `while (await rl.question())` loop can't be repainted mid-question (the
-  // question prompt isn't the interface's configured prompt), so the bottom bar
-  // would scroll away — the `line` event + `prompt(true)` is what keeps it
-  // pinned.
+  // line event + prompt(true), not rl.question(), because a question prompt can't be repainted mid-flight and scrolls away
   await new Promise<void>((resolve) => {
     const finish = () => {
       rl.off("line", onLine);
       resolve();
     };
-
+    
     const onLine = (raw: string) => {
       const input = raw.trim();
-      // Enter froze the typed line into scrollback; lay the next prompt under it
-      // before any output or spinner repaints below.
+      // lay the next prompt before any output/spinner repaints below the just-committed line
       ui.commit();
       if (input === "") return;
 
-      // "stop" is an interrupt, not a prompt: with the input line always live,
-      // it must never enter the queue (where it would be LLM-interpreted after
-      // the very work it was meant to halt).
+      // "stop" is an interrupt, not a prompt: queuing it would let the LLM interpret it after the work it meant to halt
       if (input.toLowerCase() === "stop") {
         ui.stopSpinner();
         ui.write(stopResultText(runtime.stopAllWork()));
@@ -116,13 +92,11 @@ export async function runRepl(options: ReplOptions): Promise<void> {
         return;
       }
 
-      // The inbox is the single injection interface: push the line and let the
-      // pump wake. Typing while a turn runs folds the input into that turn at its
-      // next iteration; typing while idle starts a fresh turn. Completion and
-      // failures surface through the turn-event renderer, so nothing blocks here.
+      // push to the single inbox and let the pump wake; a turn in flight folds this in at its next iteration
       const wasBusy = turnRunner.isBusy;
       runtime.injectInput(input, "user");
-      ui.startSpinner(); // immediate feedback; turn-start would also trigger it
+      // immediate feedback; turn-start would also trigger it
+      ui.startSpinner();
       if (wasBusy) {
         ui.write(chalk.gray("(queued — runs at the next step)\n"));
       }
@@ -142,11 +116,7 @@ export async function runRepl(options: ReplOptions): Promise<void> {
   renderSession(bannerSessionOf(runtime, resumed));
 }
 
-/**
- * Assemble the identity line's data from a live runtime. Shared by the REPL
- * (banner, /session, exit) and the headless run's exit summary so every mode
- * reports the session the same way.
- */
+// shared by the REPL and the headless exit summary so every mode reports the session the same way
 export function bannerSessionOf(runtime: AgentRuntime, resumed: boolean): BannerSession {
   const session = runtime.getSession();
   const firstUser = runtime.history().find((m) => m.role === "user");
@@ -171,8 +141,7 @@ interface SlashContext {
   registry: ModelRegistry;
   mcpRegistry: McpClientRegistry;
   resumed: boolean;
-  /** Output sink — routes through the pinned-prompt writer so command output
-   *  never collides with the live bottom bar. */
+  // routes through the pinned-prompt writer so command output never collides with the live bottom bar
   write: (text: string) => void;
 }
 
@@ -199,8 +168,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     }
 
     case "reset": {
-      // The runtime stops and drains in-flight work itself; this pre-pass
-      // exists only to tell the user WHAT got cancelled on their behalf.
+      // the runtime stops and drains itself; this pre-pass only tells the user WHAT got cancelled
       const stoppedForReset = ctx.runtime.stopAllWork();
       if (stoppedForReset.cancelledTurns + stoppedForReset.cancelledSubSessions > 0) {
         ctx.write(stopResultText(stoppedForReset));
@@ -325,23 +293,11 @@ function handleHistoryCommand(ctx: SlashContext): void {
   ctx.write(out + "\n");
 }
 
-/** Spinner frames — a `***` star that grows then sweeps, looped while a turn runs. */
 const SPINNER_FRAMES = ["*  ", "** ", "***", " **", "  *", "   "];
 const SPINNER_INTERVAL_MS = 150;
 
-/**
- * Owns the bottom prompt. Output prints ABOVE a `you>` prompt that readline keeps
- * pinned at the bottom; while a turn runs an animated `***` line sits just above
- * it (a two-line readline prompt: `***` ⏎ `you> `).
- *
- * Everything is driven through readline's OWN refresh — `setPrompt` + a single
- * `prompt(true)` per change — so there is no scroll region and no absolute
- * positioning (which ConPTY ignores). The one place we touch the cursor manually
- * is output: clear the whole prompt block (however tall — spinner row plus any
- * wrapped input) using readline's tracked `prevRows`, write the line, then reset
- * `prevRows` to 0 so readline lays the prompt right under the output instead of
- * walking back up into it.
- */
+// driven entirely through readline's own refresh (setPrompt + prompt(true)), avoiding scroll regions and
+// absolute positioning that ConPTY ignores; the one manual cursor move is clearing the prompt block on output
 class ScreenLayout {
   private readonly out: NodeJS.WriteStream = process.stdout;
   private readonly tty: boolean = Boolean(process.stdout.isTTY);
@@ -352,27 +308,23 @@ class ScreenLayout {
     this.rl.prompt();
   }
 
-  /** Print finished output above the prompt. No-op on whitespace-only writes so
-   *  the many "renders nothing" event cases don't churn the prompt. */
+  // no-op on whitespace-only writes so the many "renders nothing" event cases don't churn the prompt
   write(text: string): void {
     const body = squeezeBlankLines(text);
     if (body.length === 0) return;
     if (this.tty) {
-      // Clear the entire current prompt block, not just one row: with the spinner
-      // active (or wrapped input) it spans multiple rows, and readline already
-      // tracks that height as prevRows.
+      // clear the whole prompt block (spinner row + wrapped input), whose height readline tracks as prevRows
       const up = this.promptRows();
       if (up > 0) this.out.write(`\x1b[${up}A`);
       this.out.write("\r\x1b[0J");
     }
     this.out.write(body + "\n");
-    // Cursor now sits on a fresh line directly below the output; tell readline the
-    // block starts here (prevRows=0) so prompt(true) draws it in place.
+    // tell readline the block restarts here (prevRows=0) so prompt(true) draws it under the output, not back up into it
     this.setPromptRows(0);
     this.rl.prompt(true);
   }
 
-  /** Begin the `***` loop above the prompt. Idempotent; no-op on a non-TTY. */
+  // idempotent; no-op on a non-TTY
   startSpinner(): void {
     if (this.spinnerTimer || !this.tty) return;
     this.repaintSpinner();
@@ -382,7 +334,7 @@ class ScreenLayout {
     }, SPINNER_INTERVAL_MS);
   }
 
-  /** Stop the loop and collapse back to the single-line `you>` prompt. */
+  // collapses back to the single-line `you>` prompt
   stopSpinner(): void {
     if (!this.spinnerTimer) return;
     clearInterval(this.spinnerTimer);
@@ -391,14 +343,12 @@ class ScreenLayout {
     this.rl.prompt(true);
   }
 
-  /** Redraw the two-line spinner prompt in place via readline's own refresh. */
   private repaintSpinner(): void {
     this.rl.setPrompt(chalk.yellow(SPINNER_FRAMES[this.frame]) + "\n" + PROMPT);
     this.rl.prompt(true);
   }
 
-  /** Lay a fresh prompt after the user commits a line (readline froze the typed
-   *  line into scrollback on Enter; we just draw the next prompt). */
+  // readline already froze the typed line into scrollback on Enter; this just draws the next prompt
   commit(): void {
     this.rl.prompt();
   }
@@ -407,9 +357,7 @@ class ScreenLayout {
     this.stopSpinner();
   }
 
-  // readline tracks how many rows below the prompt's top the cursor sits as the
-  // private `prevRows`; we read/reset it to clear and re-anchor the block. Reaching
-  // in is deliberate — it's the value readline itself uses to repaint.
+  // reaches into readline's private prevRows deliberately: it's the exact value readline uses to repaint the block
   private promptRows(): number {
     return Number((this.rl as unknown as { prevRows?: number }).prevRows ?? 0);
   }
@@ -418,12 +366,8 @@ class ScreenLayout {
   }
 }
 
-// Drop every blank line so output sits flush above the prompt. A line counts as
-// blank when it has no VISIBLE content — even if it carries ANSI color codes.
-// chalk wraps whole strings, so a decorative `\n…\n` becomes `ESC[..m\n…\nESC[..m`:
-// the newlines move INSIDE the codes and an anchored `^\n+`/`\n+$` strip misses
-// them. Color codes from dropped blank rows are carried onto the next kept line
-// so coloring survives the squeeze; a trailing reset rides the last line's tail.
+// drops lines with no VISIBLE content (ANSI-only counts as blank) so output sits flush above the prompt;
+// color codes from dropped rows carry onto the next kept line so coloring survives the squeeze
 function squeezeBlankLines(text: string): string {
   const ansi = /\x1b\[[0-9;]*m/g;
   const codesOf = (line: string): string => (line.match(ansi) ?? []).join("");

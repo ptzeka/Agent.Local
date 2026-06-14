@@ -1,4 +1,5 @@
 import { ConfigurationRegistry, ModelsFile } from "../../registries/index.js";
+import { ConfigurationToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ConfigurationMiddlewareParams {
@@ -11,7 +12,7 @@ export class ConfigurationMiddleware implements IMiddleware
     
     async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void>
     {
-        ctx.configurationRegistry  = new ConfigurationRegistry(this.params.configPath!);
+        ctx.registry.set(ConfigurationToken, new ConfigurationRegistry(this.params.configPath!));
         await next();
     }
 }

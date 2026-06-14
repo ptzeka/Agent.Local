@@ -1,30 +1,16 @@
-/**
- * Shape of a single dispatch ask — tool name, args, and one-line intent.
- * Defined here so the tracker has no runner dependency.
- */
+// defined here so the tracker has no runner dependency
 export interface DispatchAsk {
   tool: string;
   args: Record<string, unknown>;
   intent: string;
 }
 
-/**
- * DispatchTracker — per-turn accounting for executor dispatches.
- *
- * Pulls together the three pieces of state the orchestrator loop used to keep
- * loose: the dispatch cap, the duplicate-mutation guard, and the
- * every-N-dispatches periodic-validator gate. One instance is created per
- * `Orchestrator.run` turn and shared with the dispatch tool through the
- * synthetic-tool context; the orchestrator only queries `dueForPeriodicCheck`.
- */
+// per-turn accounting bundling the dispatch cap, duplicate-mutation guard, and periodic-validator gate
+// one instance per Orchestrator.run, shared with the dispatch tool; the orchestrator only queries dueForPeriodicCheck
 export class DispatchTracker {
   private dispatches = 0;
   private dispatchesSinceCheck = 0;
-  /**
-   * Signatures (tool + stable-stringified args) of dispatches that already
-   * SUCCEEDED this turn. A re-dispatch of an identical, already-succeeded
-   * mutation is a no-progress loop and is refused by the dispatch tool.
-   */
+  // signatures of mutations that SUCCEEDED this turn; an identical re-dispatch is a no-progress loop and is refused
   private readonly succeededSignatures = new Set<string>();
 
   constructor(
@@ -32,16 +18,11 @@ export class DispatchTracker {
     private readonly checkInterval: number
   ) {}
 
-  /** Dispatch slots reserved this turn (only counts those under the cap). */
   public get count(): number {
     return this.dispatches;
   }
 
-  /**
-   * Reserve a dispatch slot. Counts against the cap whether or not the dispatch
-   * ultimately succeeds — a hard loop therefore still burns down toward the cap
-   * as a backstop. Returns the reason string when the cap is already reached.
-   */
+  // counts against the cap even on failure, so a hard loop still burns toward the cap as a backstop
   public reserve(): { ok: true } | { ok: false; reason: string } {
     if (this.dispatches >= this.maxDispatches) {
       return { ok: false, reason: `dispatch cap of ${this.maxDispatches} per turn reached` };
@@ -50,25 +31,17 @@ export class DispatchTracker {
     return { ok: true };
   }
 
-  /** Has this exact mutation already landed successfully this turn? */
   public isDuplicate(signature: string): boolean {
     return this.succeededSignatures.has(signature);
   }
 
-  /**
-   * Record a genuinely-successful mutation: remember its signature (so a later
-   * identical re-dispatch is caught) and advance the periodic-check counter.
-   */
+  // remembers the signature (to catch a later identical re-dispatch) and advances the periodic-check counter
   public recordSuccess(signature: string): void {
     this.succeededSignatures.add(signature);
     this.dispatchesSinceCheck += 1;
   }
 
-  /**
-   * True when enough successful dispatches have accrued to warrant a mid-flight
-   * validator check. Consumes the counter (resets to zero) on a true result so
-   * the gate fires at most once per interval.
-   */
+  // consumes the counter on a true result so the gate fires at most once per interval
   public dueForPeriodicCheck(): boolean {
     if (this.checkInterval <= 0) return false;
     if (this.dispatchesSinceCheck < this.checkInterval) return false;
@@ -77,13 +50,7 @@ export class DispatchTracker {
   }
 }
 
-/**
- * Stable identity for a dispatch: its tool name plus a canonical stringify of
- * its args (object keys sorted recursively). Order-independence matters because
- * weak models re-emit args via the prompted-JSON fallback, where key order can
- * drift between otherwise-identical calls — a naive JSON.stringify would miss
- * the duplicate.
- */
+// args keys sorted recursively so weak models re-emitting via prompted-JSON (where key order drifts) still hash equal
 export function dispatchSignature(ask: DispatchAsk): string {
   return `${ask.tool}::${stableStringify(ask.args)}`;
 }

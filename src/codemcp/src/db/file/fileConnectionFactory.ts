@@ -1,11 +1,8 @@
 import { resolve } from 'node:path';
 import type { DbConnection, DbConnectionFactory, QueryResult } from '../types.js';
 
-/**
- * File-backed connection used by the debug/file reader repository. Mirrors
- * the codeindex writer-side FileConnection — repositories using this access
- * the disk via `connection.baseDir`. SQL execution is unsupported.
- */
+// File-backed connection for the debug/file reader; mirrors codeindex's writer-side FileConnection.
+// Access goes through connection.baseDir — SQL execution is unsupported.
 export class FileConnection implements DbConnection {
   private released = false;
   private txOpen = false;
@@ -48,8 +45,7 @@ export class FileConnectionFactory implements DbConnectionFactory {
 
   constructor(baseDir: string) {
     this.baseDir = resolve(baseDir);
-    // Read-only backend: do not mkdir — an empty directory looks like "no migrations"
-    // and breaks startup; index data must come from codeindex publish or a manual copy.
+    // read-only backend: no mkdir — an empty dir looks like "no migrations" and breaks startup
   }
 
   async getConnection(): Promise<DbConnection> {
@@ -70,6 +66,6 @@ export class FileConnectionFactory implements DbConnectionFactory {
   }
 
   async end(): Promise<void> {
-    // Nothing to clean up.
+    // no pooled resources to release
   }
 }

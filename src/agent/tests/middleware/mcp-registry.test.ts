@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { McpRegistryMiddleware } from "../../src/agent/runtime/middleware/mcp-registry.js";
+import { McpRegistryToken } from "../../src/agent/runtime/tokens.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import { makeContext } from "./context.js";
@@ -28,7 +29,7 @@ describe("McpRegistryMiddleware", () => {
 
     await expect(
       new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, next)
-    ).rejects.toThrow("workspace and session must be available");
+    ).rejects.toThrow(/no instance registered for "workspace"/);
   });
 
   test("creates the registry and registers filesystem and Excel servers", async () => {
@@ -50,12 +51,13 @@ describe("McpRegistryMiddleware", () => {
 
     await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, next);
 
-    expect(ctx.mcpRegistry).toBeDefined();
-    expect(ctx.mcpRegistry!.sandboxRoot).toBe("/tmp/sandbox");
-    expect(ctx.mcpRegistry!.getClient("fsmcp")).toBeDefined();
-    expect(ctx.mcpRegistry!.getClient("excel")).toBeDefined();
+    const mcpRegistry = ctx.registry.tryGet(McpRegistryToken);
+    expect(mcpRegistry).toBeDefined();
+    expect(mcpRegistry!.sandboxRoot).toBe("/tmp/sandbox");
+    expect(mcpRegistry!.getClient("fsmcp")).toBeDefined();
+    expect(mcpRegistry!.getClient("excel")).toBeDefined();
     // The role scope is wired through: the factory fronts the whitelisted mounts.
-    expect(ctx.mcpRegistry!.createScopedClient().listTools().length).toBeGreaterThan(0);
+    expect(mcpRegistry!.createScopedClient().listTools().length).toBeGreaterThan(0);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -84,14 +86,15 @@ describe("McpRegistryMiddleware", () => {
 
     // A fsreadonly-only role actually gets its read server (regression: the
     // switch previously had no case for it, so the orchestrator got no fs).
-    expect(ctx.mcpRegistry!.getClient("fsreadonly")).toBeDefined();
+    const mcpRegistry = ctx.registry.get(McpRegistryToken);
+    expect(mcpRegistry.getClient("fsreadonly")).toBeDefined();
 
     // The orchestrator's visible tools are read-only: no write tool leaks in.
-    const visible = ctx.mcpRegistry!.createScopedClient().listTools().map((t) => t.name);
+    const visible = mcpRegistry.createScopedClient().listTools().map((t) => t.name);
     expect(visible).not.toContain("fsmcp__write_file");
 
     // The executor dispatch enum DOES expose the executor's write tools.
-    const [dispatch] = ctx.mcpRegistry!.getClient("executor")!.listTools();
+    const [dispatch] = mcpRegistry.getClient("executor")!.listTools();
     const enumNames = (dispatch.inputSchema as { properties: { tool: { enum?: string[] } } })
       .properties.tool.enum;
     expect(enumNames).toContain("fsmcp__write_file");

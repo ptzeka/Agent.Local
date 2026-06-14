@@ -1,26 +1,13 @@
-/**
- * CLI argument parsing.
- *
- * Kept separate from the composition root in index.ts so it stays pure and
- * side-effect free — importing index.ts runs `main()`, while this module can be
- * unit-tested on its own.
- */
+// kept out of index.ts so it stays pure and unit-testable; importing index.ts would run main()
 
-/** Parsed CLI invocation. `run` present ⇒ headless single run; absent ⇒ REPL. */
+// run present ⇒ headless single run; absent ⇒ REPL
 export interface CliArgs {
-  /** The single-run input. When set, the process runs headless and exits. */
   run?: string;
-  /** Optional session to resume; a fresh one is opened when omitted. */
   sessionId?: string;
 }
 
-/**
- * Minimal argv parser for the two recognised flags:
- *   --run <input>      run headless against this input, then exit
- *   --session <id>     resume this session (otherwise a fresh one is opened)
- * `--flag=value` and `--flag value` forms are both accepted. Anything else is
- * ignored so the interactive path stays the no-flag default.
- */
+// accepts --run <input> and --session <id> in both --flag=value and --flag value forms;
+// anything else is ignored so the no-flag default stays the interactive path
 export function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
   for (let i = 0; i < argv.length; i += 1) {

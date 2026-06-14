@@ -1,5 +1,6 @@
 import { buildSubRuntime } from "./build-sub-runtime.js";
 import { AgentRuntime } from "./agent-runtime.js";
+import { ContainerMiddleware } from "./middleware/container.js";
 import { AnonymousMiddleware } from "./middleware/anonymous.js";
 import { EventingMiddleware } from "./middleware/eventing.js";
 import { McpRegistryMiddleware } from "./middleware/mcp-registry.js";
@@ -18,27 +19,11 @@ import type { AgentRuntimeDeps } from "./types.js";
 import { ProvidersMiddleware } from "./middleware/providers.js";
 import { ModelsMiddleware } from "./middleware/models.js";
 
-/**
- * Build an AgentRuntime with the standard pipeline. Every subsystem the runtime
- * owns is produced by a step here — build() constructs nothing itself:
- *   LoggerMiddleware            — initialize the logger
- *   StoreMiddleware             — open the on-disk session store
- *   WorkspaceRegistryMiddleware — create the workspace → root/context map
- *   IdentityMiddleware          — decode JWT from AGENT_API_TOKEN if present
- *   AnonymousMiddleware         — fall back to anonymous when no creds resolve
- *   SessionMiddleware           — open or resume the session, stamp session.user
- *   ConversationMiddleware      — open the session's transcript (rolling JSONL file)
- *   OrchestratorMiddleware      — assemble tool descriptors and build the orchestrator
- *   ContextMiddleware           — snapshot the sent context, stamp session.contextHash
- *   InputInboxMiddleware        — create the external input injection seam
- *   SessionManagerMiddleware    — build the sub-session manager
- *
- * Host-agnostic by design: no step may assume a CLI (or any other host). Every
- * entry point — CLI today, single-task job or a cloud RuntimeManager routing by
- * session directory later — composes the same pipeline; hosts stay thin wrappers.
- */
+// every subsystem the runtime owns is produced by a step here, since build() constructs nothing itself
+// host-agnostic by design: no step may assume a CLI, so every entry point composes this same pipeline
 export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentRuntime {
     return new AgentRuntime(deps)
+    .add(new ContainerMiddleware())
     .add(new EventingMiddleware({ parent: deps.eventing }))
     .add(new LoggerMiddleware({ logger: deps.logger }))
     .add(new ConfigurationMiddleware({ configPath: deps.configPath }))

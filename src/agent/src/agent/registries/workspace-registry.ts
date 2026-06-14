@@ -1,31 +1,15 @@
-/**
- * WorkspaceRegistry — Repository layer.
- *
- * Resolves a `workspaceId` to its filesystem root and project context.
- * Because the orchestrator now reads context from the workspace (not from
- * its own instance state), any sessions sharing a `workspaceId` automatically
- * share the same standing direction — this is what makes "several sessions
- * working a common goal" coherent.
- *
- * The registry is an in-memory cache built per run by the Initializer; the
- * underlying context read stays in context-loader so all filesystem access
- * remains in this layer.
- */
-
+// resolves a workspaceId to its root so sessions sharing the id share standing direction,
+// which is what makes "several sessions working a common goal" coherent; in-memory cache per run
 export interface Workspace {
   workspaceId: string;
-  /** Root used to resolve project context (agentcontext.md). */
+  // root used to resolve project context (agentcontext.md)
   root: string;
 }
 
 export class WorkspaceRegistry {
   private readonly workspaces = new Map<string, Workspace>();
 
-  /**
-   * Register a workspace, loading its context from disk. Idempotent: a
-   * second call with an already-known id returns the existing entry without
-   * re-reading, so joining a shared workspace is cheap.
-   */
+  // idempotent so joining a shared workspace is cheap: a known id returns the existing entry
   public async register(workspaceId: string, root: string): Promise<Workspace> {
     const existing = this.workspaces.get(workspaceId);
     if (existing) return existing;
@@ -47,10 +31,7 @@ export class WorkspaceRegistry {
     return this.workspaces.has(workspaceId);
   }
 
-  /**
-   * Re-read the context file for an already-registered workspace, picking up
-   * any mid-session edits to agentcontext.md. Returns the refreshed entry.
-   */
+  // re-reads so mid-session edits to agentcontext.md are picked up
   public async reload(workspaceId: string): Promise<Workspace> {
     const workspace = this.get(workspaceId);
     const updated: Workspace = { ...workspace };

@@ -14,26 +14,11 @@ export const APPEND_EXCEL_ROWS_TOOL = "append_excel_rows";
 export const APPEND_AFTER_EXCEL_ROWS_TOOL = "append_after_excel_rows";
 export const DELETE_EXCEL_ROWS_TOOL = "delete_excel_rows";
 
-/**
- * Excel synthetic tools — SheetJS-backed read/query/append over .xlsx files.
- *
- * Like the other synthetic tools these LOOK like real MCP tools to the LLM, but
- * the orchestrator intercepts them and runs them in-process. Unlike
- * executor__dispatch (which routes every mutation through the executor), these
- * are self-contained DATA operations: a spreadsheet read/append is a single,
- * well-bounded effect, so routing it through a free-form sub-agent would add
- * cost and non-determinism without buying safety.
- *
- * Every file_path is workspace-relative and resolved under
- * `{sandboxRoot}/{workspaceId}/` (see `resolveWorkspacePath`), the same segment
- * fsmcp and the executor write to — absolute paths and `..` escapes are refused
- * deterministically in agent code, never trusting the model to behave.
- */
+// SheetJS-backed .xlsx tools run in-process, not via executor__dispatch: a spreadsheet op is one
+// well-bounded effect, so a free-form sub-agent would add cost and non-determinism without buying safety
+// every file_path is clamped to {sandboxRoot}/{workspaceId} in agent code, never trusting the model
 
-/**
- * Build Excel tool descriptors for advertisement (without creating handlers).
- * Used to include Excel tools in the visible tools list at turn setup.
- */
+// descriptors only (no handlers), for the visible tools list at turn setup
 export function getExcelToolDescriptors(): ToolDescriptor[] {
   return createExcelTools().map((tool) => ({
     name: tool.name,
@@ -66,10 +51,8 @@ export function createExcelTools(): SyntheticMcp[] {
 // Row model
 // ---------------------------------------------------------------------------
 
-/** A spreadsheet row as a header-keyed object — the shape used in and out. */
 type Row = Record<string, unknown>;
 
-/** A single AND-ed filter clause for query_excel_rows. */
 type FilterOp = "eq" | "ne" | "gt" | "gte" | "lt" | "lte" | "contains";
 interface FilterCondition {
   column: string;
@@ -106,7 +89,7 @@ async function handleGetColumns(
   const loaded = await loadWorkbook(ctx, filePath.value);
   if (!loaded.ok) return toolError(`[excel-error] ${loaded.reason}`);
 
-  // sheet_name is optional here — default to the first sheet.
+  // sheet_name optional here: default to the first sheet
   const sheet = resolveSheet(loaded.value, optionalString(args.sheet_name));
   if (!sheet.ok) return toolError(`[excel-error] ${sheet.reason}`);
 
@@ -183,7 +166,7 @@ async function handleAppendRows(
   const parsed = parseAppendArgs(args);
   if (!parsed.ok) return toolError(`[excel-error] ${parsed.reason}`);
 
-  // null insertAt => append at the very end (see writeRows).
+  // null insertAt => append at the very end
   return writeRows(ctx, parsed.value.filePath, parsed.value.sheetName, parsed.value.rows, null);
 }
 
@@ -229,12 +212,7 @@ async function handleDeleteRows(
 // Write path (shared by both append tools)
 // ---------------------------------------------------------------------------
 
-/**
- * Insert `newRows` into a sheet and persist the workbook. `insertAt` is the
- * 0-based data-row index to splice in front of; `null` means append at the end.
- * Creates the file/sheet when missing, and widens the header union so rows that
- * introduce a new column don't silently lose data.
- */
+// insertAt is the 0-based data-row index to splice before, or null to append; widens the header union so a new column isn't lost
 async function writeRows(
   ctx: ToolContext,
   filePath: string,
@@ -245,9 +223,7 @@ async function writeRows(
   const resolved = resolveWorkspacePath(ctx, filePath);
   if (!resolved.ok) return toolError(`[excel-error] ${resolved.reason}`);
 
-  // Load the existing workbook if present; otherwise start a fresh one. A read
-  // error other than "file missing" is fatal — we must not clobber a file we
-  // failed to parse.
+  // a read error other than "missing" is fatal: we must not clobber a file we failed to parse
   let workbook: XLSX.WorkBook;
   let existingRows: Row[] = [];
   let existingHeaders: string[] = [];
@@ -273,8 +249,7 @@ async function writeRows(
     );
   }
 
-  // Combine, preserving column order: existing headers first, then any new keys
-  // the appended rows introduce.
+  // existing headers first, then new keys, so column order stays stable
   const headers = unionHeaders(existingHeaders, newRows);
   const combined =
     insertAt === null
@@ -316,10 +291,7 @@ async function writeRows(
   };
 }
 
-/**
- * Delete rows from a sheet by 0-based data row indices and persist the workbook.
- * Row indices are sorted descending before removal to avoid index shifts.
- */
+// removes by a Set of indices so deletions don't shift each other's positions
 async function deleteRows(
   ctx: ToolContext,
   filePath: string,
@@ -337,13 +309,11 @@ async function deleteRows(
 
   const { headers, rows } = sheetToTable(sheet.value.worksheet);
 
-  // Validate indices
   const validIndices = rowIndicesToDelete.filter((i) => i >= 0 && i < rows.length);
   if (validIndices.length === 0) {
     return toolError(`[excel-error] no valid row indices to delete (valid range: 0-${rows.length - 1})`);
   }
 
-  // Remove rows by index, sorting descending to avoid index shifts
   const indicesToRemove = new Set(validIndices);
   const remaining = rows.filter((_, idx) => !indicesToRemove.has(idx));
 
@@ -381,11 +351,7 @@ async function deleteRows(
 // Workbook / sheet helpers
 // ---------------------------------------------------------------------------
 
-/**
- * Read and parse a workbook from a workspace-relative path. Read uses a buffer
- * (XLSX.read) rather than XLSX.readFile so the path clamp stays in our code and
- * we never hand a raw path to SheetJS.
- */
+// reads via buffer (not XLSX.readFile) so the path clamp stays in our code and SheetJS never sees a raw path
 async function loadWorkbook(
   ctx: ToolContext,
   filePath: string
@@ -408,7 +374,7 @@ async function loadWorkbook(
   }
 }
 
-/** Resolve a sheet by name, or the first sheet when name is omitted. */
+// resolves a sheet by name, or the first sheet when the name is omitted
 function resolveSheet(
   workbook: XLSX.WorkBook,
   sheetName: string | undefined
@@ -427,11 +393,7 @@ function resolveSheet(
   return { ok: true, value: { name, worksheet } };
 }
 
-/**
- * Project a worksheet into a header list plus header-keyed rows. Reads the AoA
- * first so the header ORDER reflects the file's columns (sheet_to_json's object
- * keys alone would not preserve a stable order across rows).
- */
+// reads the AoA first so header ORDER reflects the file's columns; sheet_to_json's object keys wouldn't be stable
 function sheetToTable(worksheet: XLSX.WorkSheet): { headers: string[]; rows: Row[] } {
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(worksheet, { header: 1, blankrows: false });
   const headerRow = matrix.length > 0 ? matrix[0] : [];
@@ -449,7 +411,6 @@ function sheetToTable(worksheet: XLSX.WorkSheet): { headers: string[]; rows: Row
   return { headers, rows };
 }
 
-/** Existing headers in order, plus any new keys the appended rows introduce. */
 function unionHeaders(existingHeaders: string[], newRows: Row[]): string[] {
   const headers = existingHeaders.filter((h) => h.length > 0);
   const seen = new Set(headers);
@@ -468,7 +429,6 @@ function unionHeaders(existingHeaders: string[], newRows: Row[]): string[] {
 // Filtering
 // ---------------------------------------------------------------------------
 
-/** Evaluate one AND-ed clause against a row. */
 function matchesCondition(row: Row, condition: FilterCondition): boolean {
   const cell = row[condition.column];
   const target = condition.value;
@@ -484,8 +444,7 @@ function matchesCondition(row: Row, condition: FilterCondition): boolean {
     case "gte":
     case "lt":
     case "lte": {
-      // Ordering only makes sense numerically; a non-numeric cell or target
-      // never matches rather than producing a surprising string comparison.
+      // ordering is numeric-only; a non-numeric cell or target never matches, avoiding surprise string comparison
       const a = Number(cell);
       const b = Number(target);
       if (Number.isNaN(a) || Number.isNaN(b)) return false;
@@ -499,7 +458,7 @@ function matchesCondition(row: Row, condition: FilterCondition): boolean {
   }
 }
 
-/** Equality that bridges number/string cells (3 == "3"), else strict-ish. */
+// bridges number/string cells so 3 and "3" compare equal
 function looseEquals(cell: unknown, target: unknown): boolean {
   if (cell === target) return true;
   return String(cell ?? "") === String(target ?? "");
@@ -591,8 +550,7 @@ function resolveWorkspacePath(
   const segmentRoot = path.resolve(ctx.sandboxRoot, ctx.workspace.workspaceId);
   const resolved = path.resolve(segmentRoot, filePath);
 
-  // Confirm the resolved path is still inside the workspace segment; a `..` that
-  // climbs out lands elsewhere and is refused here.
+  // a `..` that climbs out of the segment is refused here
   const relative = path.relative(segmentRoot, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     return { ok: false, reason: `path "${filePath}" escapes the workspace segment` };
@@ -600,7 +558,7 @@ function resolveWorkspacePath(
   return { ok: true, absolutePath: resolved };
 }
 
-/** Drive-letter, UNC, and rooted paths are treated as absolute and refused. */
+// drive-letter, UNC, and rooted paths count as absolute and are refused
 function isAbsoluteLike(value: string): boolean {
   return /^[a-zA-Z]:[\\/]/.test(value) || /^[\\/]/.test(value);
 }

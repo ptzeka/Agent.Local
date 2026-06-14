@@ -3,21 +3,8 @@ import type { RunResult } from "./orchestrator.js";
 import type { Session } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 
-/**
- * Sub-session — an autonomous child run spawned by the orchestrator.
- *
- * Unlike a top-level Session (which waits for a user prompt between turns), a
- * sub-session is handed a single `intent` and driven by the orchestrator loop
- * until the evaluator reports the intent SATISFIED (or the iteration cap trips).
- * It reuses the exact same per-action + completion evaluator the interactive
- * path uses — the `intent` simply plays the role the user's prompt normally
- * plays.
- *
- * Sub-sessions live in memory only (see SessionManager). The live `session`
- * and `abort` controller are kept on the internal record; the orchestrator's
- * LLM only ever sees the derived `SubSessionSnapshot`.
- */
-
+// autonomous child run driven by the orchestrator loop until its intent is SATISFIED, with the
+// intent playing the role a user prompt normally plays; in-memory only, LLM sees only the snapshot
 export type SubSessionStatus =
   | "running" // the detached orchestrator run is in flight
   | "done" // run completed (evaluator satisfied, or capped out)
@@ -27,53 +14,29 @@ export type SubSessionStatus =
 export interface SubSession {
   subSessionId: string;
   parentSessionId: string;
-  /** The goal this sub-session was spawned to resolve. */
   intent: string;
   status: SubSessionStatus;
-  /**
-   * The live conversational state the detached run mutates. Owned by the child
-   * runtime and populated once it is built, so it is absent in the brief window
-   * between the synchronous create call and the runtime coming up.
-   */
+  // absent in the brief window between the synchronous create call and the child runtime coming up
   session?: Session;
-  /** Handle to the child's own runtime, set after build — drives + steers the run. */
   runtime?: ChildRuntime;
-  /** Final assistant message content once the run completes. */
   result?: string;
-  /** Failure detail when status is "error". */
   error?: string;
-  /** Orchestrator iterations the run consumed (populated on completion). */
   iterations?: number;
-  /** Executor dispatches the run made (populated on completion). */
   dispatches?: number;
-  /** Cancels the detached run; fired by finalize() on a still-running child. */
+  // fired by finalize() to cancel a still-running child
   abort: AbortController;
-  /** Derived signal (parent chain OR `abort`) — an ancestor cancel reaches the
-   *  child without the manager enumerating it. */
+  // parent chain OR abort, so an ancestor cancel reaches the child without the manager enumerating it
   signal: AbortSignal;
-  /**
-   * Resolves when the detached run settles (done OR error — it never rejects,
-   * since launch() handles both arms). Lets a caller block on a child's
-   * completion: the interactive path ignores it (children report back via
-   * notifications), but a headless single run awaits it so no sub-task is left
-   * pending when the process exits.
-   */
+  // never rejects (launch() handles both arms); a headless single run awaits it so no sub-task leaks on exit
   settled?: Promise<void>;
-  /** Status returned to the most recent get_status poll — drives poll backoff. */
+  // last polled status + repeat count drive get_status backoff against tight polling loops
   lastPolledStatus?: SubSessionStatus;
-  /** Count of consecutive polls that saw `lastPolledStatus` unchanged. */
   pollRepeat: number;
-  /** Epoch millis. */
   createdAt: number;
-  /** Epoch millis; bumped on every status change. */
   updatedAt: number;
 }
 
-/**
- * Serializable view of a sub-session — the shape returned to the orchestrator
- * LLM as a tool result. Deliberately omits the live `session` and the abort
- * controller, which are runtime-only.
- */
+// LLM-facing tool-result view; omits the live session and abort controller, which are runtime-only
 export interface SubSessionSnapshot {
   subSessionId: string;
   parentSessionId: string;
@@ -87,119 +50,79 @@ export interface SubSessionSnapshot {
   updatedAt: number;
 }
 
-/**
- * Result of a get_status poll: the snapshot plus how long the coordinator
- * backed off before returning. `backoffMs > 0` means the SAME status has been
- * polled repeatedly and the call was deliberately slowed to curb a tight
- * polling loop.
- */
+// backoffMs > 0 means the same status was polled repeatedly and the call was deliberately slowed
 export interface StatusResult {
   snapshot: SubSessionSnapshot;
   backoffMs: number;
 }
 
-/**
- * Push notification fired when a detached child reaches a terminal state. This
- * is the report-back seam that replaces polling: the parent does NOT block on
- * get_status — it spawns the child, ends its turn, and is told the outcome
- * through this channel when the run actually settles. Carries only the terminal
- * facts an outside listener (the REPL today, an external transport later) needs
- * to surface the result; the live session is never exposed.
- */
+// report-back seam that replaces polling: the parent ends its turn and is told the outcome here on settle
 export interface SubSessionNotification {
   subSessionId: string;
   parentSessionId: string;
   intent: string;
-  /** Terminal outcome only — `running` is never notified. */
+  // terminal only; "running" is never notified
   status: "done" | "error";
-  /** Final assistant message when status is "done". */
   result?: string;
-  /** Failure detail when status is "error". */
   error?: string;
 }
 
-/** A subscriber on the coordinator's notification channel. */
 export type SubSessionNotificationListener = (notification: SubSessionNotification) => void;
 
 export interface CreateSubSessionParams {
   parentSessionId: string;
-  /** Workspace the child shares with its parent (same sandbox segment). */
+  // child shares the parent's sandbox segment
   workspace: Workspace;
   intent: string;
-  /** Optional standing context seeded as a system message before the intent. */
+  // seeded as a system message before the intent
   context?: string;
-  /** Identity inherited from the parent, stamped onto the child session. */
+  // inherited from the parent, stamped onto the child session
   user?: Principal;
 }
 
-/**
- * Identity + linkage the sub-runtime pipeline needs to provision a child. The
- * coordinator mints `sessionId` up front (so it can answer synchronously) and
- * the factory feeds these into the child's InheritedUser + ChildSession steps.
- */
+// coordinator mints sessionId up front so it can answer synchronously; the factory feeds these into the child pipeline
 export interface SubRuntimeRefs {
   sessionId: string;
   parentSessionId: string;
   workspaceId: string;
   user?: Principal;
   standingContext?: string;
-  /** Cancellation chain link: the child's scope (and its resources) dies with
-   *  the sub-session, the parent runtime, or the process root. */
+  // cancellation link: the child dies with the sub-session, the parent runtime, or the process root
   parentSignal?: AbortSignal;
 }
 
-/**
- * The slice of a freshly-composed child AgentRuntime the coordinator drives:
- * build it, run its single turn, and read/steer its session. Declared here
- * rather than imported from the runtime layer so SessionManager depends only on
- * this contract — AgentRuntime satisfies it structurally, keeping the Service
- * layer off the composition layer (no import inversion).
- */
+// declared here, not imported from the runtime layer, so SessionManager depends only on this contract (no import inversion)
 export interface ChildRuntime {
   build(): Promise<ChildRuntime>;
   getSession(): Session;
   dispatchAsync(input: string, options?: { signal?: AbortSignal }): Promise<RunResult>;
   injectInput(content: string, source?: string): void;
   awaitAllSubSessions(): Promise<void>;
-  /** Persist the child session — used to stamp its terminal done/error status. */
+  // persist to stamp the child's terminal done/error status
   finalize(): Promise<void>;
 }
 
-/** Composes (but does not build) a child sub-runtime for the given refs. */
+// composes (but does not build) a child sub-runtime for the given refs
 export type SubRuntimeFactory = (refs: SubRuntimeRefs) => ChildRuntime;
 
-/**
- * Outcome of a createSubSession call. Creation is GUARDED: an identical
- * outstanding intent is reused rather than duplicated, and a per-parent cap
- * refuses further spawns. The orchestrator turns each outcome into a distinct
- * tool reply so the LLM can react (reuse the id it got back, or stop spawning).
- */
+// creation is GUARDED: an identical outstanding intent is reused, and a per-parent cap refuses further spawns
 export interface CreateSubSessionResult {
   outcome: "created" | "reused" | "rejected";
-  /** The new (created) or matching (reused) child; null when rejected. */
+  // null when rejected
   snapshot: SubSessionSnapshot | null;
-  /** Human-readable explanation for reused / rejected outcomes. */
   reason?: string;
 }
 
-/**
- * Contract the orchestrator depends on to manage sub-sessions. Implemented by
- * SessionManager; declared here (next to the data shapes) so the orchestrator
- * imports only this interface and never the concrete service — keeping the
- * orchestrator → manager → orchestrator construction acyclic.
- */
+// declared next to the data shapes so the orchestrator imports only this, keeping orchestrator↔manager construction acyclic
 export interface SubSessionCoordinator {
   createSubSession(params: CreateSubSessionParams): CreateSubSessionResult;
-  /**
-   * Snapshot a child. Async because it applies an (abortable) backoff delay
-   * when the same status is polled repeatedly. Returns null for an unknown id.
-   */
+  // async because it applies an abortable backoff when the same status is polled repeatedly; null for an unknown id
   getStatus(
     parentSessionId: string,
     subSessionId: string,
     signal?: AbortSignal
   ): Promise<StatusResult | null>;
-  /** Active (non-archived) children of a parent — powers list_subsessions. */
+  // active (non-archived) children of a parent; powers list_subsessions
   list(parentSessionId: string): SubSessionSnapshot[];
   finalize(
     parentSessionId: string,
@@ -208,17 +131,12 @@ export interface SubSessionCoordinator {
   ): SubSessionSnapshot | null;
 }
 
-/**
- * Build a fresh sub-session record in the `running` state. Pure but for the
- * AbortController construction; id minting and the detached run launch are the
- * SessionManager's job, mirroring how createSession leaves persistence to the
- * Initializer.
- */
+// pure but for the AbortController; id minting and run launch stay with SessionManager, like createSession→Initializer
 export function makeSubSession(params: {
   subSessionId: string;
   parentSessionId: string;
   intent: string;
-  /** Ancestor chain (owning runtime's scope); omitted, `abort` stands alone. */
+  // ancestor chain (owning runtime's scope); omitted, abort stands alone
   parentSignal?: AbortSignal;
 }): SubSession {
   const now = Date.now();
@@ -238,7 +156,6 @@ export function makeSubSession(params: {
   };
 }
 
-/** Project the internal record down to the LLM-facing snapshot. */
 export function toSnapshot(sub: SubSession): SubSessionSnapshot {
   return {
     subSessionId: sub.subSessionId,

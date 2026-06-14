@@ -15,7 +15,6 @@ export class McpClientRegistry {
   }
 
   public registerClient(client: Mcp): void {
-    // server name
     this.clients.set(client.name, client);
   }
   public getClient(serverName: string): Mcp | undefined {
@@ -29,9 +28,7 @@ export class McpClientRegistry {
     return flattened;
   }
 
-  // The middleware already mounts only this role's whitelisted servers, so the
-  // scoped client simply fronts every registered mount. Built per turn so it
-  // sees live rebinds (e.g. the subsessions server swapped for the coordinator).
+  // built per turn so it sees live rebinds; the middleware already mounted only this role's servers
   public createScopedClient(): ScopedToolClient {
     return new ScopedToolClient([...this.clients.values()]);
   }

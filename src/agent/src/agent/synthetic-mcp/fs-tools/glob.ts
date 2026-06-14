@@ -40,9 +40,7 @@ export async function glob(input: GlobInput, workspace: Workspace): Promise<Glob
   const cwdAbsolute = workspace.resolveSafe(input.cwd ?? ".");
   const limit = input.max_results ?? 500;
 
-  // fast-glob gives us paths relative to `cwd` when `absolute: false`.
-  // We then turn them into workspace-relative paths so the model always
-  // sees the same coordinate system.
+  // re-relativized to the workspace below so the model always sees one coordinate system
   const rawMatches = await fastGlob(input.pattern, {
     cwd: cwdAbsolute,
     dot: input.include_hidden,
@@ -54,8 +52,7 @@ export async function glob(input: GlobInput, workspace: Workspace): Promise<Glob
 
   const matches: string[] = [];
   for (const absolute of rawMatches) {
-    // Defence in depth: confirm every match is still inside the workspace.
-    // fast-glob shouldn't escape, but symlinks and "../" patterns are worth guarding against.
+    // defence in depth against symlinks and "../" patterns fast-glob might follow out of the workspace
     try {
       const safeAbsolute = workspace.resolveSafe(absolute);
       matches.push(workspace.relativize(safeAbsolute));

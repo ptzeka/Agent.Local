@@ -10,13 +10,12 @@ export class ProvidersRegistry
     
     public loadModels()
     {
-        // Build one provider per role-referenced model. models.json is the
-        // sole source of truth for model selection — no env-var overrides.
+        // models.json is the sole source of truth for selection; env carries only secrets/host
         const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-        const geminiApiKey = process.env.GEMINI_API_KEY;            
+        const geminiApiKey = process.env.GEMINI_API_KEY;
         const ollamaHost = process.env.OLLAMA_HOST ?? "http://localhost:11434";
 
-        // active models
+        // build one provider per role-referenced model only, skipping unused definitions
         for (const [_, def] of Object.entries(this.modelsFile.roles)) {
 
             var m = this.modelsFile.models[def];

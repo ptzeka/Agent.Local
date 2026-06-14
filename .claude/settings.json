@@ -28,7 +28,14 @@
       "Bash(node -e \"JSON.parse\\(require\\('fs'\\).readFileSync\\('../../models.json','utf8'\\)\\); console.log\\('models.json valid JSON'\\)\")",
       "Bash(cd \"c:/www/Agent.Local\" && awk 'NR>FNR{next}1' /dev/null src/agent/logs/agent-6132026.log >/dev/null 2>&1; grep -nE \"build start|runtime initialized|repl subscribe|runtime running|repl event|turn start|model response\" src/agent/logs/agent-6132026.log | tail -40)",
       "Read(//dev/**)",
-      "Bash(grep -nA4 \"runtime build start\" src/agent/logs/agent-6132026.log)"
+      "Bash(grep -nA4 \"runtime build start\" src/agent/logs/agent-6132026.log)",
+      "Bash(grep -rlE '^\\\\s*//|/\\\\*' --include='*.ts' --exclude-dir=node_modules --exclude-dir=dist .)",
+      "Bash(grep -rnE '/\\\\*|^\\\\s*//' delete-file.ts edit-file.ts glob.ts grep.ts list-dir.ts schema-helpers.ts workspace.ts write-file.ts)",
+      "Bash(grep -rlE '/\\\\*' --include='*.ts' .)",
+      "Bash(grep -nE '/\\\\*' ./agent/synthetic-mcp/fs-server.ts ./agent/synthetic-mcp/fs-tools/glob.ts ./agent/synthetic-mcp/fs-tools/grep.ts ./agent/tool-adapter.ts)",
+      "Bash(grep -nE '/\\\\*|^\\\\s*//' fsmcp/src/search/glob.ts fsmcp/src/search/grep.ts fsmcp/src/server.ts)",
+      "Bash(echo \"---EXIT:$?---\")",
+      "Bash(echo \"EXIT:$?\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"

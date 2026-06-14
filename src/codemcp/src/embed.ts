@@ -16,11 +16,8 @@ export function createQueryEmbedAdapter(provider: 'local' | 'voyage' | 'openai',
   }
 }
 
-/**
- * Mirror of the local writer-side embed adapter. MUST stay in lockstep with
- * tools/codeindex/src/embed/local.ts — both produce the same vector for the
- * same text. If you change one, change the other.
- */
+// mirror of the writer-side adapter in codeindex/src/embed/local.ts; both must produce the
+// same vector for the same text — change one, change the other
 class LocalQueryEmbedAdapter implements EmbedAdapter {
   readonly modelId: string;
   readonly dim: number;

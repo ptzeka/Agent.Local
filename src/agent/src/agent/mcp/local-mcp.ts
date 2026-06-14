@@ -2,27 +2,15 @@ import { CancellationToken } from "../../common/lifetime.js";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
 
-/**
- * One tool owned by a `LocalMcp`: an advertised descriptor (bare,
- * unnamespaced name) plus a direct in-process invocation. The invoke
- * function is expected to catch its own domain errors and shape them into a
- * `ToolExecutionResult`, so each server keeps its historical error wording.
- *
- * `cutoffscope` is the call's CancellationToken: cancelling it — from a parent
- * signal upstream OR the server's own timeout — collapses this call and
- * everything it spawns. Tools that can stop early honour `cutoffscope.signal`;
- * the rest ignore it.
- */
+// invoke owns its domain errors and shapes them into a ToolExecutionResult so each server keeps its wording
+// cutoffscope cancels from a parent signal OR the server timeout, collapsing this call and all it spawns
 export interface LocalTool {
   readonly descriptor: ToolDescriptor;
   invoke(args: Record<string, unknown>, cutoffscope: CancellationToken): Promise<ToolExecutionResult>;
 }
 
-/**
- * An in-process MCP: same shape as a spawned server from the registry's
- * perspective, but tool calls are plain function calls — no SDK `Server`,
- * no transport, no JSON-RPC round-trip.
- */
+// in-process MCP: looks like a spawned server to the registry, but calls are plain
+// function calls — no SDK Server, transport, or JSON-RPC round-trip
 export class LocalMcp implements Mcp {
   private readonly toolsByName = new Map<string, LocalTool>();
   private timeout?: number;
@@ -32,15 +20,13 @@ export class LocalMcp implements Mcp {
     }
   }
 
-  // Injected once at construction (chainable so the middleware can wire it
-  // inline): every call this server runs inherits this per-model tool timeout.
+  // chainable so middleware can wire it inline; sets the per-model timeout every call inherits
   public setTimeout(t: number): Mcp {
     this.timeout = t;
     return this;
   }
-  
-  // Subclasses whose handlers close over `this` cannot pass tools to super();
-  // they call this after super(), one tool per call.
+
+  // subclasses whose handlers close over `this` can't pass tools to super(); they register post-super
   protected registerTool(tool: LocalTool): void {
     this.toolsByName.set(tool.descriptor.name, tool);
   }
@@ -65,8 +51,7 @@ export class LocalMcp implements Mcp {
         content: `Unknown tool "${toolName}" on server "${this.name}".`,
       };
     }
-    // Derive this call's cutoff from the caller's signal; the injected timeout
-    // (if any, > 0) cancels that token so a wedged tool collapses downward.
+    // timeout cancels this token so a wedged tool collapses downward instead of hanging the caller
     const cutoff = new CancellationToken(signal);
     let timer: NodeJS.Timeout | null = null;
     try {
@@ -90,6 +75,6 @@ export class LocalMcp implements Mcp {
 
 
   public async shutdown(): Promise<void> {
-    // Nothing to release: no process, no connection.
+    // nothing to release: no process, no connection
   }
 }

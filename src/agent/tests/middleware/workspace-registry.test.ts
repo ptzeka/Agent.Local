@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { WorkspaceRegistryMiddleware } from "../../src/agent/runtime/middleware/workspace-registry.js";
+import { WorkspacesToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
 /**
@@ -27,7 +28,7 @@ describe("WorkspaceRegistryMiddleware", () => {
 
     await new WorkspaceRegistryMiddleware().initialize(ctx, next);
 
-    expect(ctx.workspaces).toBeDefined();
+    expect(ctx.registry.tryGet(WorkspacesToken)).toBeDefined();
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -35,15 +36,16 @@ describe("WorkspaceRegistryMiddleware", () => {
     const ctx = makeContext();
     await new WorkspaceRegistryMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    await ctx.workspaces!.register("w1", root);
+    const workspaces = ctx.registry.get(WorkspacesToken);
+    await workspaces.register("w1", root);
 
-    expect(ctx.workspaces!.get("w1").workspaceId).toBe("w1");
+    expect(workspaces.get("w1").workspaceId).toBe("w1");
   });
 
   test("the seeded registry starts empty — resolving an unregistered id throws", async () => {
     const ctx = makeContext();
     await new WorkspaceRegistryMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(() => ctx.workspaces!.get("nope")).toThrow(/Unknown workspaceId/);
+    expect(() => ctx.registry.get(WorkspacesToken).get("nope")).toThrow(/Unknown workspaceId/);
   });
 });

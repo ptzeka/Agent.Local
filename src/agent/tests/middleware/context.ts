@@ -1,19 +1,58 @@
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
+import { Container, type Token } from "../../src/common/container.js";
+import {
+  ConfigurationToken,
+  ProvidersToken,
+  ModelsToken,
+  StoreToken,
+  ContextLoaderToken,
+  WorkspacesToken,
+  McpRegistryToken,
+  UserToken,
+  SessionToken,
+  ConversationToken,
+  WorkspaceToken,
+  OrchestratorToken,
+  InboxToken,
+  SessionManagerToken,
+} from "../../src/agent/runtime/tokens.js";
 
 /**
- * Build a RuntimeContext seeded with ONLY the infrastructure fields — exactly
- * the shape AgentRuntime.build() hands to the first pipeline step. Every
- * middleware-populated field starts undefined; each test fills in just the
- * inputs the step under test actually reads.
- *
- * The default `mcpRegistry` is a cast fake exposing the member middleware
- * reaches for without driving a turn: `getClient(role)` (ContextMiddleware).
- * `sandboxRoot` lives on the context itself (read by SessionMiddleware). Tests
- * that need richer behavior pass their own
- * `mcpRegistry`/`modelsRegistry`/`providerRegistry` overrides.
+ * Maps the ergonomic override keys tests use (`session`, `store`, ...) to the
+ * tokens those services live under in the real container, so seeding a service
+ * in a test is still a one-liner: `makeContext({ session })`.
  */
-export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeContext {
+const SERVICE_TOKENS: Record<string, Token<unknown>> = {
+  configurationRegistry: ConfigurationToken,
+  providerRegistry: ProvidersToken,
+  modelsRegistry: ModelsToken,
+  store: StoreToken,
+  contextLoader: ContextLoaderToken,
+  workspaces: WorkspacesToken,
+  mcpRegistry: McpRegistryToken,
+  user: UserToken,
+  session: SessionToken,
+  conversation: ConversationToken,
+  workspace: WorkspaceToken,
+  orchestrator: OrchestratorToken,
+  inbox: InboxToken,
+  sessionManager: SessionManagerToken,
+};
+
+/**
+ * Build a RuntimeContext seeded with ONLY the infrastructure fields plus a fresh
+ * container — exactly the shape AgentRuntime.build() hands to the first pipeline
+ * step (ContainerMiddleware) after it creates `ctx.registry`. Every
+ * middleware-populated service starts absent from the registry; each test seeds
+ * just the inputs the step under test reads, via the override keys above.
+ *
+ * The default `mcpRegistry` is a cast fake exposing the member middleware reaches
+ * for without driving a turn: `getClient(role)` (ContextMiddleware). Tests that
+ * need richer behavior pass their own service overrides, which overwrite the
+ * default token registration.
+ */
+export function makeContext(overrides: Record<string, unknown> = {}): RuntimeContext {
   const mockMcpRegistry = {
     sandboxRoot: "/tmp/agent-mw-test-sandbox",
     getClient: () => ({
@@ -24,29 +63,25 @@ export function makeContext(overrides: Partial<RuntimeContext> = {}): RuntimeCon
     }),
   } as unknown as McpClientRegistry;
 
+  const registry = new Container();
+
+  // default-then-override: every present service value lands in the registry under its token
+  const services: Record<string, unknown> = { mcpRegistry: mockMcpRegistry, ...overrides };
+  for (const [key, serviceToken] of Object.entries(SERVICE_TOKENS)) {
+    const value = services[key];
+    if (value !== undefined) registry.set(serviceToken, value);
+  }
+
   return {
-    mcpRegistry: mockMcpRegistry,
-    sessionsDir: "/tmp/agent-mw-test-sessions",
-    workspaceRoot: "/tmp/agent-mw-test-workspace",
-    sandboxRoot: "/tmp/agent-mw-test-sandbox",
-    mcpConfigPath: "/tmp/mcp.json",
-    configPath: "/tmp/models.json",
-    credentials: {},
-    runtimeSignal: new AbortController().signal,
-    eventing: undefined,
-    providerRegistry: undefined,
-    modelsRegistry: undefined,
-    configurationRegistry: undefined,
-    logger: undefined,
-    store: undefined,
-    workspaces: undefined,
-    user: undefined,
-    session: undefined,
-    conversation: undefined,
-    workspace: undefined,
-    orchestrator: undefined,
-    inbox: undefined,
-    sessionManager: undefined,
-    ...overrides,
+    registry,
+    sessionsDir: (overrides.sessionsDir as string) ?? "/tmp/agent-mw-test-sessions",
+    workspaceRoot: (overrides.workspaceRoot as string) ?? "/tmp/agent-mw-test-workspace",
+    sandboxRoot: (overrides.sandboxRoot as string) ?? "/tmp/agent-mw-test-sandbox",
+    mcpConfigPath: (overrides.mcpConfigPath as string) ?? "/tmp/mcp.json",
+    configPath: (overrides.configPath as string) ?? "/tmp/models.json",
+    credentials: (overrides.credentials as RuntimeContext["credentials"]) ?? {},
+    runtimeSignal: (overrides.runtimeSignal as AbortSignal) ?? new AbortController().signal,
+    logger: overrides.logger as RuntimeContext["logger"],
+    eventing: overrides.eventing as RuntimeContext["eventing"],
   };
 }
