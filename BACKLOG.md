@@ -7,10 +7,16 @@ sequenced for one developer. Estimates are focused solo time (d = day).
 Check items off here; each task lists concrete sub-steps and a "done when"
 acceptance check so progress is verifiable, not vibes.*
 
+Completed items are moved to [BACKLOG.DONE.md](BACKLOG.DONE.md) so this file
+shows only open work.
+
 Conventions used below:
 - **Gate** = the deny-by-default tool check built in M0-1; later milestones
   extend it rather than adding new chokepoints.
 - File refs are to `src/agent/src/...` unless noted.
+- **Provenance** — when an item is completed and moved to BACKLOG.DONE.md, stamp
+  it with a line: `_created <date> · updated <date> · by <git user>_` (created =
+  when it first entered the backlog; updated = when last changed/marked done).
 
 ---
 
@@ -151,17 +157,6 @@ model returns `[policy-error]` and no fs mutation occurred.
 Today: Anthropic caches system+tools only (one breakpoint); Gemini caches
 system+tools explicitly with an unhandled 5-min expiry; the growing
 conversation — the expensive part of an agentic turn — is never cached.
-- [x] Anthropic (`providers/anthropic-provider.ts`): moving breakpoint on the
-      LAST content block of the messages array each call — done 2026-06-10
-      (`applyMessageBreakpoints`, tests in `tests/anthropic-cache.test.ts`).
-- [x] Third breakpoint ~15 blocks before the last for the 20-block lookback —
-      done 2026-06-10, same change (budget: system 1 + messages 2 = 3 of 4).
-- [x] Gemini (`providers/gemini-provider.ts`): track `expireTime` from
-      `caches.create` and recreate when near expiry — done 2026-06-10
-      (`cacheExpiryMs` helper + 30s margin + tests in
-      `tests/gemini-cache.test.ts`). Still open: verify the explicit cache
-      isn't below flash-lite's minimum-token threshold in practice (if so,
-      rely on Gemini 2.5 implicit prefix caching and delete the explicit path).
 - [ ] Determinism: sort tool descriptors by name at the provider boundary
       (moves into the ToolPort with MR); rule: nothing volatile (timestamps,
       ids) in system messages — project context + static prompts only.
@@ -255,6 +250,48 @@ message as-is. (Input-side overflow is M1-8; this is the output side.)
       it as final — never let a cut-off response satisfy completion.
 - [ ] Test: a fake provider returning a `max_tokens` stop then a clean finish
       yields one coherent assistant message, not a truncated turn.
+
+### M1-13 · Required-field presence check at the client — `~0.5d` · P1
+Scope deliberately minimal: the client checks ONLY that a tool's declared
+`required` keys are present; the servers throw the rest. Value-level validation
+already lives server-side and stays there — fsmcp Zod-parses every arg
+(`fsmcp/src/server.ts` L46 `schema.parse`, errors caught into `isError` at L165),
+so types/enums/bounds/required are all enforced for free; the synthetic LocalMcp
+tools (dispatch/subsessions/excel) hand-read `args.x ?? default` and keep their
+own value guards (e.g. the non-empty `intent` check). The gap the client closes
+is uniform PRESENCE: synthetic tools never parse their hand-written schema, so
+`required`/`enum` there are advisory, and a missing field yields a tool-specific
+string (`[dispatch-error] intent is required`) instead of one recoverable error.
+Every tool already carries `inputSchema` on its `ToolDescriptor` and
+`ScopedToolClient` already resolves `name → { client, toolTail }` before dispatch
+(L30-39), so the `required` array is in hand at the choke point. Lands as the
+**VALIDATE layer of the ToolPort (MR-1)**, not a new chokepoint.
+- [x] Required-presence ONLY: read the resolved tool's `inputSchema.required`,
+      verify each key exists in `args`, before `client.callTool`. No ajv, no
+      type/enum/pattern engine (none of our schemas use `pattern`/regex anyway,
+      and one conditional-required case — codemcp `repository`, "REQUIRED when
+      auto-detection failed" — is runtime-only and must be left to the tool). A
+      ~20-line key walk, not a schema library. → `missingRequired()` helper in
+      `scoped-tool-client.ts`.
+- [x] Corrective error on a missing key: `{ isError: true, content }` naming the
+      absent field(s) (reuse the `ScopedToolClient` corrective-error pattern) so
+      the loop re-plans and re-emits — never throw.
+- [x] Presence ≠ non-empty: `required` only checks the key exists, so
+      `intent: ""` passes here by design — empty/whitespace is a VALUE problem
+      the server keeps rejecting (dispatch keeps its `if (!intent)` guard). Do
+      NOT fold value checks into the client.
+- [x] Leave server-side validation untouched: fsmcp's Zod parse and the
+      synthetic value guards stay. dispatch's `if (!intent)` doubles as the
+      empty-string value guard, so it stays as-is (it is the value arm).
+- [x] Tests: a dispatch with `intent` absent is rejected at the client with a
+      field-named error (not the old string) and never reaches the executor; a
+      present-but-empty `intent` still falls through to the server's existing
+      guard; a fully-valid call passes untouched. → 6 tests in
+      `tests/scoped-tool-client.test.ts`.
+
+**Done when:** a tool call missing a `required` key returns one uniform
+field-named corrective error from the client and the mutation never runs, while
+all value-level validation (types, enums, empty-string) stays server-side. ✅ DONE
 
 ---
 
@@ -566,42 +603,9 @@ together itself.
         +--- codeindex / codemcp / memomcp     ← each depends on BOTH
 ```
 
-- [x] **`src/vectorizer`** (leaf, `~1d`) — `EmbedAdapter { modelId, dim,
-      embedBatch, embedQuery }` + `createEmbedAdapter(provider, dim)` over
-      local/voyage/openai. Deletes the hand-mirrored `LocalQueryEmbedAdapter`
-      in `codemcp/src/embed.ts` — one impl, no more "change one, change the
-      other." Pure compute, no DB. — done 2026-06-14 (`@agent-local/vectorizer`:
-      merged write-side `embedBatch` + read-side `embedQuery` into one adapter
-      set; Voyage keeps document/query `input_type`; the duplicate `codemcp/embed.ts`
-      is gone. Added the service tier `IVectorService` / `VectorServiceBase` /
-      `VectorService.fromProvider` so versions (cached/remote) can swap; codeindex
-      and codemcp now depend on `IVectorService`, not the raw adapter. `EmbedProvider`
-      union lifted here, no longer duplicated in either config. 7 tests; both
-      consumers build green.)
-- [x] **`src/vectorstore`** (leaf, `~1.5d`) — one copy of
-      `DbConnection`/`DbConnectionFactory` (kills the byte-identical dupe across
-      `codeindex/db/types.ts` and `codemcp/db/types.ts`), pg + file backends,
-      generic `VectorRecord { id, namespace, content, embedding, metadata }` and
-      `VectorStore { upsert, searchByEmbedding(ns, emb, k, filter), delete }`.
-      `namespace` is opaque; filter is generic equality over `metadata`. — done
-      2026-06-14 (`@agent-local/vectorstore`: `IVectorStore` with
-      `upsert`/`get`/`searchByEmbedding`/`delete`/`deleteNamespace`/`listNamespaces`/`close`;
-      `SearchHit { record, score }` where score is cosine distance. `PgVectorStore`
-      (pgvector `<=>` rank + jsonb `@>` equality filter, `ensureSchema`, vector dim
-      left UNPINNED per the sharp edge — consumer guards it). `FileVectorStore`
-      log-structured: append on upsert, fold-by-id-last-wins on read, rewrite-compact
-      on delete; rooted at `data/`, parameterizable `{ baseDir, partitionDir,
-      recordsFile }` so `commits/<sha>/chunks.jsonl` and `memories/<ns>/records.jsonl`
-      both fit. `DbConnection`/`DbConnectionFactory` + `PgConnectionFactory` now live
-      here as the single home — codeindex/codemcp dedupe onto it when they migrate
-      (tasks below, still open). The store never learns commit/snapshot. `PgVectorStore`
-      takes a connection string OR a ready `DbConnectionFactory` so a pool can be shared
-      (also makes SQL marshalling testable). 16 tests: 11 file-backend + 5 pg marshalling
-      via a fake connection; leaf builds green, no consumers migrated yet.)
-- [ ] **`src/codeindex` on the engine** (`~1d`) — walker/chunkers/commit
-      unchanged; `publish.ts` writes through `vectorstore`, code fields into
-      `metadata`. Output stays byte-compatible (`data/commits/<sha>/…`);
-      golden-file test guards it.
+> **Shipped (1 vectorizer, 2 vectorstore, 3 codeindex, 6 mcp) — see
+> [BACKLOG.DONE.md](BACKLOG.DONE.md).** Remaining: 4 codemcp, 5 memomcp.
+
 - [ ] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
       queries via `vectorizer`. `search_code`/`find_symbol` surface + results
       unchanged; code enums become a code-only typed wrapper over the generic
@@ -612,22 +616,10 @@ together itself.
       sidecar via `getMemoryAssociations`, never a record field (see "Memory
       record shape" below). Must use voyage/openai (local bag-of-words can't do
       paraphrase recall).
-- [x] **`src/mcp`** (new base/reference, `~1d`) — extract the MCP scaffolding
-      that every server re-implements into one shared package so `codemcp` /
-      `memomcp` (and future servers) derive from it instead of drifting. Move
-      the trio out of `src/agent/src/agent/mcp/`: the **base contract**
-      (`mcp.ts` — `Mcp` / `ToolInvoker` / `ToolExecutionResult`), the **actual**
-      server (`mcp-client.ts` — `McpClient`, spawned stdio JSON-RPC), and the
-      **virtual** server (`local-mcp.ts` — `LocalMcp`, in-process handlers).
-      Ships a minimal reference server as the copy-from example; the agent
-      imports the contract from here rather than owning it. — done 2026-06-14
-      (`@agent-local/mcp`: trio + `ToolDescriptor` split into `tooldescriptor.ts`;
-      `TokenUsage` lifted to `@agent-local/common`; every consumer repointed
-      directly — no re-export shims; package owns its `src/tests` suite. No
-      reference server shipped — deferred to memomcp.)
-
-**Sequencing:** 1, 2 & 6 in parallel (all leaves) → 3 & 4 prove no regression on
-real data → 5 builds on a proven engine **and** the shared MCP base.
+**Sequencing:** 1, 2 & 6 (vectorizer, vectorstore, mcp) and 3 (codeindex)
+shipped — see [BACKLOG.DONE.md](BACKLOG.DONE.md). Remaining: 4 (codemcp) reads
+via the proven engine, then 5 (memomcp) builds on the engine **and** the shared
+MCP base.
 
 **Sharp edges to settle in grooming:**
 
@@ -672,6 +664,53 @@ real data → 5 builds on a proven engine **and** the shared MCP base.
   flat records + generic `metadata` equality filters. Keeps the deepest M3-6
   coupling cut: the store never learns "relationship," same as it never learns
   "commit."
+
+### M3-8 · codemcp streaming — `~1d` · P2
+Today `search_code` / `find_symbol` embed the query, rank the whole result set,
+then return one buffered payload. Large `k` or big chunks block the caller until
+the last hit is serialized. Stream hits as they rank so the agent can act on the
+first result while the tail is still coming.
+
+- [ ] **Incremental hit emission.** `searchByEmbedding` keeps its buffered
+      signature (the store stays generic), but the codemcp tool layer wraps it to
+      yield ranked hits progressively — an async iterator surfaced over the MCP
+      tool result so partial results land before the full set is ready.
+- [ ] **Bounded backpressure.** Stop materializing every candidate before
+      sorting on huge namespaces; cap the in-flight window and emit top-k as the
+      heap settles. Pg can `ORDER BY <=> LIMIT` server-side; the file backend
+      folds-then-streams.
+- [ ] **Cancellation.** Honour the turn's `CancellationToken` mid-stream — a
+      cancelled search stops ranking/emitting immediately (one signal from the
+      source, wrapped downward; see AGENTS.md). Depends on `src/codemcp` on the
+      engine (above).
+- [ ] Tests: a streamed search yields the same final ordering as the buffered
+      path; cancelling after the first hit stops further emission.
+
+**Done when:** `search_code` surfaces hits incrementally with the same final
+ranking as the buffered path, respects a mid-stream cancel, and never
+materializes an unbounded candidate set.
+
+### M3-9 · memory streaming (memomcp) — `~1d` · P2
+`recall` returns core records + top-k archival by similarity (see "Memory record
+shape"). Stream them the same way M3-8 streams code hits: core records first
+(always-loaded, cheapest), then archival as similarity ranking settles, so the
+agent can start reasoning before the long tail arrives. Depends on `src/memomcp`
+(above) and shares the streaming surface from M3-8.
+
+- [ ] **Core-then-archival ordering.** Emit the collection's `core` records up
+      front (loaded by id, no ranking wait), then stream `archival` hits as the
+      top-k heap settles — one ordered stream, core salience first.
+- [ ] **Reuse the codemcp streaming surface.** Same async-iterator-over-tool-
+      result shape as M3-8 rather than a second bespoke mechanism; the two
+      servers differ only in what they rank, not in how they stream.
+- [ ] **Cancellation + backpressure** identical to M3-8 — bounded window, stop
+      on the turn's cancel signal.
+- [ ] Tests: a paraphrase recall streams core before archival; final set matches
+      the buffered `recall`; cancel mid-stream halts emission.
+
+**Done when:** `recall` streams core records before archival hits, matches the
+buffered result set, and reuses M3-8's streaming/cancellation surface instead of
+duplicating it.
 
 ---
 

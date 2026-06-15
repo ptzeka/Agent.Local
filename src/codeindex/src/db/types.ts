@@ -1,17 +1,3 @@
-export interface QueryResult<T = unknown> {
-  rows: T[];
-  rowCount: number;
-}
-
-export interface DbConnection extends AsyncDisposable {
-  query<T = unknown>(sql: string, params?: unknown[]): Promise<QueryResult<T>>;
-  begin(): Promise<void>;
-  commit(): Promise<void>;
-  rollback(): Promise<void>;
-}
-
-export interface DbConnectionFactory {
-  getConnection(): Promise<DbConnection>;
-  withTransaction<T>(fn: (conn: DbConnection) => Promise<T>): Promise<T>;
-  end(): Promise<void>;
-}
+// the SQL connection abstraction now lives once in @agent-local/vectorstore;
+// codeindex re-exports it so its own modules (FileConnection, migrate, repos) keep one import path
+export type { DbConnection, DbConnectionFactory, QueryResult } from '@agent-local/vectorstore';

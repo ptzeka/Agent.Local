@@ -1,12 +1,12 @@
 [
   {
     "scriptName": "001_init.sql",
-    "appliedAt": "2026-06-12T18:08:29.652Z",
-    "checksum": "5eca0d8428521fd559bbcce31c51d1cc59400ad6f72163e181953574e23597e7"
+    "appliedAt": "2026-06-15T04:35:30.145Z",
+    "checksum": "0b19512c2f879c6c6dec0e073a80ec22704455fc22133eaf6b1e18dc9fb0bcf9"
   },
   {
     "scriptName": "002_add_repository.sql",
-    "appliedAt": "2026-06-12T18:08:29.653Z",
-    "checksum": "318231a315aefaab6692f9126eccdf4eb2b3e5984598a9285d93d7f8a3774b24"
+    "appliedAt": "2026-06-15T04:35:30.146Z",
+    "checksum": "5a166d256be6f6e73e5dc33363401d307c980d9ef0ba8cf9c388bb4a43f827dd"
   }
 ]

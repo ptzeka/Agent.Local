@@ -16,22 +16,6 @@ export type ChunkKind =
 
 export type Area = 'api' | 'backend' | 'frontend' | 'db' | 'test' | 'docs' | 'tools' | 'pipeline' | 'minikube' | 'root';
 
-export interface ChunkRow {
-  path: string;
-  area: Area;
-  language: string;
-  kind: ChunkKind;
-  symbol: string | null;
-  parentSymbol: string | null;
-  startLine: number;
-  endLine: number;
-  content: string;
-  contentHash: string;
-  imports: string[];
-  claudeMd: string[];
-  embedding: number[];
-}
-
 export interface CommitRow {
   commitSha: string;
   branch: string;
@@ -41,17 +25,6 @@ export interface CommitRow {
   embedDim: number;
   fileCount: number;
   chunkCount: number;
-}
-
-export interface ChunkResult extends Omit<ChunkRow, 'embedding'> {
-  commitSha: string;
-  score?: number;
-}
-
-export interface SearchFilters {
-  area?: Area;
-  kind?: ChunkKind;
-  language?: string;
 }
 
 export interface RawChunk {

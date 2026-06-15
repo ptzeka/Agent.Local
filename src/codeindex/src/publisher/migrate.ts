@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 
 import type { DbConnectionFactory } from '../db/types.js';
-import type { AppliedMigration, PgWriterRepository } from '../db/pgRepository.js';
+import type { AppliedMigration, CommitRepository } from '../db/pgRepository.js';
 
 const MIGRATION_LOCK_KEY = 7148291035;
 
@@ -33,7 +33,7 @@ export class MigrationRunner {
 
   constructor(
     private readonly factory: DbConnectionFactory,
-    private readonly repo: PgWriterRepository,
+    private readonly repo: CommitRepository,
     options: MigrationRunnerOptions = {},
   ) {
     const thisDir = dirname(fileURLToPath(import.meta.url));

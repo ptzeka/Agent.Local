@@ -1,17 +1,17 @@
-// All SQL for the writer side lives in this file. No other module in
-// tools/codeindex/src may contain SQL statements — the migration runner
-// (publish/migrate.ts) is the only documented exception, and it streams
-// .sql files from disk rather than embedding SQL in TypeScript.
+// All SQL for the commit-metadata + migration side lives in this file. Chunk
+// storage moved to @agent-local/vectorstore; this repo now owns only the
+// snapshot bookkeeping (commits) and the migration journal (schema_versions).
 
 import type { DbConnection } from './types.js';
-import type { ChunkRow, CommitRow } from '../types.js';
+import type { CommitRow } from '../types.js';
 
 export interface AppliedMigration {
   scriptName: string;
   checksum: string;
 }
 
-export interface PgWriterRepository {
+// snapshot/commit bookkeeping + migration journal; the vector store owns chunk rows
+export interface CommitRepository {
   ensureSchemaVersionsTable(conn: DbConnection): Promise<void>;
   getAppliedMigrations(conn: DbConnection): Promise<AppliedMigration[]>;
   recordMigration(conn: DbConnection, scriptName: string, checksum: string): Promise<void>;
@@ -20,10 +20,6 @@ export interface PgWriterRepository {
   releaseAdvisoryLock(conn: DbConnection, key: number): Promise<void>;
 
   upsertCommit(conn: DbConnection, commit: CommitRow): Promise<void>;
-  deleteChunksForCommit(conn: DbConnection, commitSha: string): Promise<void>;
-  insertChunks(conn: DbConnection, commitSha: string, chunks: ChunkRow[]): Promise<void>;
-
-  getEmbeddingDimension(conn: DbConnection): Promise<number | null>;
 }
 
 const SQL = {
@@ -61,29 +57,9 @@ const SQL = {
           chunk_count = EXCLUDED.chunk_count,
           indexed_at = now()
   `,
-
-  deleteChunksForCommit: `DELETE FROM chunks WHERE commit_sha = $1`,
-
-  insertChunk: `
-    INSERT INTO chunks (
-      commit_sha, path, area, language, kind, symbol, parent_symbol,
-      start_line, end_line, content, content_hash, imports, claude_md, embedding
-    )
-    VALUES (
-      $1, $2, $3, $4, $5, $6, $7,
-      $8, $9, $10, $11, $12, $13, $14::vector
-    )
-  `,
-
-  selectEmbeddingDim: `
-    SELECT atttypmod AS "dim"
-    FROM pg_attribute
-    WHERE attrelid = 'chunks'::regclass
-      AND attname  = 'embedding'
-  `,
 };
 
-export class PgWriterRepositoryImpl implements PgWriterRepository {
+export class PgCommitRepositoryImpl implements CommitRepository {
   async ensureSchemaVersionsTable(conn: DbConnection): Promise<void> {
     await conn.query(SQL.createSchemaVersions);
   }
@@ -116,43 +92,4 @@ export class PgWriterRepositoryImpl implements PgWriterRepository {
       commit.chunkCount,
     ]);
   }
-
-  async deleteChunksForCommit(conn: DbConnection, commitSha: string): Promise<void> {
-    await conn.query(SQL.deleteChunksForCommit, [commitSha]);
-  }
-
-  async insertChunks(conn: DbConnection, commitSha: string, chunks: ChunkRow[]): Promise<void> {
-    for (const chunk of chunks) {
-      await conn.query(SQL.insertChunk, [
-        commitSha,
-        chunk.path,
-        chunk.area,
-        chunk.language,
-        chunk.kind,
-        chunk.symbol,
-        chunk.parentSymbol,
-        chunk.startLine,
-        chunk.endLine,
-        chunk.content,
-        chunk.contentHash,
-        chunk.imports,
-        chunk.claudeMd,
-        toVectorLiteral(chunk.embedding),
-      ]);
-    }
-  }
-
-  async getEmbeddingDimension(conn: DbConnection): Promise<number | null> {
-    const result = await conn.query<{ dim: number }>(SQL.selectEmbeddingDim);
-    if (result.rows.length === 0) return null;
-    const first = result.rows[0];
-    if (!first) return null;
-    // pg_attribute.atttypmod stores the vector dimension directly for the
-    // pgvector extension (no -4 offset, unlike varchar's typmod).
-    return first.dim ?? null;
-  }
-}
-
-function toVectorLiteral(values: number[]): string {
-  return `[${values.join(',')}]`;
 }

@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import type { CodeIndexConfig } from '../config.js';
-import type { DbConnectionFactory } from '../db/types.js';
-import type { PgWriterRepository } from '../db/pgRepository.js';
+import type { DbConnectionFactory, IVectorStore, VectorRecord } from '@agent-local/vectorstore';
+import type { CommitRepository } from '../db/pgRepository.js';
 import type { IVectorService } from '@agent-local/vectorizer';
-import type { ChunkRow, CommitRow, RawChunk } from '../types.js';
+import type { CommitRow, RawChunk } from '../types.js';
 import { walkRepository } from '../indexer/walker.js';
 import { chunkFile } from '../indexer/chunkers/index.js';
 import { areaForPath, claudeMdLineageForFile, languageForPath } from '../indexer/metadata.js';
@@ -23,14 +23,15 @@ export interface PublishResult {
 
 export interface PublishDeps {
   config: CodeIndexConfig;
+  vectorStore: IVectorStore;
   factory: DbConnectionFactory;
-  repo: PgWriterRepository;
+  repo: CommitRepository;
   embedder: IVectorService;
   log?: (msg: string) => void;
 }
 
 export async function publish(deps: PublishDeps): Promise<PublishResult> {
-  const { config, factory, repo, embedder } = deps;
+  const { config, vectorStore, factory, repo, embedder } = deps;
   const log = deps.log ?? (() => undefined);
 
   const rootDir = resolve(config.rootDir);
@@ -39,17 +40,6 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
 
   const files = walkRepository({ rootDir, excludeGlobs: config.excludeGlobs });
   log(`walked ${files.length} indexable files`);
-
-  // Verify the on-disk schema matches the configured dimension before doing
-  // any work.
-  await using probeConn = await factory.getConnection();
-  const onDiskDim = await repo.getEmbeddingDimension(probeConn);
-  if (onDiskDim !== null && onDiskDim !== embedder.dim) {
-    throw new Error(
-      `Configured embed dim (${embedder.dim}) does not match the chunks.embedding column dim (${onDiskDim}). ` +
-      `Either change CODEINDEX_EMBED_DIM or add a forward migration that ALTERs the column.`,
-    );
-  }
 
   const rawChunks: RawChunk[] = [];
   for (const file of files) {
@@ -69,7 +59,7 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
   }
   log(`produced ${rawChunks.length} raw chunks`);
 
-  const chunkRows: ChunkRow[] = [];
+  const records: VectorRecord[] = [];
   for (let i = 0; i < rawChunks.length; i += EMBED_BATCH_SIZE) {
     const batch = rawChunks.slice(i, i + EMBED_BATCH_SIZE);
     const texts = batch.map(b => embedInputFor(b));
@@ -83,21 +73,7 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
       if (embedding.length !== embedder.dim) {
         throw new Error(`Embedding has dim ${embedding.length}, expected ${embedder.dim}`);
       }
-      chunkRows.push({
-        path: raw.path,
-        area: raw.area,
-        language: raw.language,
-        kind: raw.kind,
-        symbol: raw.symbol,
-        parentSymbol: raw.parentSymbol,
-        startLine: raw.startLine,
-        endLine: raw.endLine,
-        content: raw.content,
-        contentHash: sha256(raw.content),
-        imports: raw.imports,
-        claudeMd: claudeMdLineageForFile(rootDir, raw.path),
-        embedding,
-      });
+      records.push(toRecord(rootDir, git.commitSha, raw, embedding));
     }
     log(`embedded ${Math.min(i + EMBED_BATCH_SIZE, rawChunks.length)}/${rawChunks.length}`);
   }
@@ -109,16 +85,17 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
     embedModel: embedder.modelId,
     embedDim: embedder.dim,
     fileCount: files.length,
-    chunkCount: chunkRows.length,
+    chunkCount: records.length,
   };
 
-  await factory.withTransaction(async (conn) => {
-    await repo.deleteChunksForCommit(conn, commit.commitSha);
-    await repo.upsertCommit(conn, commit);
-    await repo.insertChunks(conn, commit.commitSha, chunkRows);
-  });
+  // chunks first: a fresh namespace then upsert is the idempotent republish; the
+  // file backend co-locates chunks.jsonl + commit.json under commits/<sha>/, and
+  // deleteNamespace clears the dir, so commit metadata must be written afterwards
+  await vectorStore.deleteNamespace(commit.commitSha);
+  await vectorStore.upsert(records);
+  await factory.withTransaction(conn => repo.upsertCommit(conn, commit));
 
-  log(`published ${chunkRows.length} chunks for ${commit.commitSha} (${commit.repository}) using ${embedder.modelId}`);
+  log(`published ${records.length} chunks for ${commit.commitSha} (${commit.repository}) using ${embedder.modelId}`);
   return {
     commitSha: commit.commitSha,
     branch: commit.branch,
@@ -126,6 +103,30 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
     fileCount: commit.fileCount,
     chunkCount: commit.chunkCount,
     modelId: embedder.modelId,
+  };
+}
+
+// code fields collapse into the generic record's opaque metadata; id is stable
+// per chunk so a republish of the same commit upserts in place
+function toRecord(rootDir: string, commitSha: string, raw: RawChunk, embedding: number[]): VectorRecord {
+  return {
+    id: `${raw.path}#${raw.startLine}-${raw.endLine}`,
+    namespace: commitSha,
+    content: raw.content,
+    embedding,
+    metadata: {
+      path: raw.path,
+      area: raw.area,
+      language: raw.language,
+      kind: raw.kind,
+      symbol: raw.symbol,
+      parentSymbol: raw.parentSymbol,
+      startLine: raw.startLine,
+      endLine: raw.endLine,
+      contentHash: sha256(raw.content),
+      imports: raw.imports,
+      claudeMd: claudeMdLineageForFile(rootDir, raw.path),
+    },
   };
 }
 

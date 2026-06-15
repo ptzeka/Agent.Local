@@ -7,12 +7,16 @@ import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 // Path confinement lives in the server (Workspace guard), not here — these cover routing only:
 // namespaced calls, tolerant bare-name resolution, and corrective errors for ambiguous/unknown names.
 
-function fakeMcp(name: string, toolTails: string[]): { mcp: Mcp; callTool: jest.Mock } {
+function fakeMcp(
+  name: string,
+  toolTails: string[],
+  required: string[] = [],
+): { mcp: Mcp; callTool: jest.Mock } {
   const callTool = jest.fn(async () => ({ isError: false, content: "{}" }));
   const tools: ToolDescriptor[] = toolTails.map((tail) => ({
     name: `${name}__${tail}`,
     description: tail,
-    inputSchema: { type: "object" },
+    inputSchema: required.length > 0 ? { type: "object", required } : { type: "object" },
   }));
   return {
     mcp: {
@@ -84,5 +88,73 @@ describe("ScopedToolClient routing", () => {
     expect(result.content).toContain("beta__list_items");
     expect(a.callTool).not.toHaveBeenCalled();
     expect(b.callTool).not.toHaveBeenCalled();
+  });
+});
+
+// Presence-only gate: the client confirms declared `required` keys exist before dispatch.
+// Value-level validation (types, enums, empty-string) stays server-side.
+describe("ScopedToolClient required-presence", () => {
+  test("a call missing a required key is rejected at the client and never dispatched", async () => {
+    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const client = new ScopedToolClient([exec.mcp]);
+
+    const result = await client.callTool("executor__dispatch", { tool: "x", args: {} });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("missing required field(s): intent");
+    expect(exec.callTool).not.toHaveBeenCalled();
+  });
+
+  test("all absent required keys are named in one error", async () => {
+    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const client = new ScopedToolClient([exec.mcp]);
+
+    const result = await client.callTool("executor__dispatch", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("tool, args, intent");
+    expect(exec.callTool).not.toHaveBeenCalled();
+  });
+
+  test("presence is not non-empty: an empty-string required value passes to the server", async () => {
+    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const client = new ScopedToolClient([exec.mcp]);
+
+    const result = await client.callTool("executor__dispatch", { tool: "x", args: {}, intent: "" });
+
+    // Empty value is the server's to reject — the client only checks the key exists.
+    expect(result.isError).toBe(false);
+    expect(exec.callTool).toHaveBeenCalledWith("dispatch", { tool: "x", args: {}, intent: "" }, undefined);
+  });
+
+  test("a fully-valid call passes through untouched", async () => {
+    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const client = new ScopedToolClient([exec.mcp]);
+
+    const result = await client.callTool("executor__dispatch", { tool: "x", args: {}, intent: "do it" });
+
+    expect(result.isError).toBe(false);
+    expect(exec.callTool).toHaveBeenCalledWith("dispatch", { tool: "x", args: {}, intent: "do it" }, undefined);
+  });
+
+  test("the presence check also covers tolerant bare-name routing", async () => {
+    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const client = new ScopedToolClient([exec.mcp]);
+
+    const result = await client.callTool("dispatch", { tool: "x", args: {} });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("missing required field(s): intent");
+    expect(exec.callTool).not.toHaveBeenCalled();
+  });
+
+  test("a tool with no required array dispatches as before", async () => {
+    const fs = fakeMcp("fsmcp", ["read_file"]);
+    const client = new ScopedToolClient([fs.mcp]);
+
+    const result = await client.callTool("fsmcp__read_file", {});
+
+    expect(result.isError).toBe(false);
+    expect(fs.callTool).toHaveBeenCalledWith("read_file", {}, undefined);
   });
 });

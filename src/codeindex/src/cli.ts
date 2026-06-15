@@ -106,14 +106,16 @@ program
   .description('Run migrations, then chunk + embed + upsert the current commit.')
   .action(async () => {
     const config = loadConfig(readOverrides());
-    const { factory, repo, supportsSql } = wireWriter(config);
+    const { vectorStore, factory, repo, supportsSql, ensureVectorSchema } = wireWriter(config);
     const runner = new MigrationRunner(factory, repo, { executeSql: supportsSql });
     try {
       printContext(config);
       await runner.run();
+      await ensureVectorSchema();
       const embedder = VectorService.fromProvider(config.embedProvider, config.embedDim);
       const result = await publish({
         config,
+        vectorStore,
         factory,
         repo,
         embedder,

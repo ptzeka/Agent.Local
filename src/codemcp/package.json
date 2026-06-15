@@ -9,6 +9,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "jest",
     "start": "node dist/server.js",
     "start:file": "node dist/server.js --backend file",
     "start:pg": "node dist/server.js --backend pg",
@@ -26,8 +27,12 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.10.5",
     "@types/pg": "^8.11.10",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.3"
   }
 }

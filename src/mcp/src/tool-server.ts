@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ToolDescriptor } from "./tooldescriptor.js";
 
 // a server-hosted tool: the advertised ToolDescriptor surface plus a handler returning text.
@@ -69,22 +70,33 @@ export class McpToolServer<Deps> {
     });
   }
 
-  // connect the stdio transport and arm signal-driven shutdown. resolves once connected; the
-  // process then stays alive on the transport until a registered signal triggers shutdown.
-  async start(signals: readonly NodeJS.Signals[] = DEFAULT_SIGNALS): Promise<void> {
-    const transport = new StdioServerTransport();
+  // wire any transport: stdio in production, an in-memory pair in tests, http later. kept
+  // separate from signal handling so callers (and tests) can drive the server without
+  // touching process lifecycle.
+  async connect(transport: Transport): Promise<void> {
     await this.server.connect(transport);
+  }
+
+  // production entrypoint: serve over stdio and exit cleanly on SIGINT/SIGTERM.
+  async start(signals: readonly NodeJS.Signals[] = DEFAULT_SIGNALS): Promise<void> {
+    await this.connect(new StdioServerTransport());
     for (const signal of signals) {
-      const handler = (): void => { void this.shutdown(0); };
+      const handler = (): void => { void this.shutdownAndExit(0); };
       this.signalHandlers.set(signal, handler);
       process.on(signal, handler);
     }
   }
 
-  // idempotent graceful shutdown: detaches signal handlers and flips the guard synchronously
-  // (no await before either) so a second signal during async cleanup is a no-op, then closes
-  // the transport, releases injected resources, and exits.
-  async shutdown(code = 0): Promise<void> {
+  private async shutdownAndExit(code: number): Promise<void> {
+    await this.dispose();
+    process.exit(code);
+  }
+
+  // idempotent cleanup: flips the guard and detaches signal handlers synchronously (no await
+  // before either) so a second signal during async cleanup is a no-op, then closes the
+  // transport and releases injected resources. exposed for tests and graceful embedding;
+  // the signal path wraps this with process.exit.
+  async dispose(): Promise<void> {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     for (const [signal, handler] of this.signalHandlers) {
@@ -93,6 +105,5 @@ export class McpToolServer<Deps> {
     this.signalHandlers.clear();
     try { await this.server.close(); } catch { /* transport already gone */ }
     try { await this.options.onShutdown?.(); } catch { /* best-effort resource release */ }
-    process.exit(code);
   }
 }

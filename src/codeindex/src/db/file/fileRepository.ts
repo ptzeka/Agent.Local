@@ -1,12 +1,14 @@
-// File-backed implementation of PgWriterRepository for debugging. Stores
-// everything as human-readable JSON / JSONL under `baseDir`:
+// File-backed CommitRepository for the debug backend. Owns only the snapshot
+// bookkeeping (commit.json) and the migration journal (schema_versions.json);
+// chunk lines (chunks.jsonl) are written by @agent-local/vectorstore's
+// FileVectorStore, co-located in the same commits/<sha>/ directory:
 //
 //   <baseDir>/
 //     schema_versions.json     [{ scriptName, appliedAt, checksum }]
 //     commits/
 //       <commitSha>/
 //         commit.json          { commitSha, branch, repository, indexedAt, embedModel, ... }
-//         chunks.jsonl         one ChunkRow per line
+//         chunks.jsonl         (owned by FileVectorStore)
 //
 // All operations are direct file I/O — no batching, no transactions. The
 // connection arg is only used to recover the baseDir.
@@ -16,15 +18,13 @@ import {
   readFileSync,
   writeFileSync,
   existsSync,
-  rmSync,
   readdirSync,
-  appendFileSync,
 } from 'node:fs';
 import { resolve, join } from 'node:path';
 
 import type { DbConnection } from '../types.js';
-import type { AppliedMigration, PgWriterRepository } from '../pgRepository.js';
-import type { ChunkRow, CommitRow } from '../../types.js';
+import type { AppliedMigration, CommitRepository } from '../pgRepository.js';
+import type { CommitRow } from '../../types.js';
 import { FileConnection } from './fileConnectionFactory.js';
 
 interface SchemaVersionEntry {
@@ -44,7 +44,7 @@ interface CommitJson {
   chunkCount: number;
 }
 
-export class FileWriterRepositoryImpl implements PgWriterRepository {
+export class FileCommitRepositoryImpl implements CommitRepository {
   async ensureSchemaVersionsTable(conn: DbConnection): Promise<void> {
     const base = baseOf(conn);
     const path = schemaVersionsPath(base);
@@ -91,36 +91,11 @@ export class FileWriterRepositoryImpl implements PgWriterRepository {
     };
     writeFileSync(commitJsonPath(base, commit.commitSha), JSON.stringify(data, null, 2) + '\n', 'utf-8');
   }
-
-  async deleteChunksForCommit(conn: DbConnection, commitSha: string): Promise<void> {
-    const base = baseOf(conn);
-    const path = chunksJsonlPath(base, commitSha);
-    if (existsSync(path)) rmSync(path);
-  }
-
-  async insertChunks(conn: DbConnection, commitSha: string, chunks: ChunkRow[]): Promise<void> {
-    const base = baseOf(conn);
-    const dir = commitDir(base, commitSha);
-    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    const path = chunksJsonlPath(base, commitSha);
-    // Write in chunks so we don't materialize a giant single string.
-    const lines = chunks.map(c => JSON.stringify(c)).join('\n');
-    if (lines.length > 0) {
-      // Append a trailing newline so concat to existing file stays line-aligned.
-      appendFileSync(path, lines + '\n', 'utf-8');
-    }
-  }
-
-  async getEmbeddingDimension(_conn: DbConnection): Promise<number | null> {
-    // No fixed schema in the file backend — accept any dim. publish() will
-    // skip the dim-equality check when this returns null.
-    return null;
-  }
 }
 
 function baseOf(conn: DbConnection): string {
   if (!(conn instanceof FileConnection)) {
-    throw new Error('FileWriterRepository requires a FileConnection');
+    throw new Error('FileCommitRepository requires a FileConnection');
   }
   conn.ensureAlive();
   return conn.baseDir;
@@ -141,10 +116,6 @@ function commitDir(base: string, sha: string): string {
 
 function commitJsonPath(base: string, sha: string): string {
   return join(commitDir(base, sha), 'commit.json');
-}
-
-function chunksJsonlPath(base: string, sha: string): string {
-  return join(commitDir(base, sha), 'chunks.jsonl');
 }
 
 function sanitizeSha(sha: string): string {

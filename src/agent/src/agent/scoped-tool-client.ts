@@ -34,6 +34,20 @@ export class ScopedToolClient implements ToolInvoker {
 
     const { client, toolTail } = resolved;
 
+    // required-presence ONLY: confirm each declared `required` key exists before dispatch.
+    // value-level checks (types, enums, empty-string) stay server-side — this just turns a
+    // missing field into one uniform corrective error instead of a tool-specific string
+    // (e.g. dispatch's "[dispatch-error] intent is required") or a silent malformed call.
+    const missing = this.missingRequired(client, toolTail, args);
+    if (missing.length > 0) {
+      return {
+        isError: true,
+        content:
+          `[input-error] tool "${name}" is missing required field(s): ${missing.join(", ")}. ` +
+          `Re-emit the call including ${missing.length === 1 ? "it" : "them"}.`,
+      };
+    }
+
     events?.publish(OrchestratorEventTypes.TOOL_CALL, { id: "", name, arguments: args });
     // timeout policy lives in the server; the client only routes and forwards the turn's signal
     const result = await client.callTool(toolTail, args, signal);
@@ -99,5 +113,16 @@ export class ScopedToolClient implements ToolInvoker {
         `Unknown tool "${name}": not found on any mounted server (${mounted}). ` +
         `Use namespaced as <server>__<tool>.`,
     };
+  }
+
+  // presence-only gate: read the resolved tool's advertised `inputSchema.required` and return the
+  // declared keys absent from `args`. presence ≠ non-empty — `intent: ""` passes here by design, an
+  // empty value is the server's to reject. a tool with no `required` array (or none missing) yields [].
+  private missingRequired(client: Mcp, toolTail: string, args: Record<string, unknown>): string[] {
+    const fullName = `${client.name}__${toolTail}`;
+    const descriptor = client.listTools().find((t) => t.name === fullName);
+    const required = descriptor?.inputSchema?.required;
+    if (!Array.isArray(required)) return [];
+    return required.filter((key): key is string => typeof key === "string" && !(key in args));
   }
 }

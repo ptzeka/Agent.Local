@@ -55,6 +55,16 @@ important does.
   kinds consistent and lets registries hold one type.
 - Before adding a second concrete class, extract the interface first, then make
   both implement it. Don't let callers branch on which concrete class they got.
+- **Logic lives in class methods, not standalone functions.** A free function
+  cannot sit behind an interface, cannot be injected, cannot be substituted in a
+  test — it is invisible to every other principle here. If behavior is part of a
+  type's job, it is a method (private if internal) on that type. Smell: a
+  module-scope `function doThing(client, ...)` that takes the class's own
+  collaborators as parameters — that logic belongs *in* the class.
+- The **only** standalone functions are pure **mappers** (shape→shape, e.g.
+  `zodToJsonSchema`, a DTO projection) and **extensions/helpers** with no instance
+  state and nothing to interface. If it touches a collaborator or a decision the
+  type owns, it is a method.
 
 ## D — Dependency Injection
 
@@ -78,4 +88,6 @@ When writing or reviewing a diff, ask:
 1. Does this class do exactly one job? (S)
 2. Did we extend via middleware/composition instead of editing stable logic? (O)
 3. Is every important type coded against its interface, with swappable impls? (L/I)
+   And does behavior live in class methods — free functions only for pure
+   mappers/extensions? (I)
 4. Are dependencies injected from Runtime/registries, not constructed inline? (D)
