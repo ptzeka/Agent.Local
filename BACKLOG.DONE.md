@@ -86,6 +86,26 @@ stay in [BACKLOG.md](BACKLOG.md).
       directly — no re-export shims; package owns its `src/tests` suite. No
       reference server shipped — deferred to memomcp.)
   _created 2026-06-14 · updated 2026-06-14 · by Periklis Tzeka_
+- [x] **`src/memomcp`** (new, `~1.5d`) — standalone `remember`/`recall` server
+      over `vectorstore` + `vectorizer`, partitioned by collection; the groom
+      reframed M3-7 from "codemcp serves both" to a SEPARATE package (codemcp
+      does NOT serve memory). — done 2026-06-15 (`@agent-local/memomcp`: wires
+      `FileVectorStore { partitionDir: 'memories', recordsFile: 'records.jsonl' }`
+      + `vectorizer`; `MemoryRepository.remember` embeds via `embedBatch`
+      (voyage `input_type=document`) and upserts, `recall` loads all `core` by
+      exact `list()` + top-k `archival` by `searchByEmbedding` (`embedQuery` →
+      `input_type=query`). Flat records, tenant/category in `metadata` as recall
+      filters, associations sidecar deferred. **Memory id vs vectorId settled
+      2026-06-15**: two entities, `metadata.memoryId` is the memory's own id and
+      `vectorId` (= `VectorRecord.id`) is an explicit reference, stable across
+      re-embed on overwrite. Per-consumer `assertDim` guard. Tools `remember`/`recall`
+      + `probe`/`tools` CLI; registered in `.mcp.json` + workspace; tsc clean,
+      7/7 jest green. Manual end-to-end recipe in `src/memomcp/integrationtest.md`
+      (ranking, category filter incl. core, overwrite-upsert, voyage paraphrase).
+      Follow-ups still open in BACKLOG.md: M3-9 streaming, M3-10 two-tier recall,
+      M3-12 persistent/Voyage store. **Not yet committed** — `src/memomcp/` still
+      untracked.)
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
 
 ---
 

@@ -603,8 +603,8 @@ together itself.
         +--- codeindex / codemcp / memomcp     ← each depends on BOTH
 ```
 
-> **Shipped (1 vectorizer, 2 vectorstore, 3 codeindex, 6 mcp) — see
-> [BACKLOG.DONE.md](BACKLOG.DONE.md).** Remaining: 4 codemcp, 5 memomcp.
+> **Shipped (1 vectorizer, 2 vectorstore, 3 codeindex, 5 memomcp, 6 mcp) — see
+> [BACKLOG.DONE.md](BACKLOG.DONE.md).** Remaining: 4 codemcp.
 
 - [ ] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
       queries via `vectorizer`. `search_code`/`find_symbol` surface + results
@@ -617,16 +617,17 @@ together itself.
       interface. Proper two-tier/projection retrieval (a generic `list()` +
       summary-then-drill-down that both codemcp and memomcp want) is deferred to
       M3-10 so the swap stays behavior-identical and verifiable against today's output.
-- [ ] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
+- [x] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
       + `vectorizer`, partitioned by collection. tenant/category live in
       `metadata` (filtering), NOT in the path; associations are a separate
       sidecar via `getMemoryAssociations`, never a record field (see "Memory
       record shape" below). Must use voyage/openai (local bag-of-words can't do
-      paraphrase recall).
-**Sequencing:** 1, 2 & 6 (vectorizer, vectorstore, mcp) and 3 (codeindex)
-shipped — see [BACKLOG.DONE.md](BACKLOG.DONE.md). Remaining: 4 (codemcp) reads
-via the proven engine, then 5 (memomcp) builds on the engine **and** the shared
-MCP base.
+      paraphrase recall). — done 2026-06-15, see [BACKLOG.DONE.md](BACKLOG.DONE.md)
+      (standalone server, id/vectorId split settled, `integrationtest.md` recipe;
+      still untracked, not yet committed).
+**Sequencing:** 1, 2 & 6 (vectorizer, vectorstore, mcp), 3 (codeindex) and
+5 (memomcp) shipped — see [BACKLOG.DONE.md](BACKLOG.DONE.md). Remaining: 4
+(codemcp) reads via the proven engine.
 
 **Sharp edges to settle in grooming:**
 
@@ -733,63 +734,41 @@ agent can start reasoning before the long tail arrives. Depends on `src/memomcp`
 buffered result set, and reuses M3-8's streaming/cancellation surface instead of
 duplicating it.
 
-### M3-10 · Store-level AI retrieval — projection + two-tier (progressive disclosure) — `~1.5d` · P2
+### M3-10 · Store-level AI retrieval — projection, two-tier & related search (progressive disclosure) — umbrella · P2
 Retrieval today returns full records in one shot: `search_code` returns `k` whole
 chunks, `find_symbol`/`get_file_context` return ALL matching chunk **bodies**, and
-memomcp `recall` pulls every `core` record in full. For AI analysis that's
-token-heavy and forces the agent to read bodies it may never use — you cannot scan a
-whole collection to decide *what* to look at without first dragging everything across.
-Both codemcp and memomcp want the same two-tier flow: a cheap **locate/summary** phase
-that returns just enough to choose (no `content`, no `embedding`), then a
-**drill-down** by id for the few that matter. Deferred from the engine swap (M3-7 item
-4), which kept `IVectorStore` similarity-only.
+memomcp `recall` pulls every `core` record in full — and every read also drags the
+**embedding** across the wire only to throw it away (codemcp `toChunkRow`, memomcp
+`toRecalled` at [memoryRepository.ts](src/memomcp/src/memory/memoryRepository.ts)).
+For AI analysis that's token-heavy and forces the agent to read bodies it may never
+use — you cannot scan a collection to decide *what* to look at without first dragging
+everything across. Deferred from the engine swap (M3-7 item 4), which kept
+`IVectorStore` similarity-only.
 
-Status since groom: `list(namespace, filter?)` was already promoted onto
-`IVectorStore` early (commit 76596e5) — so the promotion is done, but in its **blunt
-form**: no `limit`, no projection, returns full records. memomcp is now the live proof
-of the waste: `recall` calls `store.list(collection, { kind: 'core' })` then
-`toRecalled` **discards the embedding** ([memoryRepository.ts](src/memomcp/src/memory/memoryRepository.ts)) — every 768-float vector crosses the wire and is thrown away. The "second consumer"
-gate is satisfied, so the refinement is justified now.
+**Guiding principle (settled 2026-06-15 review): keep the store dumb.** It does exactly
+two things — cosine rank within a namespace (`searchByEmbedding`) + metadata equality
+(`list`/filter). Every notion of "related" (siblings, neighbors, more-like-this) is
+**composed in the consumer** (codemcp `CodeRetrieval` / memomcp `MemoryRepository`) from
+those two primitives. No relatedness heuristics in the store; **no association sidecar**
+until real multi-hop traversal is needed — the metadata codeindex already writes
+(`path`/`symbol`/`parentSymbol`/`imports`) computes most "related" queries on the fly.
 
-Design decision (agreed): there are **two distinct reductions**, do them in order.
+Status since groom: `list(namespace, filter?)` was promoted onto `IVectorStore` early
+(commit 76596e5) but in **blunt form** — no `limit`, no projection, full records. memomcp
+is the live proof of the waste. The "second consumer" gate is satisfied, so the
+refinement is justified now. **Split into three sequenced phases, each its own story:**
 
-**Phase 1 — embeddings become write-only on reads (low-risk, universal, do first).**
-No reader ever consumes `.embedding` off a result: codemcp `toChunkRow` and memomcp
-`toRecalled` both drop it; `searchByEmbedding` uses it *internally* for scoring only.
-So returning it is dead weight in 100% of call sites — and it is the single biggest
-field.
-- [ ] Make `embedding` an **input-only** field: present on the `upsert` record type,
-      absent from `SearchHit.record` / `list()` results (`{ id, namespace, content,
-      metadata }`). `get(namespace, id)` keeps the full record (re-embed / migrate /
-      export are the only callers that need the vector back).
-- [ ] pg: drop `embedding` from the read `SELECT`s (it never leaves the DB); file:
-      strip before return.
-- [ ] Add the optional defensive `limit?` to `list(namespace, filter?, limit?)` while
-      here (ALL by default).
-- [ ] Tests: read paths ship no `embedding`; `get` still returns it; recall result is
-      byte-identical minus the vector; `list` respects the cap.
+- **M3-13 — Phase 1: embeddings write-only on reads** (low-risk, universal; do first).
+  Strip the vector from read results; `get` keeps it. Foundation for everything below.
+- **M3-14 — Phase 2: content-free summary tier** (the two-tier locate→expand). A distinct
+  `VectorSummary` type + `searchSummaries`/`listSummaries`; `get` is the expand.
+- **M3-15 — Phase 3: related search** (more-like-this + structural + hybrid), composed in
+  codemcp on the cleaned contract — the payoff Phases 1–2 unlock.
 
-**Phase 2 — content-free summary tier (the two-tier locate→expand).**
-Distinct honest type, not a flag on the existing methods: both consumers already
-hand-roll the narrowed shape (`RecalledMemory`, `ChunkRow`-without-body), and a record
-with `content: ''` would make the type lie.
-- [ ] `interface VectorSummary { id; namespace; metadata }` (+ `score?` on a hit) and
-      `searchSummaries(...)` / `listSummaries(...)` on `IVectorStore`; `get(namespace,
-      id)` is the expand. pg selects only summary columns; file strips `content` too.
-- [ ] **codemcp two-tier tools.** `search_code`/`find_symbol` can return a summary
-      (`path:lines · symbol · kind · score · signature`); follow-up expand-by-id /
-      `get_file_context` outline → chunk bodies. Additive — the one-shot full path stays.
-- [ ] **memomcp recall two-tier.** Core + top-k archival as summaries first, expand
-      chosen ids — same `VectorSummary` primitive, not a second mechanism.
-- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once" goal;
-      the summary tier is exactly what gets streamed — one mechanism, not two.
-- [ ] Tests: a summary search ships no `content` (pg never selects it / file drops it);
-      expand-by-id returns the same body the one-shot path did.
-
-**Done when:** reads never carry an embedding; codemcp and memomcp retrieve in two
-tiers — a content-free summary to locate, then by-id drill-down to expand — and the
-store exposes `VectorSummary` + `list(filter?, limit?)` as generic primitives both
-consume, with no body shipped until the caller asks to expand.
+**Done when:** all three phase stories are closed — reads never carry an embedding, both
+servers retrieve in two tiers (summary locate → by-id expand), and codemcp answers
+"related to this" by composing vector neighbors + structural metadata, with no body
+shipped until the caller asks to expand.
 
 ### M3-11 · Indexer → codemcp index bundle (publish + handoff) — `~0.5d` · P2
 The vector store and the metadata sidecar are written by the indexer but disagree on
@@ -844,6 +823,92 @@ to evaluate (the `vectorstore` engine already exposes both file and pg backends 
 **Done when:** memomcp serves remember/recall from a persistent store (pg and/or Voyage-embedded)
 with real paraphrase recall, keys are injected via env and never committed, and the
 embed-provider/dim contract is documented so stored vectors can't silently mismatch.
+
+---
+
+### M3-13 · Retrieval Phase 1 — embeddings write-only on reads — `~0.5d` · P2
+Phase 1 of **M3-10**. No reader ever consumes `.embedding` off a result: codemcp
+`toChunkRow` and memomcp `toRecalled` both drop it; `searchByEmbedding` uses it
+*internally* for scoring only. So returning it is dead weight in 100% of call sites —
+and it is the single biggest field (a per-row 1024-float vector). Low-risk, universal,
+and a prerequisite for the phases below.
+
+- [ ] Make `embedding` an **input-only** field: present on the `upsert` record type,
+      absent from `SearchHit.record` / `list()` results (`{ id, namespace, content,
+      metadata }`). `get(namespace, id)` keeps the full record (re-embed / migrate /
+      export — and Phase 3 more-like-this — are the callers that need the vector back).
+- [ ] pg: drop `embedding` from the read `SELECT`s (it never leaves the DB); file:
+      strip before return.
+- [ ] Add the optional defensive `limit?` to `list(namespace, filter?, limit?)` while
+      here (ALL by default); wire it into codemcp `find_symbol`/`get_file_context`, which
+      `list()` uncapped today ([codeRetrieval.ts](src/codemcp/src/retrieval/codeRetrieval.ts)).
+- [ ] Tests: read paths ship no `embedding`; `get` still returns it; recall/search result
+      is byte-identical minus the vector; `list` respects the cap.
+
+**Done when:** `searchByEmbedding`/`list` never carry an embedding, `get` still returns it,
+and `list` accepts an optional `limit` — a universal payload cut for codemcp + memomcp.
+
+---
+
+### M3-14 · Retrieval Phase 2 — content-free summary tier (two-tier locate→expand) — `~1d` · P2
+Phase 2 of **M3-10**; depends on M3-13. A distinct honest type, not a flag on the existing
+methods: both consumers already hand-roll the narrowed shape (`RecalledMemory`,
+`ChunkRow`-without-body), and a record with `content: ''` would make the type lie.
+
+- [ ] `interface VectorSummary { id; namespace; metadata }` (+ `score?` on a hit) and
+      `searchSummaries(...)` / `listSummaries(...)` on `IVectorStore`; `get(namespace,
+      id)` is the expand. pg selects only summary columns; file strips `content` too.
+- [ ] **codemcp two-tier tools.** `search_code`/`find_symbol` can return a summary
+      (`path:lines · symbol · kind · score · signature`); follow-up expand-by-id /
+      `get_file_context` outline → chunk bodies. Additive — the one-shot full path stays.
+- [ ] **memomcp recall two-tier.** Core + top-k archival as summaries first, expand
+      chosen ids — same `VectorSummary` primitive, not a second mechanism.
+- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once" goal;
+      the summary tier is exactly what gets streamed — one mechanism, not two.
+- [ ] Tests: a summary search ships no `content` (pg never selects it / file drops it);
+      expand-by-id returns the same body the one-shot path did.
+
+**Done when:** codemcp and memomcp retrieve in two tiers — a content-free summary to
+locate, then by-id drill-down to expand — via `VectorSummary` + `searchSummaries`/
+`listSummaries` as generic primitives both consume, with no body shipped until expand.
+
+---
+
+### M3-15 · Retrieval Phase 3 — related search (more-like-this + structural + hybrid) — `~1d` · P2
+Phase 3 of **M3-10**; depends on M3-13 (`get` keeps the embedding) and M3-14 (summaries).
+codemcp can rank by a query string today but cannot answer "show me what's related to
+THIS chunk." Compose relatedness in `CodeRetrieval` from the two store primitives — no
+new store method beyond Phases 1–2, no association sidecar.
+
+- [ ] **Semantic neighbors (more-like-this).** `relatedTo(sha, recordId, k)`: `get(sha, id)`
+      for the anchor's own embedding, then `searchByEmbedding(sha, anchor.embedding, k+1)`
+      and drop self. (This is why M3-13 keeps the vector on `get`; codemcp must start
+      calling `get`, which it does not today.)
+- [ ] **Structural relatedness — metadata only, no embedding:** same file (`list {path}`),
+      class siblings (`list {parentSymbol}`), symbol def (`list {symbol}`), and dependency
+      neighbors by resolving the stored `imports[]` → `path` (lightweight graph edge, no
+      sidecar).
+- [ ] **Hybrid expand (ship this).** On a `search_code` hit, return a deduped union of file
+      context + class siblings + top vector neighbors as summaries (M3-14) — "I found this
+      method, show me everything around it" in one call.
+- [ ] **Diversity / MMR re-rank in codemcp.** Raw top-k cosine returns near-duplicate slices
+      of one symbol; cap per `path`/`symbol` or MMR re-rank so related results span files.
+      Quality heuristic lives in `CodeRetrieval`, not the store.
+- [ ] **Boost exact-symbol matches.** A query string equal to a stored `symbol` outranks
+      pure vector neighbors — merge `find_symbol` into `search_code` ranking, not a separate
+      tool path.
+- [ ] Tests: `relatedTo` excludes the anchor; structural queries hit metadata only (no
+      embed); MMR caps per-path duplicates; a symbol-exact hit ranks first.
+
+**Done when:** codemcp answers "related to this" by composing vector neighbors + structural
+metadata + import edges, deduped/diversified in the consumer, with the store still doing
+only cosine + equality and no association sidecar.
+
+> **Backend note (decide at M3-12 scale, not here):** pg `searchByEmbedding` does
+> `ORDER BY embedding <=> q` with **no ANN index** ([pg-vector-store.ts](src/vectorstore/src/pg-vector-store.ts))
+> → sequential scan. An HNSW index needs a **fixed column dim**, which conflicts with the
+> current "dim unpinned, consumer guards" decision — pin-and-index vs. accept full scans is
+> a real tradeoff to settle when a repo gets large.
 
 ---
 
