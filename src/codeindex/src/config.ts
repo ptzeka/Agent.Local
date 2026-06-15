@@ -1,8 +1,8 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { EmbedProvider } from '@agent-local/vectorizer';
 
-export type EmbedProvider = 'local' | 'voyage' | 'openai';
 export type Backend = 'pg' | 'file';
 
 // strict precedence with no env fallbacks or autodetection: CLI flags, then config file, then --root/cwd

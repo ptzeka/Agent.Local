@@ -566,11 +566,18 @@ together itself.
         +--- codeindex / codemcp / memomcp     ← each depends on BOTH
 ```
 
-- [ ] **`src/vectorizer`** (leaf, `~1d`) — `EmbedAdapter { modelId, dim,
+- [x] **`src/vectorizer`** (leaf, `~1d`) — `EmbedAdapter { modelId, dim,
       embedBatch, embedQuery }` + `createEmbedAdapter(provider, dim)` over
       local/voyage/openai. Deletes the hand-mirrored `LocalQueryEmbedAdapter`
       in `codemcp/src/embed.ts` — one impl, no more "change one, change the
-      other." Pure compute, no DB.
+      other." Pure compute, no DB. — done 2026-06-14 (`@agent-local/vectorizer`:
+      merged write-side `embedBatch` + read-side `embedQuery` into one adapter
+      set; Voyage keeps document/query `input_type`; the duplicate `codemcp/embed.ts`
+      is gone. Added the service tier `IVectorService` / `VectorServiceBase` /
+      `VectorService.fromProvider` so versions (cached/remote) can swap; codeindex
+      and codemcp now depend on `IVectorService`, not the raw adapter. `EmbedProvider`
+      union lifted here, no longer duplicated in either config. 7 tests; both
+      consumers build green.)
 - [ ] **`src/vectorstore`** (leaf, `~1.5d`) — one copy of
       `DbConnection`/`DbConnectionFactory` (kills the byte-identical dupe across
       `codeindex/db/types.ts` and `codemcp/db/types.ts`), pg + file backends,
@@ -590,7 +597,7 @@ together itself.
       `metadata` (filtering), NOT in the path; id↔association/linking is a
       separate concern kept out of the store. Must use voyage/openai (local
       bag-of-words can't do paraphrase recall).
-- [ ] **`src/mcp`** (new base/reference, `~1d`) — extract the MCP scaffolding
+- [x] **`src/mcp`** (new base/reference, `~1d`) — extract the MCP scaffolding
       that every server re-implements into one shared package so `codemcp` /
       `memomcp` (and future servers) derive from it instead of drifting. Move
       the trio out of `src/agent/src/agent/mcp/`: the **base contract**
@@ -598,7 +605,11 @@ together itself.
       server (`mcp-client.ts` — `McpClient`, spawned stdio JSON-RPC), and the
       **virtual** server (`local-mcp.ts` — `LocalMcp`, in-process handlers).
       Ships a minimal reference server as the copy-from example; the agent
-      imports the contract from here rather than owning it.
+      imports the contract from here rather than owning it. — done 2026-06-14
+      (`@agent-local/mcp`: trio + `ToolDescriptor` split into `tooldescriptor.ts`;
+      `TokenUsage` lifted to `@agent-local/common`; every consumer repointed
+      directly — no re-export shims; package owns its `src/tests` suite. No
+      reference server shipped — deferred to memomcp.)
 
 **Sequencing:** 1, 2 & 6 in parallel (all leaves) → 3 & 4 prove no regression on
 real data → 5 builds on a proven engine **and** the shared MCP base.
@@ -626,7 +637,9 @@ real data → 5 builds on a proven engine **and** the shared MCP base.
   vectorstore, mcp, codeindex, codemcp, memomcp — depends on, instead of each
   reaching back into `src/agent`. Pairs with the in-flight eventing migration
   (onEvent callbacks → pub/sub bus), which already aims at a clean eventing
-  surface in `src/common`.
+  surface in `src/common`. — done 2026-06-14: promoted to `@agent-local/common`
+  (lifetime/eventing/container/ilogger/filelogger + `TokenUsage`); `@agent-local/mcp`
+  and the agent depend on it, no longer reaching back into `src/agent`.
 
 ---
 

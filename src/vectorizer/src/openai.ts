@@ -1,4 +1,4 @@
-import type { EmbedAdapter } from './index.js';
+import type { EmbedAdapter } from './embed-adapter.js';
 
 const DEFAULT_MODEL = 'text-embedding-3-small';
 
@@ -41,5 +41,12 @@ export class OpenAIEmbedAdapter implements EmbedAdapter {
     }
     const json = (await res.json()) as OpenAIResponse;
     return json.data.map(d => d.embedding);
+  }
+
+  // OpenAI draws no document/query distinction, so a one-element batch is the query embedding
+  async embedQuery(text: string): Promise<number[]> {
+    const [vec] = await this.embedBatch([text]);
+    if (!vec) throw new Error('OpenAI returned no embedding');
+    return vec;
   }
 }

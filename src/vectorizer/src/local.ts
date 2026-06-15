@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
-import type { EmbedAdapter } from './index.js';
+import type { EmbedAdapter } from './embed-adapter.js';
 
 // local, dependency-free embedding: deterministic hashed bag-of-tokens, so the project runs offline.
 // Placeholder-grade — reproducible and dimensionally correct but weaker than a real model; swap to
-// voyage/openai when accuracy matters. modelId changes with provider so codemcp can refuse cross-model queries.
+// voyage/openai when accuracy matters. modelId changes with provider so a reader can refuse cross-model queries.
 export class LocalEmbedAdapter implements EmbedAdapter {
   readonly modelId: string;
   readonly dim: number;
@@ -15,6 +15,11 @@ export class LocalEmbedAdapter implements EmbedAdapter {
 
   async embedBatch(texts: string[]): Promise<number[][]> {
     return texts.map(t => embedOne(t, this.dim));
+  }
+
+  // identical hashing to embedBatch: a query and a document of the same text must land on the same vector
+  async embedQuery(text: string): Promise<number[]> {
+    return embedOne(text, this.dim);
   }
 }
 

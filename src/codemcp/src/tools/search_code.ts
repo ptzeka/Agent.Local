@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { EmbedAdapter } from '../embed.js';
+import type { IVectorService } from '@agent-local/vectorizer';
 import { formatChunks } from './format.js';
 import { resolveCommit, formatResolutionHeader } from './resolution.js';
 import { effectiveRepo, pickReader, type ToolDeps } from './registry.js';
@@ -17,7 +17,7 @@ export const searchCodeSchema = z.object({
 export type SearchCodeInput = z.infer<typeof searchCodeSchema>;
 
 export interface SearchCodeDeps {
-  embedder: EmbedAdapter;
+  embedder: IVectorService;
   defaultBranch: string;
   currentRepository: string | null;
 }

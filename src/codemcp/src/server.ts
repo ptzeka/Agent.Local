@@ -12,12 +12,11 @@ import {
   type Backend,
   type CliOverrides,
   type CodeMcpConfig,
-  type EmbedProvider,
   type RepositoryEntry,
 } from './config.js';
 import { wireReader, wireMultiRepoReaders } from './wiring.js';
 import type { PgReaderRepository } from './db/pgRepository.js';
-import { createQueryEmbedAdapter } from './embed.js';
+import { VectorService, type EmbedProvider } from '@agent-local/vectorizer';
 import type { DbConnectionFactory } from './db/types.js';
 import { TOOLS, findTool, type ToolDeps } from './tools/registry.js';
 import { detectCurrentRepository } from './git.js';
@@ -29,7 +28,7 @@ async function buildDeps(config: CodeMcpConfig): Promise<{
   currentRepository: string | null;
 }> {
   const { factory, repo } = wireReader(config);
-  const embedder = createQueryEmbedAdapter(config.embedProvider, config.embedDim);
+  const embedder = VectorService.fromProvider(config.embedProvider, config.embedDim);
 
   // Build per-repo readers for the file backend (multi-repo mode).
   const repoReaders = config.backend === 'file' && config.repositories.length > 0

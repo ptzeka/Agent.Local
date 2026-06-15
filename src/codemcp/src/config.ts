@@ -2,10 +2,11 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { EmbedProvider } from '@agent-local/vectorizer';
+
 import { listIndexedRepositoryIds } from './db/file/fileRepository.js';
 
 export type Backend = 'pg' | 'file';
-export type EmbedProvider = 'local' | 'voyage' | 'openai';
 
 // registered at startup via --repository name or name:localPath; name is the owner/repo id used in commit.json
 export interface RepositoryEntry {

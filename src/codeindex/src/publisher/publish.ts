@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import type { CodeIndexConfig } from '../config.js';
 import type { DbConnectionFactory } from '../db/types.js';
 import type { PgWriterRepository } from '../db/pgRepository.js';
-import type { EmbedAdapter } from '../embed/index.js';
+import type { IVectorService } from '@agent-local/vectorizer';
 import type { ChunkRow, CommitRow, RawChunk } from '../types.js';
 import { walkRepository } from '../indexer/walker.js';
 import { chunkFile } from '../indexer/chunkers/index.js';
@@ -25,7 +25,7 @@ export interface PublishDeps {
   config: CodeIndexConfig;
   factory: DbConnectionFactory;
   repo: PgWriterRepository;
-  embedder: EmbedAdapter;
+  embedder: IVectorService;
   log?: (msg: string) => void;
 }
 

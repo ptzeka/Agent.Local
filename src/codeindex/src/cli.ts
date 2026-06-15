@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import { Command, Option } from 'commander';
-import { loadConfig, type Backend, type CliOverrides, type EmbedProvider } from './config.js';
+import { loadConfig, type Backend, type CliOverrides } from './config.js';
 import { MigrationRunner } from './publisher/migrate.js';
 import { publish } from './publisher/publish.js';
-import { createEmbedAdapter } from './embed/index.js';
+import { VectorService, type EmbedProvider } from '@agent-local/vectorizer';
 import { wireWriter } from './wiring.js';
 
 const program = new Command();
@@ -111,7 +111,7 @@ program
     try {
       printContext(config);
       await runner.run();
-      const embedder = createEmbedAdapter(config.embedProvider, config.embedDim);
+      const embedder = VectorService.fromProvider(config.embedProvider, config.embedDim);
       const result = await publish({
         config,
         factory,

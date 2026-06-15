@@ -30,6 +30,7 @@
     "publish:pg": "node dist/cli.js --backend pg publish"
   },
   "dependencies": {
+    "@agent-local/vectorizer": "*",
     "commander": "^12.1.0",
     "ignore": "^5.3.2",
     "pg": "^8.13.1"

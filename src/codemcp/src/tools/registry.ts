@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { DbConnectionFactory } from '../db/types.js';
 import type { PgReaderRepository } from '../db/pgRepository.js';
-import type { EmbedAdapter } from '../embed.js';
+import type { IVectorService } from '@agent-local/vectorizer';
 import { searchCode, searchCodeSchema } from './search_code.js';
 import { findSymbol, findSymbolSchema } from './find_symbol.js';
 import { getFileContext, getFileContextSchema } from './get_file_context.js';
@@ -10,7 +10,7 @@ import { listCommits, listCommitsSchema } from './list_commits.js';
 export interface ToolDeps {
   factory: DbConnectionFactory;
   repo: PgReaderRepository;
-  embedder: EmbedAdapter;
+  embedder: IVectorService;
   defaultBranch: string;
   // default repo filter when a call omits `repository`; null means unknown, so resolveCommit
   // refuses to search "any repository" rather than guessing a name
