@@ -1,0 +1,54 @@
+import type { Container } from "../../../common/container.js";
+import type { Eventing } from "../../../common/eventing.js";
+import type { ILogger } from "../../../common/ilogger.js";
+import type { Session } from "../../session/session.js";
+import type { RunResult } from "../orchestrator.js";
+
+// shared mutable state for one turn, threaded through every onion link so units read/write
+// the same turn instead of closure-captured locals; registry resolves runtime services on demand
+export interface RunnerContext {
+  readonly session: Session;
+  readonly events: Eventing;
+  readonly signal: AbortSignal;
+  readonly logger: ILogger;
+  readonly registry: Container;
+}
+
+// one onion link wrapping a turn: call next() to descend to the core run, or return early to short-circuit
+// execution-scoped twin of the build-scoped IMiddleware, so the (ctx, next) pattern is uniform across the codebase
+export interface IRunnerMiddleware {
+  invoke(ctx: RunnerContext, next: () => Promise<RunResult>): Promise<RunResult>;
+}
+
+// extend this, don't instantiate: the default invoke is a transparent pass-through, so a unit
+// that only hooks one side (pre or post) overrides without re-stating the forward
+export abstract class RunnerMiddlewareBase implements IRunnerMiddleware {
+  invoke(_ctx: RunnerContext, next: () => Promise<RunResult>): Promise<RunResult> {
+    return next();
+  }
+}
+
+// first onion link: a transparent pass-through proving the seam runs around a turn
+// real behavior lands in later units; the explicit override marks the pre/post wrap points
+export class RunnerMiddleware extends RunnerMiddlewareBase {
+  override async invoke(
+    _ctx: RunnerContext,
+    next: () => Promise<RunResult>
+  ): Promise<RunResult> {
+    return next();
+  }
+}
+
+// folds the group into an onion around the core run; registration order is outer-to-inner,
+// so middlewares[0] runs first and wraps everything below it (mirrors AgentRuntime.runPipeline)
+// empty group collapses to the bare core, so the seam is behaviour-neutral until a unit registers
+export function composeRunnerPipeline(
+  middlewares: readonly IRunnerMiddleware[],
+  ctx: RunnerContext,
+  core: () => Promise<RunResult>
+): () => Promise<RunResult> {
+  return middlewares.reduceRight<() => Promise<RunResult>>(
+    (next, middleware) => () => middleware.invoke(ctx, next),
+    core
+  );
+}

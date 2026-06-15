@@ -10,6 +10,7 @@ import { InheritedUserMiddleware } from "./middleware/inherited-user.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { LoggerMiddleware } from "./middleware/logger.js";
 import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
+import { RunnerPipelineMiddleware } from "./middleware/runner-pipeline.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
 import { StoreMiddleware } from "./middleware/store.js";
 import { ConfigurationMiddleware } from "./middleware/configuration.js"
@@ -49,6 +50,7 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
     .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
     .add(new OrchestratorMiddleware({ includeSubSessions: false, role: deps.orchestratorRole }))
+    .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole, includeSubSessions: false }))
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }));

@@ -1,4 +1,6 @@
 # Production Backlog — Agent.Local
+# AI MANAGED NO MANUAL CHANGE
+# AI PLS FOLLOW EXISTING FORMAT
 
 *Companion to [PRODUCTION_READINESS.md](PRODUCTION_READINESS.md). Granular,
 sequenced for one developer. Estimates are focused solo time (d = day).
@@ -467,6 +469,87 @@ filter — no code path can hydrate another user's session and forget to check.
       service mode) deleting expired sessions + their audit rows; never
       delete sessions with active leases.
 
+### M3-6 · codeindex → generic vector engine — `~2d` · P2
+Code knowledge and agent memory are the SAME primitive: an embedded record
+searched by similarity. They differ only in how the record is produced
+(walk-and-chunk a repo vs. save one bit) and where it lives
+(`data/commits/<sha>/` vs `data/memories/<id>/`). This story lifts the
+already-generic bottom of `codeindex` into a reusable engine; M3-7 adds memory
+on top. No new store — a generalization.
+
+The bottom two layers are already content-agnostic and reusable as-is:
+`DbConnectionFactory`/`DbConnection` (raw SQL + JSONL file backend, currently
+duplicated verbatim across `codeindex` and `codemcp`) and `EmbedAdapter`
+(`local | voyage | openai`). The code-coupling lives only in the middle: the
+fixed `ChunkRow` fields (`area`/`kind`/`language`/`symbol`/lines/`imports`),
+the git-commit unit, the file chunkers, and the code enums in `search_code`'s
+schema.
+
+- [ ] **Extract a shared `vectorstore` package.** Dedupe the identical
+      `DbConnection` types; merge the two `EmbedAdapter` copies
+      (`codeindex/embed` write-side + `codemcp/embed` read-side) into one with
+      `embedBatch` + `embedQuery`. Generic record:
+      `{ id, namespace, content, embedding, metadata: Record<string, unknown> }`;
+      repository `upsert / searchByEmbedding / delete`. The fixed `ChunkRow`
+      fields collapse into `metadata`; typed `SearchFilters` becomes a generic
+      equality filter over `metadata`.
+- [ ] **Make the snapshot/version key optional.** Today everything is keyed by
+      `commitSha` (immutable per-SHA snapshots). Code keeps that; memory is a
+      mutable set with NO commit — so the version key is optional in the generic
+      layer. Never fake a commit for memory (the deepest coupling to cut).
+- [ ] **codeindex = code producer on top.** Keep walker/chunkers/commit model,
+      but write through the generic repo: code fields (area/kind/symbol) move
+      into `metadata`; output stays `data/commits/<sha>/`, byte-compatible.
+- [ ] Tests: codeindex publishes an identical code index through the shared
+      repo (same chunks, same search results as before); the optional-version
+      path leaves code's commit behavior unchanged.
+
+**Done when:** codeindex produces its code index through the shared
+`vectorstore` repository with no change to `data/commits/<sha>/` output, and the
+duplicated `DbConnection`/`EmbedAdapter` code exists in exactly one place.
+
+### M3-7 · codemcp serves code + memory — `~1.5d` · P2
+With the engine extracted (M3-6), `codemcp` reads BOTH stores and gains a write
+path so it can *generate* memory embeddings — it is read-only today (the
+embed-batch/write side lives only in the codeindex CLI), which is why M3-6 is a
+hard prerequisite. Codebase knowledge and recalled memory are both "what do I
+know about X", so one server answers both.
+
+Memory is partitioned by **collection id**: `data/memories/<id>/`. An `id` is an
+arbitrary collection of related memories — it may map to a user, a session, a
+topic, or a cluster linked to other memories. The id is opaque to the engine;
+any association (user/session/links) lives in record `metadata`, not in the
+path. This generalizes the multi-`repository` partitioning already in `codemcp`
+(`RepositoryEntry`/`repoReaders`) — a collection id is just a namespace.
+
+- [ ] **Write path into codemcp** via the shared package: a save-one-record
+      ingest (no walk, no chunk) — caller supplies `{ id, content, metadata }`,
+      the server embeds + appends under `data/memories/<id>/`.
+- [ ] **Tools** alongside `search_code`: `remember(id, content, metadata)`
+      (write) and `recall(query, id?)` (search; `id` omitted searches across
+      collections or a default). `search_code`'s code enums stay code-only;
+      recall filters on generic `metadata`.
+- [ ] **Read both stores.** codemcp resolves `data/commits/<sha>/` for code and
+      `data/memories/<id>/` for memory through the same reader; a call targets
+      one or the other by namespace/collection.
+- [ ] **Real embeddings for memory.** The `local` adapter is a hashed
+      bag-of-words — no paraphrase recall. Memory uses `voyage`/`openai`
+      (already supported, config only); pin ONE provider+dim per collection
+      (the code already guards this via `getEmbeddingDimension`).
+- [ ] Tests: a `remember`'d bit is recalled by a paraphrase, not just exact
+      match; recall scoped to one `id` does not return another collection's
+      bits; `search_code` still returns code chunks unchanged; mismatched embed
+      dim within a collection is rejected.
+
+**Done when:** `codemcp.remember(id, "X")` then `recall` on a paraphrase returns
+X scoped to that collection id, `search_code` still returns code chunks, and the
+server reads both `data/commits/` and `data/memories/` through one engine.
+
+> **Agent wiring (later):** the agent's `save_memory` / `search_memory`
+> synthetic tools call `codemcp.remember` / `recall` with a collection id
+> derived from the principal/session — tracked under the M3 identity work, not
+> built here.
+
 ---
 
 ## M4 — Service mode + observability (≈ 2.5–3 weeks)
@@ -561,6 +644,54 @@ Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
     cap, and usage accounting each live in their own middleware unit-tested
     in isolation; and a new behavior ships as a registered middleware with
     no diff to the core loop.
+
+#### MR-4a · Turn middleware onion — the mechanism — `~1d` · P1
+A runnable down-payment on MR-4: the onion pipeline that wraps one
+`Orchestrator.run` (one turn), without yet decomposing the loop. Same
+`(ctx, next)` contract as the init `IMiddleware` so the pattern is uniform —
+build-scoped vs execution-scoped. Adding turn-scoped behavior never edits the
+core loop.
+- [ ] `runtime/turn/turn-middleware.ts`: `ITurnMiddleware { invoke(ctx, next):
+      Promise<RunResult> }`, `TurnContext = { session, events: Eventing,
+      signal, logger, registry }`, `TurnMiddlewareToken` (group),
+      `composeTurnPipeline(mws, core)`.
+- [ ] Wire at `runtime/agent-runtime.ts` (~L169): `this.orchestrator.run(opts)`
+      becomes the pipeline core; `registry.getAll(TurnMiddlewareToken)` folds
+      around it. **Empty group ≡ today's behavior** — the safety net.
+- [ ] `TurnCounterMiddleware` lands here as the proof-of-seam consumer:
+      subscribes to `ctx.events` for `orchestrator-message`, accumulates
+      per-round `usage` into a local tally, logs/stamps it on turn end. It does
+      **not** own a registry yet (MR-4b). Out of scope: MetricsRegistry,
+      removing the inline `session.counters` fold, delegated usage, persistence.
+
+**Done when:** a no-op middleware registered in the group runs around a turn
+with the result unchanged; `TurnCounterMiddleware`'s per-round tally equals the
+sum the orchestrator folded into `session.counters` that turn; zero diff to
+`orchestrator.ts` core loop.
+
+#### MR-4b · MetricsRegistry — split metrics from session — `~1d` · P1
+Per-turn/per-round token metrics become a container-owned service, not session
+state. Moves ownership off `session.counters` (decision: move now — its blast
+radius is contained to this story). Depends on MR-4a.
+- [ ] `runtime/metrics/metrics-registry.ts`: `MetricsRegistry`
+      (`recordRound(usage)`, `rounds()`, `totals()`), registered via
+      `MetricsRegistryMiddleware` (init pipeline) into the Container.
+- [ ] Upgrade `TurnCounterMiddleware` from local tally → writes into
+      `MetricsRegistry` (it becomes the owner/writer).
+- [ ] Remove inline `foldCounters` / `foldDelegatedUsage` from
+      `runners/orchestrator.ts` (~L211, ~L298); the loop stops touching token
+      accounting.
+- [ ] Resolve delegated-usage capture: tap `dispatch-feedback` (verify it
+      carries `usage`; add it to the event if not) so subtree cost survives the
+      move (mirrors `foldDelegatedUsage`).
+- [ ] Persistence migration: what was in `session.counters.*Tokens*` now sources
+      from the registry — update the snapshot shape and any CLI `/context` / cost
+      readout that reads counters; add a migration shim if a stored field moves.
+
+**Done when:** the loop no longer mutates `session.counters`; metrics read from
+`MetricsRegistry`; token totals (direct + delegated) match pre-change figures on
+a fixture turn; cost/usage readouts still render.
+
 - [ ] **MR-5** · Factories: `RunnerFactory` (`runtime.runners`),
       `RegistryFactory.fromConfig`, `RuntimeFactory.standard()/child()`
       replacing `cli buildRuntime` + `build-sub-runtime.ts` — `~1.5d`

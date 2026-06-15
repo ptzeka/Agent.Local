@@ -11,6 +11,7 @@ import { SessionMiddleware } from "./middleware/session.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { LoggerMiddleware } from "./middleware/logger.js";
 import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
+import { RunnerPipelineMiddleware } from "./middleware/runner-pipeline.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
 import { StoreMiddleware } from "./middleware/store.js";
 import { ConfigurationMiddleware } from "./middleware/configuration.js"
@@ -37,6 +38,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
     .add(new ConversationMiddleware())
     .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
     .add(new OrchestratorMiddleware({ includeSubSessions: true, role: deps.orchestratorRole }))
+    .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));

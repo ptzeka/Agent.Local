@@ -2,6 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { Conversation } from "../conversation/conversation.js";
 import { InputInbox } from "../runners/input-inbox.js";
 import { Orchestrator, type RunOptions, type RunResult } from "../runners/orchestrator.js";
+import {
+  composeRunnerPipeline,
+  type IRunnerMiddleware,
+  type RunnerContext,
+} from "../runners/middleware/runner-middleware.js";
 import type { ContextLoader } from "../context/context-loader.js";
 import type { ChatMessage } from "../providers/provider.js";
 import type { Session } from "../session/session.js";
@@ -29,12 +34,14 @@ import {
   ModelsToken,
   OrchestratorToken,
   ProvidersToken,
+  RunnerMiddlewareToken,
   SessionManagerToken,
   SessionToken,
   StoreToken,
   WorkspaceToken,
   WorkspacesToken,
 } from "./tokens.js";
+import type { Container } from "../../common/container.js";
 
 export interface ResetResult {
   projectContext: string | null;
@@ -67,6 +74,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private sessionManager!: SessionManager;
   private store!: SessionStore;
   private workspaces!: WorkspaceRegistry;
+  // held so the per-turn RunnerContext can resolve runtime services on demand
+  private container!: Container;
+  // folded around each turn's run; empty group ≡ bare core, so the seam stays behaviour-neutral
+  private runnerMiddlewares: IRunnerMiddleware[] = [];
 
   // optional: hosts opt in via startTurnLoop; headless single runs call dispatchAsync directly
   private turnRunner: TurnRunner | null = null;
@@ -128,6 +139,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.orchestrator = ctx.registry.get(OrchestratorToken);
     this.inbox = ctx.registry.get(InboxToken);
     this.sessionManager = ctx.registry.get(SessionManagerToken);
+    this.container = ctx.registry;
+    this.runnerMiddlewares = ctx.registry.getAll(RunnerMiddlewareToken);
 
     // wire the runtime into the orchestrator so it can query for dependencies
     this.orchestrator.setRuntime(this);
@@ -165,8 +178,21 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     };
 
     this.logger.debug("turn start", { sessionId: this.session.sessionId });
+
+    // the orchestrator run is the pipeline core; registered units fold around it as an onion
+    const runnerContext: RunnerContext = {
+      session: this.session,
+      events: this.events,
+      signal: options.signal,
+      logger: this.logger,
+      registry: this.container,
+    };
+    const runTurn = composeRunnerPipeline(this.runnerMiddlewares, runnerContext, () =>
+      this.orchestrator.run(runOptions)
+    );
+
     try {
-      const result = await this.orchestrator.run(runOptions);
+      const result = await runTurn();
       this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
       this.session.counters.turns += 1;
       this.events.publish("runtime-status", {
