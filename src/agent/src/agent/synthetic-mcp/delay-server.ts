@@ -2,9 +2,9 @@
 // stateful by necessity: `stop` must reach running waits, so it subclasses LocalMcp to track a controller per delay
 // the runtime signal bounds its lifetime so shutdown clears pending timers instead of leaving waits dangling
 
-import type { ToolDescriptor } from "../providers/provider.js";
-import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
-import type { ToolExecutionResult } from "../mcp/mcp.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import { LocalMcp, type LocalTool } from "@agent-local/mcp";
+import type { ToolExecutionResult } from "@agent-local/mcp";
 
 export const DELAY_SERVER_NAME = "delaymcp";
 

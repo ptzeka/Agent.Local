@@ -1,7 +1,7 @@
 // unlike fsmcp's static root, Excel tools need per-turn context, so this bakes the turn's ToolContext into each handler
 // like fsmcp, exposed as a LocalMcp: a tool call is a plain in-process function call, no JSON-RPC
 
-import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
+import { LocalMcp, type LocalTool } from "@agent-local/mcp";
 import {
   createExcelTools,
   GET_EXCEL_COLUMNS_TOOL,

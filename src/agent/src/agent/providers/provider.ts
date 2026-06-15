@@ -1,3 +1,6 @@
+// the tool shape the loop advertises to a backend; its canonical home is the mcp package
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+
 // the single seam between the agent and any model backend; the loop talks only to this contract
 // so adding a backend is a one-file change: implement, register in providers/index.ts, reference from models.json
 export interface ChatMessage {
@@ -21,12 +24,6 @@ export interface ToolCall {
   // Gemini rejects (HTTP 400) replays of a function call missing its thoughtSignature;
   // captured here so it survives persistence and is echoed back verbatim next turn
   signature?: string;
-}
-
-export interface ToolDescriptor {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
 }
 
 export interface ChatOptions {

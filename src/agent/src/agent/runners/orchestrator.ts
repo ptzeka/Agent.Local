@@ -1,11 +1,10 @@
 import type { Conversation } from "../conversation/conversation.js";
-import type { ToolExecutionResult } from "../mcp/mcp-client.js";
+import type { ToolDescriptor, ToolExecutionResult } from "@agent-local/mcp";
 import type {
   ChatMessage,
   ChatResponse,
   LLMProvider,
   ToolCall,
-  ToolDescriptor,
 } from "../providers/provider.js";
 import {
   buildPromptedToolInstructions,

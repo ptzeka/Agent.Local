@@ -2,7 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import { ExecutorLocalMcp } from "../../src/agent/synthetic-mcp/executor-server.js";
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
-import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import { makeContext } from "../middleware/context.js";
 
 // the "tool" property must enumerate the executor role's live tool names (from the mounted servers'

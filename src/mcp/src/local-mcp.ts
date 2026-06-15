@@ -1,5 +1,5 @@
 import { CancellationToken } from "@agent-local/common/lifetime";
-import type { ToolDescriptor } from "../providers/provider.js";
+import type { ToolDescriptor } from "./tooldescriptor.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
 
 // invoke owns its domain errors and shapes them into a ToolExecutionResult so each server keeps its wording

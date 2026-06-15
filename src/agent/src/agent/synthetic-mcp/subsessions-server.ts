@@ -1,6 +1,6 @@
 // re-registered each turn with that turn's ToolContext baked in; calls route to the SessionManager, never a transport
 
-import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
+import { LocalMcp, type LocalTool } from "@agent-local/mcp";
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
 import type { ToolContext } from "./types.js";
 

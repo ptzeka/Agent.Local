@@ -1,0 +1,31 @@
+{
+  "name": "@agent-local/mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Generic MCP tool-dispatch layer: the Mcp contract, spawned-server client, and in-process LocalMcp.",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./tooldescriptor": { "types": "./dist/tooldescriptor.d.ts", "default": "./dist/tooldescriptor.js" },
+    "./mcp": { "types": "./dist/mcp.d.ts", "default": "./dist/mcp.js" },
+    "./mcp-client": { "types": "./dist/mcp-client.d.ts", "default": "./dist/mcp-client.js" },
+    "./local-mcp": { "types": "./dist/local-mcp.d.ts", "default": "./dist/local-mcp.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "jest",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "dependencies": {
+    "@agent-local/common": "*",
+    "@modelcontextprotocol/sdk": "^1.0.4"
+  },
+  "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^22.10.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.2"
+  }
+}

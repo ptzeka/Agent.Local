@@ -7,6 +7,7 @@
   "exports": {
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./lifetime": { "types": "./dist/lifetime.d.ts", "default": "./dist/lifetime.js" },
+    "./tokenusage": { "types": "./dist/tokenusage.d.ts", "default": "./dist/tokenusage.js" },
     "./eventing": { "types": "./dist/eventing.d.ts", "default": "./dist/eventing.js" },
     "./container": { "types": "./dist/container.d.ts", "default": "./dist/container.js" },
     "./ilogger": { "types": "./dist/ilogger.d.ts", "default": "./dist/ilogger.js" },
@@ -14,10 +15,15 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "jest",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "devDependencies": {
+    "@jest/globals": "^29.7.0",
+    "@types/jest": "^29.5.14",
     "@types/node": "^22.10.2",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.2.5",
     "typescript": "^5.7.2"
   }
 }

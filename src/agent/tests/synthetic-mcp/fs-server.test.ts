@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { createFsLocalMcp } from "../../src/agent/synthetic-mcp/fs-server.js";
-import type { LocalMcp } from "../../src/agent/mcp/local-mcp.js";
+import type { LocalMcp } from "@agent-local/mcp";
 
 // In-process fsmcp LocalMcp (no SDK Server/transport), driven through the Mcp surface: listTools()
 // advertises namespaced descriptors, callTool() takes the bare name and returns a { isError, content }

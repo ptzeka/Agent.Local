@@ -1,4 +1,4 @@
-import type { ToolDescriptor } from "../../providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { SubSessionCoordinator, SubSessionSnapshot } from "../../runners/subsession.js";
 import { toolError, toolOk, type RichToolResult, type SyntheticMcp, type ToolContext } from "../types.js";
 

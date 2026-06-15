@@ -1,15 +1,8 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 import { CancellationToken } from "@agent-local/common/lifetime";
-import type { ToolDescriptor } from "../providers/provider.js";
+import type { ToolDescriptor } from "./tooldescriptor.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
-
-export type { ToolExecutionResult } from "./mcp.js";
-
-// minimal dispatch surface so callers that only invoke tools depend on this, not the concrete client
-export interface ToolInvoker {
-  callTool(name: string, args: Record<string, unknown>): Promise<ToolExecutionResult>;
-}
 
 // wraps one MCP server connection; stateless, returns POCO results for the caller to act on
 export class McpClient {

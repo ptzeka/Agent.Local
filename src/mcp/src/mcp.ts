@@ -1,5 +1,5 @@
-import type { ToolDescriptor } from "../providers/provider.js";
-import type { TokenUsage } from "../session/session.js";
+import type { TokenUsage } from "@agent-local/common/tokenusage";
+import type { ToolDescriptor } from "./tooldescriptor.js";
 
 export interface ToolExecutionResult {
   isError: boolean;

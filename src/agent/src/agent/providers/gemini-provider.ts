@@ -7,13 +7,13 @@ import type {
   Tool,
 } from "@google/genai";
 
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type {
   ChatMessage,
   ChatOptions,
   ChatResponse,
   LLMProvider,
   ToolCall,
-  ToolDescriptor,
 } from "./provider.js";
 
 export interface GeminiProviderConfig {

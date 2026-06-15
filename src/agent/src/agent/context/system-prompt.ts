@@ -1,4 +1,4 @@
-import type { ToolDescriptor } from "../providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 // role prompts carry a {TOOLS_LIST} placeholder so the advertised tool set stays live, not hard-coded
 export function fillToolsList(template: string, tools: ToolDescriptor[]): string {

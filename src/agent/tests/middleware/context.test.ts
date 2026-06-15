@@ -7,7 +7,7 @@ import { ContextLoader } from "../../src/agent/context/context-loader.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ProvidersRegistry } from "../../src/agent/registries/providers-registry.js";
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
-import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import { ContextMiddleware } from "../../src/agent/runtime/middleware/context.js";
 import { SessionToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";

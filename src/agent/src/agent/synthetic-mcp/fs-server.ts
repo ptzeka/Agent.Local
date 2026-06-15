@@ -3,9 +3,9 @@
 
 import type { ZodTypeAny } from "zod";
 
-import type { ToolDescriptor } from "../providers/provider.js";
-import { LocalMcp, type LocalTool } from "../mcp/local-mcp.js";
-import type { ToolExecutionResult } from "../mcp/mcp.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import { LocalMcp, type LocalTool } from "@agent-local/mcp";
+import type { ToolExecutionResult } from "@agent-local/mcp";
 
 import { zodToJsonSchema } from "./fs-tools/schema-helpers.js";
 import { createWorkspace, WorkspaceViolationError, type Workspace } from "./fs-tools/workspace.js";

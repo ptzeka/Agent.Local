@@ -3,7 +3,7 @@ import path from "node:path";
 
 import * as XLSX from "xlsx";
 
-import type { ToolDescriptor } from "../../providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import { toolError, toolOk, type RichToolResult, type SyntheticMcp, type ToolContext } from "../types.js";
 
 export const READ_EXCEL_SHEET_TOOL = "read_excel_sheet";

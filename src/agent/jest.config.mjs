@@ -16,6 +16,8 @@ export default {
     // resolve the shared workspace package to its TS source so tests need no prebuild
     "^@agent-local/common$": "<rootDir>/../common/src/index.ts",
     "^@agent-local/common/(.*)$": "<rootDir>/../common/src/$1.ts",
+    "^@agent-local/mcp$": "<rootDir>/../mcp/src/index.ts",
+    "^@agent-local/mcp/(.*)$": "<rootDir>/../mcp/src/$1.ts",
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
   transform: {

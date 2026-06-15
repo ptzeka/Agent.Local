@@ -1,8 +1,8 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { ScopedToolClient } from "../src/agent/scoped-tool-client.js";
-import type { Mcp } from "../src/agent/mcp/mcp.js";
-import type { ToolDescriptor } from "../src/agent/providers/provider.js";
+import type { Mcp } from "@agent-local/mcp";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 // Path confinement lives in the server (Workspace guard), not here — these cover routing only:
 // namespaced calls, tolerant bare-name resolution, and corrective errors for ambiguous/unknown names.

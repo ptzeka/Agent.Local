@@ -1,7 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
-import type { ToolExecutionResult } from "../../src/agent/mcp/mcp.js";
-import { LocalMcp, type LocalTool } from "../../src/agent/mcp/local-mcp.js";
+import type { ToolExecutionResult } from "@agent-local/mcp";
+import { LocalMcp, type LocalTool } from "@agent-local/mcp";
 import { CancellationToken } from "@agent-local/common/lifetime";
 
 const ok: ToolExecutionResult = { isError: false, content: "ok" };

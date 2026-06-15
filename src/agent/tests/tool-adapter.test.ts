@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
-import type { ChatMessage, ToolDescriptor } from "../src/agent/providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import type { ChatMessage } from "../src/agent/providers/provider.js";
 import {
   buildPromptedToolInstructions,
   extractPromptedToolCalls,

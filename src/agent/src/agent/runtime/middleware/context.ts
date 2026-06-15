@@ -1,7 +1,7 @@
 import path from "node:path";
 import { ContextLoader } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
-import type { ToolDescriptor } from "../../providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import {
   ContextLoaderToken,
   McpRegistryToken,

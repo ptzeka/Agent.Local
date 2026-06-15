@@ -6,6 +6,7 @@
   "private": true,
   "workspaces": [
     "src/common",
+    "src/mcp",
     "src/fsmcp",
     "src/agent",
     "src/codeindex",
@@ -15,6 +16,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {

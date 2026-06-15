@@ -1,8 +1,8 @@
 import { describe, expect, jest, test, beforeEach } from "@jest/globals";
 
 import { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
-import type { Mcp } from "../../src/agent/mcp/mcp.js";
-import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
+import type { Mcp } from "@agent-local/mcp";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 // a thin name-keyed collection of mounted servers (Mcp): LocalMcp (in-process) and McpClient (spawned stdio)
 // are stored interchangeably; exposes a server by name and aggregates every server's already-namespaced

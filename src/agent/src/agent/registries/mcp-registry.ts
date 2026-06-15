@@ -1,5 +1,5 @@
-import type { ToolDescriptor } from "../providers/provider.js";
-import type { Mcp } from "../mcp/mcp.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import type { Mcp } from "@agent-local/mcp";
 import { ScopedToolClient } from "../scoped-tool-client.js";
 
 export class McpClientRegistry {

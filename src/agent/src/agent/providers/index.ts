@@ -63,4 +63,4 @@ export function createProvider(input: ProviderFactoryInput): LLMProvider {
 }
 
 export type { LLMProvider } from "./provider.js";
-export type { ChatMessage, ChatResponse, ChatOptions, ToolCall, ToolDescriptor } from "./provider.js";
+export type { ChatMessage, ChatResponse, ChatOptions, ToolCall } from "./provider.js";

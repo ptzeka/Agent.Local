@@ -1,4 +1,5 @@
-import type { ChatMessage, ToolCall, ToolDescriptor } from "./providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import type { ChatMessage, ToolCall } from "./providers/provider.js";
 
 // prompted-JSON fallback for models without native function calling: instruct them to emit a fenced
 // ```json block and extract it afterward; the orchestrator picks this vs native by supportsNativeTools

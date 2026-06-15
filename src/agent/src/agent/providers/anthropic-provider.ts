@@ -1,12 +1,12 @@
 import Anthropic from "@anthropic-ai/sdk";
 
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type {
   ChatMessage,
   ChatOptions,
   ChatResponse,
   LLMProvider,
   ToolCall,
-  ToolDescriptor,
 } from "./provider.js";
 
 // one instance per (apiKey, model), mirroring OllamaProvider; the real work is translating

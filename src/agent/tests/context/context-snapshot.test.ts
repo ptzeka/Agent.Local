@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { ContextLoader } from "../../src/agent/context/context-loader.js";
-import type { ToolDescriptor } from "../../src/agent/providers/provider.js";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 // The snapshot captures non-conversation context (system prompt + project direction + tool block) under a
 // content-addressed hash. These cover what ContextMiddleware leans on: deterministic hashing keyed on the

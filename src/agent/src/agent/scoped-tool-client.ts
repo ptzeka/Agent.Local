@@ -1,7 +1,7 @@
 import { OrchestratorEventTypes } from "./runners/runner-events.js";
 import type { Eventing } from "@agent-local/common/eventing";
-import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
-import type { ToolDescriptor } from "./providers/provider.js";
+import type { Mcp, ToolExecutionResult, ToolInvoker } from "@agent-local/mcp";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 // routes <server>__<tool> calls to the right MCP server and emits TOOL_CALL/TOOL_RESULT events
 // path confinement is NOT here: each fs server is rooted at its workspace segment and guards itself

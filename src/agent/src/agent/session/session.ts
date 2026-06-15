@@ -1,3 +1,4 @@
+import type { TokenUsage } from "@agent-local/common/tokenusage";
 import type { Principal } from "../identity/types.js";
 
 // run-state metadata only; the transcript lives in a linked Conversation so appends stay O(1) and this file small
@@ -23,18 +24,6 @@ export interface SessionCounters {
   outputTokensTallied: number;
   cacheReadInputTokensTallied: number;
   cacheCreationInputTokensTallied: number;
-}
-
-// all fields optional so a producer that can't report a figure omits it; *Tallied present when the producer had dependencies
-export interface TokenUsage {
-  inputTokens?: number;
-  outputTokens?: number;
-  cacheReadInputTokens?: number;
-  cacheCreationInputTokens?: number;
-  inputTokensTallied?: number;
-  outputTokensTallied?: number;
-  cacheReadInputTokensTallied?: number;
-  cacheCreationInputTokensTallied?: number;
 }
 
 // only for tokens this session's loop spent directly; delegated cost goes through foldDelegatedUsage

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 
-import type { ToolExecutionResult } from "../mcp/mcp.js";
-import { LocalMcp } from "../mcp/local-mcp.js";
-import type { ToolDescriptor } from "../providers/provider.js";
+import type { ToolExecutionResult } from "@agent-local/mcp";
+import { LocalMcp } from "@agent-local/mcp";
+import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { McpClientRegistry } from "../registries/index.js";
 import type { RuntimeContext } from "../runtime/types.js";
 import { SessionToken } from "../runtime/tokens.js";
