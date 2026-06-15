@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { CancellationToken, settledWithin } from "../../src/common/lifetime.js";
+import { CancellationToken, settledWithin } from "@agent-local/common/lifetime";
 
 // cancellation-chain semantics: right-cutting (a cancel reaches every descendant, never the parent or
 // siblings), stillborn late joiners, and the bounded-wait helper shutdown paths rely on

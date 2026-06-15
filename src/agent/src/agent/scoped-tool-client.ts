@@ -1,5 +1,5 @@
 import { OrchestratorEventTypes } from "./runners/runner-events.js";
-import type { Eventing } from "../common/eventing.js";
+import type { Eventing } from "@agent-local/common/eventing";
 import type { Mcp, ToolExecutionResult, ToolInvoker } from "./mcp/mcp.js";
 import type { ToolDescriptor } from "./providers/provider.js";
 

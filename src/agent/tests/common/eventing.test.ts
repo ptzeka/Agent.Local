@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { Eventing, type EventMessage } from "../../src/common/eventing.js";
+import { Eventing, type EventMessage } from "@agent-local/common/eventing";
 
 // publish/subscribe with unsubscribe, and the upward bubble across parent -> c1 -> c2 — a leaf publish
 // reaches the leaf's subscribers first, then each ancestor's, in order, exactly once

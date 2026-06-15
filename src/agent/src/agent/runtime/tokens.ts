@@ -1,4 +1,4 @@
-import { token } from "../../common/container.js";
+import { token } from "@agent-local/common/container";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import type { ConfigurationRegistry } from "../registries/configuration-registry.js";

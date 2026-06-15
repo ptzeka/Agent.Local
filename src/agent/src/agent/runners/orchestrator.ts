@@ -20,7 +20,7 @@ import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
-import { Eventing } from "../../common/eventing.js";
+import { Eventing } from "@agent-local/common/eventing";
 import { ContextSnapshot } from "../context/context-loader.js";
 
 // re-export for backwards compatibility

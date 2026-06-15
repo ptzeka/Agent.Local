@@ -3,12 +3,12 @@ import type { IdentityContext } from "../identity/types.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Session } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
-import type { Eventing } from "../../common/eventing.js";
+import type { Eventing } from "@agent-local/common/eventing";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
-import { ILogger } from "../../common/ilogger.js";
-import type { Container } from "../../common/container.js";
+import { ILogger } from "@agent-local/common/ilogger";
+import type { Container } from "@agent-local/common/container";
 
 export interface AgentRuntimeQueryable {
   getSession(): Session;

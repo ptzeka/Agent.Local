@@ -1,4 +1,4 @@
-import { Eventing } from "../../../common/eventing.js";
+import { Eventing } from "@agent-local/common/eventing";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface EventingMiddlewareParams {

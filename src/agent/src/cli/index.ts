@@ -11,9 +11,9 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import { Eventing } from "../common/eventing.js";
-import { FileLogger } from "../common/filelogger.js";
-import { ILogger } from "../common/ilogger.js";
+import { Eventing } from "@agent-local/common/eventing";
+import { FileLogger } from "@agent-local/common/filelogger";
+import { ILogger } from "@agent-local/common/ilogger";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { Container, token } from "../../src/common/container.js";
+import { Container, token } from "@agent-local/common/container";
 
 // a typed service locator keyed by branded tokens; get() fails loud (naming the token) so an unmet
 // dependency self-reports at the gap instead of surfacing as a downstream `undefined`

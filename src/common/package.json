@@ -1,0 +1,23 @@
+{
+  "name": "@agent-local/common",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared foundation primitives (cancellation, eventing, DI container, logging) reused across packages.",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./lifetime": { "types": "./dist/lifetime.d.ts", "default": "./dist/lifetime.js" },
+    "./eventing": { "types": "./dist/eventing.d.ts", "default": "./dist/eventing.js" },
+    "./container": { "types": "./dist/container.d.ts", "default": "./dist/container.js" },
+    "./ilogger": { "types": "./dist/ilogger.d.ts", "default": "./dist/ilogger.js" },
+    "./filelogger": { "types": "./dist/filelogger.d.ts", "default": "./dist/filelogger.js" }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2"
+  }
+}

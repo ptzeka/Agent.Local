@@ -1,6 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { Eventing } from "../../src/common/eventing.js";
+import { Eventing } from "@agent-local/common/eventing";
 import { EventingMiddleware } from "../../src/agent/runtime/middleware/eventing.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 

@@ -550,6 +550,84 @@ server reads both `data/commits/` and `data/memories/` through one engine.
 > derived from the principal/session — tracked under the M3 identity work, not
 > built here.
 
+#### Grooming caveat — split into 5 packages (supersedes the M3-6/M3-7 shape above)
+
+M3-6 lumps compute (embedding) and persistence (store) into one `vectorstore`
+package. They change on different cadences — providers/dims churn independently
+of storage backends — so groom this into **two leaf packages + three consumers**.
+`vectorstore` takes embeddings as INPUT and never embeds, so it has zero
+dependency on `vectorizer`; both are true leaves and each consumer wires them
+together itself.
+
+```
+   vectorizer            vectorstore         ← two independent leaves
+   (embed logic)         (store/retrieve)       no dep on each other
+      \    \              /    /
+        +--- codeindex / codemcp / memomcp     ← each depends on BOTH
+```
+
+- [ ] **`src/vectorizer`** (leaf, `~1d`) — `EmbedAdapter { modelId, dim,
+      embedBatch, embedQuery }` + `createEmbedAdapter(provider, dim)` over
+      local/voyage/openai. Deletes the hand-mirrored `LocalQueryEmbedAdapter`
+      in `codemcp/src/embed.ts` — one impl, no more "change one, change the
+      other." Pure compute, no DB.
+- [ ] **`src/vectorstore`** (leaf, `~1.5d`) — one copy of
+      `DbConnection`/`DbConnectionFactory` (kills the byte-identical dupe across
+      `codeindex/db/types.ts` and `codemcp/db/types.ts`), pg + file backends,
+      generic `VectorRecord { id, namespace, content, embedding, metadata }` and
+      `VectorStore { upsert, searchByEmbedding(ns, emb, k, filter), delete }`.
+      `namespace` is opaque; filter is generic equality over `metadata`.
+- [ ] **`src/codeindex` on the engine** (`~1d`) — walker/chunkers/commit
+      unchanged; `publish.ts` writes through `vectorstore`, code fields into
+      `metadata`. Output stays byte-compatible (`data/commits/<sha>/…`);
+      golden-file test guards it.
+- [ ] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
+      queries via `vectorizer`. `search_code`/`find_symbol` surface + results
+      unchanged; code enums become a code-only typed wrapper over the generic
+      filter.
+- [ ] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
+      + `vectorizer`, partitioned by collection. tenant/category live in
+      `metadata` (filtering), NOT in the path; id↔association/linking is a
+      separate concern kept out of the store. Must use voyage/openai (local
+      bag-of-words can't do paraphrase recall).
+- [ ] **`src/mcp`** (new base/reference, `~1d`) — extract the MCP scaffolding
+      that every server re-implements into one shared package so `codemcp` /
+      `memomcp` (and future servers) derive from it instead of drifting. Move
+      the trio out of `src/agent/src/agent/mcp/`: the **base contract**
+      (`mcp.ts` — `Mcp` / `ToolInvoker` / `ToolExecutionResult`), the **actual**
+      server (`mcp-client.ts` — `McpClient`, spawned stdio JSON-RPC), and the
+      **virtual** server (`local-mcp.ts` — `LocalMcp`, in-process handlers).
+      Ships a minimal reference server as the copy-from example; the agent
+      imports the contract from here rather than owning it.
+
+**Sequencing:** 1, 2 & 6 in parallel (all leaves) → 3 & 4 prove no regression on
+real data → 5 builds on a proven engine **and** the shared MCP base.
+
+**Sharp edges to settle in grooming:**
+
+- **Dim/model guard crosses both leaves** — "embedding dim must equal the pg
+  `vector(N)` column" (`publish.ts` `getEmbeddingDimension`). Neither leaf owns
+  it; it belongs in each consumer's wiring, pinned per-namespace.
+- **File-backend layout must stay parameterizable** — codeindex needs
+  `commits/<sha>/chunks.jsonl` (byte-compat); memomcp wants
+  `memories/<ns>/records.jsonl`. `vectorstore`'s file backend takes
+  `{ partitionDir, recordsFile }` rather than hardcoding `commits`/`chunks.jsonl`.
+- **`vectorstore` must NOT know "commit/snapshot"** — the `commits` table /
+  `commit.json` stays a codeindex-only sidecar on top. This is what guarantees
+  memory never fakes a commit (the deepest coupling in M3-6).
+- **`LocalMcp` is tied to state + eventing → lift all of `src/common` out
+  first** — pulling `LocalMcp` into `src/mcp` drags its coupling to session state
+  and signalling along, and `McpClient` already reaches back to
+  `src/agent/.../common/lifetime.js` for `CancellationToken`. The whole of
+  `src/agent/src/common/` is generic, not agent-specific — `lifetime.ts`
+  (`CancellationToken`), `eventing.ts` (pub/sub), `container.ts` (DI),
+  `ilogger.ts`/`filelogger.ts`. Decide in grooming whether to promote it to a
+  shared `src/common` (a 0th leaf, `~0.5d`) that every package — vectorizer,
+  vectorstore, mcp, codeindex, codemcp, memomcp — depends on, instead of each
+  reaching back into `src/agent`. Pairs with the in-flight eventing migration
+  (onEvent callbacks → pub/sub bus), which already aims at a clean eventing
+  surface in `src/common`.
+
 ---
 
 ## M4 — Service mode + observability (≈ 2.5–3 weeks)

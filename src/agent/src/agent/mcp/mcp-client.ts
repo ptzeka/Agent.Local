@@ -1,6 +1,6 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
-import { CancellationToken } from "../../common/lifetime.js";
+import { CancellationToken } from "@agent-local/common/lifetime";
 import type { ToolDescriptor } from "../providers/provider.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
 

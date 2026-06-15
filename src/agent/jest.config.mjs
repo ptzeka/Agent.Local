@@ -13,6 +13,9 @@ export default {
   testEnvironment: "node",
   roots: ["<rootDir>/tests"],
   moduleNameMapper: {
+    // resolve the shared workspace package to its TS source so tests need no prebuild
+    "^@agent-local/common$": "<rootDir>/../common/src/index.ts",
+    "^@agent-local/common/(.*)$": "<rootDir>/../common/src/$1.ts",
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
   transform: {

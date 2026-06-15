@@ -1,6 +1,6 @@
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
-import { Container, type Token } from "../../src/common/container.js";
+import { Container, type Token } from "@agent-local/common/container";
 import {
   ConfigurationToken,
   ProvidersToken,

@@ -10,8 +10,8 @@ import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
 import type { TurnBindable } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
-import { CancellationToken } from "../../common/lifetime.js";
-import { Eventing } from "../../common/eventing.js";
+import { CancellationToken } from "@agent-local/common/lifetime";
+import { Eventing } from "@agent-local/common/eventing";
 
 // in-process server for executor__dispatch (run one mutation) and executor__list_tools (introspect targets)
 // each dispatch builds a brand-new role-"executor" child from scratch, sharing only the workspace, so dispatches can't pollute each other

@@ -20,11 +20,11 @@ import { WorkspaceRegistry } from "../registries/workspace-registry.js";
 import type { AgentRuntimeDeps, AgentRuntimeQueryable, IMiddleware, RuntimeContext } from "./types.js";
 import type { ModelRegistry } from "../registries/model-registry.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
-import { CancellationToken, settledWithin } from "../../common/lifetime.js";
-import { Eventing } from "../../common/eventing.js";
+import { CancellationToken, settledWithin } from "@agent-local/common/lifetime";
+import { Eventing } from "@agent-local/common/eventing";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry } from "../registries/providers-registry.js";
-import { ILogger } from "../../common/ilogger.js";
+import { ILogger } from "@agent-local/common/ilogger";
 import {
   ConfigurationToken,
   ContextLoaderToken,
@@ -41,7 +41,7 @@ import {
   WorkspaceToken,
   WorkspacesToken,
 } from "./tokens.js";
-import type { Container } from "../../common/container.js";
+import type { Container } from "@agent-local/common/container";
 
 export interface ResetResult {
   projectContext: string | null;

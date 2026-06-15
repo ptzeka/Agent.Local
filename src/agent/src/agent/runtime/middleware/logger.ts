@@ -1,4 +1,4 @@
-import { ILogger } from "../../../common/ilogger.js";
+import { ILogger } from "@agent-local/common/ilogger";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface LoggerMiddlewareParams {

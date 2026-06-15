@@ -1,6 +1,6 @@
-import type { Container } from "../../../common/container.js";
-import type { Eventing } from "../../../common/eventing.js";
-import type { ILogger } from "../../../common/ilogger.js";
+import type { Container } from "@agent-local/common/container";
+import type { Eventing } from "@agent-local/common/eventing";
+import type { ILogger } from "@agent-local/common/ilogger";
 import type { Session } from "../../session/session.js";
 import type { RunResult } from "../orchestrator.js";
 

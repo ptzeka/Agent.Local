@@ -5,6 +5,7 @@
   "type": "module",
   "private": true,
   "workspaces": [
+    "src/common",
     "src/fsmcp",
     "src/agent",
     "src/codeindex",
