@@ -76,6 +76,24 @@ describe("PgVectorStore SQL marshalling", () => {
     ]);
   });
 
+  it("lists by namespace + jsonb filter with no embedding or k, mapping rows to records", async () => {
+    const factory = new FakeFactory();
+    factory.conn.rows = [
+      { id: "a", namespace: "ns", content: "c", embedding: "[1,2,3]", metadata: { symbol: "main" } },
+    ];
+    const store = new PgVectorStore(factory);
+
+    const records = await store.list("ns", { symbol: "main" });
+
+    const call = factory.conn.calls.at(-1)!;
+    expect(call.sql).toContain("metadata @> $2::jsonb");
+    expect(call.sql).not.toContain("<=>");
+    expect(call.params).toEqual(["ns", JSON.stringify({ symbol: "main" })]);
+    expect(records).toEqual([
+      { id: "a", namespace: "ns", content: "c", embedding: [1, 2, 3], metadata: { symbol: "main" } },
+    ]);
+  });
+
   it("parses the embedding text column back into numbers on get", async () => {
     const factory = new FakeFactory();
     factory.conn.rows = [

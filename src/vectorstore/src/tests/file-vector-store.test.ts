@@ -89,6 +89,32 @@ describe("FileVectorStore search", () => {
   });
 });
 
+describe("FileVectorStore list", () => {
+  beforeEach(async () => {
+    await store.upsert([
+      record("a", [1, 0, 0], { metadata: { symbol: "main", path: "a.ts" } }),
+      record("b", [0, 1, 0], { metadata: { symbol: "main", path: "b.ts" } }),
+      record("c", [0, 0, 1], { metadata: { symbol: "other", path: "a.ts" } }),
+    ]);
+  });
+
+  it("returns every record in the namespace with an empty filter", async () => {
+    const all = await store.list("ns");
+    expect(all.map(r => r.id).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("returns all matches for a metadata filter, unbounded by k", async () => {
+    const bySymbol = await store.list("ns", { symbol: "main" });
+    expect(bySymbol.map(r => r.id).sort()).toEqual(["a", "b"]);
+    const byPath = await store.list("ns", { path: "a.ts" });
+    expect(byPath.map(r => r.id).sort()).toEqual(["a", "c"]);
+  });
+
+  it("returns an empty array for an unknown namespace", async () => {
+    expect(await store.list("missing")).toEqual([]);
+  });
+});
+
 describe("FileVectorStore namespace isolation", () => {
   it("never returns another namespace's records", async () => {
     await store.upsert([record("a", [1, 0, 0], { namespace: "alpha" })]);

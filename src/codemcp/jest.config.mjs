@@ -4,11 +4,13 @@ export default {
   testEnvironment: "node",
   roots: ["<rootDir>/tests"],
   moduleNameMapper: {
-    // resolve the shared mcp package (and its common dependency) to TS source so tests need no prebuild
+    // resolve shared @agent-local packages to TS source so tests need no prebuild
     "^@agent-local/mcp$": "<rootDir>/../mcp/src/index.ts",
     "^@agent-local/mcp/(.*)$": "<rootDir>/../mcp/src/$1.ts",
     "^@agent-local/common$": "<rootDir>/../common/src/index.ts",
     "^@agent-local/common/(.*)$": "<rootDir>/../common/src/$1.ts",
+    "^@agent-local/vectorstore$": "<rootDir>/../vectorstore/src/index.ts",
+    "^@agent-local/vectorizer$": "<rootDir>/../vectorizer/src/index.ts",
     "^(\\.{1,2}/.*)\\.js$": "$1",
   },
   transform: {

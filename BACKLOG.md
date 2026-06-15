@@ -609,7 +609,14 @@ together itself.
 - [ ] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
       queries via `vectorizer`. `search_code`/`find_symbol` surface + results
       unchanged; code enums become a code-only typed wrapper over the generic
-      filter.
+      filter. — settled 2026-06-15: **change in place; the repository stays the
+      retrieval contract.** `IVectorStore` keeps only similarity (`searchByEmbedding`)
+      + `get`; codemcp's exact-match, no-embedding reads (`find_symbol` on `symbol`,
+      `get_file_context` on `path`) and any non-similarity listing stay behind
+      codemcp's own repository folded over the store — NOT promoted to the generic
+      interface. Proper two-tier/projection retrieval (a generic `list()` +
+      summary-then-drill-down that both codemcp and memomcp want) is deferred to
+      M3-10 so the swap stays behavior-identical and verifiable against today's output.
 - [ ] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
       + `vectorizer`, partitioned by collection. tenant/category live in
       `metadata` (filtering), NOT in the path; associations are a separate
@@ -711,6 +718,71 @@ agent can start reasoning before the long tail arrives. Depends on `src/memomcp`
 **Done when:** `recall` streams core records before archival hits, matches the
 buffered result set, and reuses M3-8's streaming/cancellation surface instead of
 duplicating it.
+
+### M3-10 · Store-level AI retrieval — projection + two-tier (progressive disclosure) — `~1.5d` · P2
+Retrieval today returns full records in one shot: `search_code` returns `k` whole
+chunks, `find_symbol`/`get_file_context` return ALL matching chunk **bodies**. For
+AI analysis that's token-heavy and forces the agent to read bodies it may never
+use. Both codemcp and memomcp want the same two-tier flow: a cheap **locate/summary**
+phase that returns just enough to choose (no `content`, no `embedding`), then a
+**drill-down** by id for the few that matter. This is the capability deliberately
+deferred from the engine swap (M3-7 item 4), where the per-server repository stayed
+the retrieval contract and `IVectorStore` was kept similarity-only.
+
+- [ ] **Projection on read.** `searchByEmbedding`/`list` can return summary-only
+      records (id, namespace, metadata; no `content`/`embedding`). pg selects only
+      the projected columns so bodies never cross the wire; the file backend strips
+      before return. `get(namespace, id)` stays the full-record drill-down.
+- [ ] **Generic metadata-filter `list()`.** Promote the codemcp-private exact-match
+      read to a generic `list(namespace, filter?, limit?)` on `IVectorStore`: all
+      records matching an equality filter, **no embedding**, ALL by default (`limit`
+      an optional defensive cap). This is the method we kept local during M3-7 —
+      promoted now that a second consumer (memomcp) needs the identical shape.
+- [ ] **codemcp two-tier tools.** `search_code`/`find_symbol` can return a summary
+      (`path:lines · symbol · kind · score · signature`); a follow-up expand-by-id /
+      `get_file_context` outline → chunk bodies. Additive — the buffered full-result
+      path stays for callers that want one shot.
+- [ ] **memomcp recall two-tier.** Core records + top-k archival returned as
+      summaries first, expand chosen ids — reuses the same projection + `list()`
+      primitives, not a second mechanism.
+- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once"
+      goal; the summary tier is exactly what gets streamed. Groom together so the
+      summary surface and the streaming surface are one mechanism, not two.
+- [ ] Tests: a projected search ships no `content` (pg) / drops it (file); `list`
+      returns all matches with no embedding and respects an optional cap;
+      expand-by-id returns the same body the one-shot path did.
+
+**Done when:** codemcp and memomcp retrieve in two tiers — a content-free summary
+to locate, then by-id drill-down to expand — and the store exposes projection +
+metadata-filter `list()` as generic primitives both consume, with no body shipped
+until the caller asks to expand.
+
+### M3-11 · Indexer → codemcp index bundle (publish + handoff) — `~0.5d` · P2
+The vector store and the metadata sidecar are written by the indexer but disagree on
+layout, and codemcp serves them today by reaching into `../codeindex/data` directly
+(the implicit sibling fallback in `repoFileDir`, [config.ts](src/codemcp/src/config.ts)).
+That couples codemcp's served snapshot to the indexer's live working tree and leaves the
+on-disk contract undocumented. Formalize the handoff: a **successful** index produces a
+self-contained bundle, which is then **copied** into codemcp's data dir to serve.
+
+- [ ] **One documented on-disk contract** both packages read/write: `data/commits/<sha>/`
+      holding `chunks.jsonl` (vector records) + `commit.json` (snapshot metadata), plus a
+      shared `schema_versions.json`. codemcp's `FileVectorStore` + `FileMetadataRepository`
+      read exactly what `codeindex publish` writes — no flat-vs-nested ambiguity, no stale
+      `chunks`-table / `StoredChunk` shapes.
+- [ ] **Atomic publish.** `codeindex publish` (or a dedicated `bundle` step) emits the
+      complete commits+metadata bundle on success only — a failed/partial index never
+      overwrites or half-writes the serving set.
+- [ ] **Explicit handoff.** A copy step (script or `codeindex` subcommand) places the
+      bundle into codemcp's data dir, replacing the implicit reach into `../codeindex/data`,
+      so codemcp serves a snapshot independent of the indexer's working tree.
+- [ ] Tests: publish → bundle present and readable by codemcp's readers; copy → codemcp
+      serves identical results from the copied dir; a partial index leaves the prior served
+      bundle intact.
+
+**Done when:** a successful `codeindex publish` yields a self-contained commits+metadata
+bundle that copies cleanly into codemcp to serve, both packages share one documented
+on-disk layout, and codemcp no longer depends on reaching into codeindex's working data dir.
 
 ---
 

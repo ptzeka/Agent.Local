@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import type { EmbedProvider } from '@agent-local/vectorizer';
 
-import { listIndexedRepositoryIds } from './db/file/fileRepository.js';
+import { listIndexedRepositoryIds } from './metadata/fileMetadataRepository.js';
 
 export type Backend = 'pg' | 'file';
 

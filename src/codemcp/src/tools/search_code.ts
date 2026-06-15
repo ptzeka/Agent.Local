@@ -25,10 +25,9 @@ export interface SearchCodeDeps {
 export async function searchCode(input: SearchCodeInput, deps: ToolDeps): Promise<string> {
   const { embedder, defaultBranch, currentRepository } = deps;
   const repoName = effectiveRepo(input.repository, currentRepository);
-  const { factory, repo } = pickReader(deps, repoName);
-  await using conn = await factory.getConnection();
+  const { retrieval, metadata } = pickReader(deps, repoName);
 
-  const resolved = await resolveCommit(conn, repo, {
+  const resolved = await resolveCommit(metadata, {
     branch: defaultBranch,
     repositoryInput: input.repository,
     currentRepository,
@@ -41,7 +40,7 @@ export async function searchCode(input: SearchCodeInput, deps: ToolDeps): Promis
     throw new Error(`Query embedding has dim ${vector.length}, expected ${embedder.dim}`);
   }
 
-  const chunks = await repo.searchByEmbedding(conn, resolved.commitSha, vector, input.k, {
+  const chunks = await retrieval.searchByEmbedding(resolved.commitSha, vector, input.k, {
     area: input.area,
     kind: input.kind,
     language: input.language,

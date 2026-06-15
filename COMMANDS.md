@@ -9,6 +9,9 @@
 # npm run build
 # npm start
 
+# clear all
+scripts/clear-codeindex.sh
+
 # Unblock-File .\scripts\publish-codeindex.ps1
 
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox

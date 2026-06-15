@@ -12,34 +12,32 @@ import {
   type CodeMcpConfig,
   type RepositoryEntry,
 } from './config.js';
-import { wireReader, wireMultiRepoReaders } from './wiring.js';
-import type { PgReaderRepository } from './db/pgRepository.js';
+import { wireReader, wireMultiRepoReaders, type WiredReader } from './wiring.js';
 import { VectorService, type EmbedProvider } from '@agent-local/vectorizer';
-import type { DbConnectionFactory } from './db/types.js';
+import type { IMetadataRepository } from './metadata/types.js';
 import { TOOLS, findTool, type ToolDeps } from './tools/registry.js';
 import { detectCurrentRepository } from './git.js';
 
 async function buildDeps(config: CodeMcpConfig): Promise<{
-  factory: DbConnectionFactory;
-  repo: PgReaderRepository;
+  reader: WiredReader;
   deps: ToolDeps;
   currentRepository: string | null;
 }> {
-  const { factory, repo } = wireReader(config);
+  const reader = wireReader(config);
   const embedder = VectorService.fromProvider(config.embedProvider, config.embedDim);
 
   // Build per-repo readers for the file backend (multi-repo mode).
   const repoReaders = config.backend === 'file' && config.repositories.length > 0
     ? wireMultiRepoReaders(config)
-    : new Map<string, { factory: DbConnectionFactory; repo: PgReaderRepository }>();
+    : new Map<string, WiredReader>();
 
   // Verify schema for each configured repo (file backend) or the primary backend.
   if (config.backend === 'file' && repoReaders.size > 0) {
-    for (const [repoName, reader] of repoReaders) {
-      await verifySchema(reader.factory, reader.repo, config.expectedMigration, repoName);
+    for (const [repoName, r] of repoReaders) {
+      await verifySchema(r.metadata, config.expectedMigration, repoName);
     }
   } else {
-    await verifySchema(factory, repo, config.expectedMigration, null);
+    await verifySchema(reader.metadata, config.expectedMigration, null);
   }
 
   // default repo when a call omits `repository`: cwd git origin if it matches a registered name, else the first
@@ -54,32 +52,26 @@ async function buildDeps(config: CodeMcpConfig): Promise<{
   })();
 
   const deps: ToolDeps = {
-    factory,
-    repo,
+    reader,
     embedder,
     defaultBranch: config.branch,
     currentRepository,
     repoReaders,
   };
-  return { factory, repo, deps, currentRepository };
+  return { reader, deps, currentRepository };
 }
 
 async function verifySchema(
-  factory: DbConnectionFactory,
-  repo: PgReaderRepository,
+  metadata: IMetadataRepository,
   expected: string,
   repoLabel: string | null,
 ): Promise<void> {
   const label = repoLabel ? ` (${repoLabel})` : '';
-  await using conn = await factory.getConnection();
-  const latest = await repo.getLatestAppliedMigration(conn);
+  const latest = await metadata.getLatestAppliedMigration();
   if (latest === null) {
-    const base = 'baseDir' in factory && typeof (factory as { baseDir?: string }).baseDir === 'string'
-      ? (factory as { baseDir: string }).baseDir
-      : '(unknown)';
     throw new Error(
       `codemcp refuses to start${label}: no migrations have been applied (missing or empty ` +
-      `schema_versions.json under ${base}). ` +
+      `schema_versions.json / commits table). ` +
       `From the monorepo: \`cd tools/codeindex && npm run migrate:file && npm run publish:file\` ` +
       `(writes tools/codeindex/data/). Name-only \`--repository\` reads that folder automatically when present.`,
     );
@@ -107,7 +99,7 @@ async function serve(overrides: CliOverrides): Promise<void> {
       `Omit \`--repository\` in MCP args when all live in this data tree.\n`,
     );
   }
-  const { factory, deps, currentRepository } = await buildDeps(config);
+  const { reader, deps, currentRepository } = await buildDeps(config);
 
   const repoList = config.repositories.length > 0
     ? config.repositories
@@ -147,13 +139,18 @@ async function serve(overrides: CliOverrides): Promise<void> {
     tools: TOOLS,
     deps,
     onShutdown: async () => {
-      try { await factory.end(); } catch { /* ignore */ }
-      for (const reader of deps.repoReaders.values()) {
-        try { await reader.factory.end(); } catch { /* ignore */ }
-      }
+      await closeReaders(reader, deps.repoReaders);
     },
   });
   await toolServer.start();
+}
+
+// releases any pooled resources held by the primary + per-repo readers (no-op on the file backend)
+async function closeReaders(reader: WiredReader, repoReaders: Map<string, WiredReader>): Promise<void> {
+  for (const r of [reader, ...repoReaders.values()]) {
+    try { await r.retrieval.close(); } catch { /* ignore */ }
+    try { await r.metadata.close(); } catch { /* ignore */ }
+  }
 }
 
 async function probe(overrides: CliOverrides, toolName: string, argsJson: string | undefined): Promise<void> {
@@ -172,15 +169,12 @@ async function probe(overrides: CliOverrides, toolName: string, argsJson: string
       throw new Error(`Invalid JSON for tool args: ${(err as Error).message}`);
     }
   }
-  const { factory, deps } = await buildDeps(config);
+  const { reader, deps } = await buildDeps(config);
   try {
     const text = await tool.handler(parsedArgs, deps);
     process.stdout.write(text + '\n');
   } finally {
-    await factory.end();
-    for (const reader of deps.repoReaders.values()) {
-      try { await reader.factory.end(); } catch { /* ignore */ }
-    }
+    await closeReaders(reader, deps.repoReaders);
   }
 }
 

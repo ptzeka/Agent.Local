@@ -28,6 +28,9 @@ export interface IVectorStore {
     k: number,
     filter?: MetadataFilter,
   ): Promise<SearchHit[]>;
+  // exact-match retrieval with no embedding: every record in the namespace matching the filter
+  // unbounded by design — callers that need ranking use searchByEmbedding instead
+  list(namespace: string, filter?: MetadataFilter): Promise<VectorRecord[]>;
   delete(namespace: string, ids: string[]): Promise<void>;
   deleteNamespace(namespace: string): Promise<void>;
   listNamespaces(): Promise<string[]>;

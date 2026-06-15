@@ -14,10 +14,9 @@ export type GetFileContextInput = z.infer<typeof getFileContextSchema>;
 export async function getFileContext(input: GetFileContextInput, deps: ToolDeps): Promise<string> {
   const { defaultBranch, currentRepository } = deps;
   const repoName = effectiveRepo(input.repository, currentRepository);
-  const { factory, repo } = pickReader(deps, repoName);
-  await using conn = await factory.getConnection();
+  const { retrieval, metadata } = pickReader(deps, repoName);
 
-  const resolved = await resolveCommit(conn, repo, {
+  const resolved = await resolveCommit(metadata, {
     branch: defaultBranch,
     repositoryInput: input.repository,
     currentRepository,
@@ -25,7 +24,7 @@ export async function getFileContext(input: GetFileContextInput, deps: ToolDeps)
   });
   if (resolved.kind === 'missing') return resolved.message;
 
-  const chunks = await repo.getFileChunks(conn, resolved.commitSha, input.path);
+  const chunks = await retrieval.getFileChunks(resolved.commitSha, input.path);
   if (chunks.length === 0) {
     return formatResolutionHeader(resolved) + `(no chunks for ${input.path} in commit ${resolved.commitSha})`;
   }

@@ -1,8 +1,7 @@
 // Shared commit/repository resolution for the search tools: picks the effective repo and commit SHA,
 // and renders the header tools prepend so callers see which slice of the index they got.
 
-import type { DbConnection } from '../db/types.js';
-import type { PgReaderRepository } from '../db/pgRepository.js';
+import type { IMetadataRepository } from '../metadata/types.js';
 
 // enough rows to detect multiple SHAs for one repo+branch; not a hard cap on index size
 const COMMIT_RESOLUTION_ROW_CAP = 500;
@@ -29,8 +28,7 @@ export type ResolveCommitResult =
 // Refuses rather than guesses: an unknown repo or several SHAs for one repo+branch returns a `missing`
 // message telling the caller how to recover, so the agent never reasons about the wrong code.
 export async function resolveCommit(
-  conn: DbConnection,
-  repo: PgReaderRepository,
+  metadata: IMetadataRepository,
   opts: ResolveCommitOptions,
 ): Promise<ResolveCommitResult> {
   const explicit = opts.repositoryInput?.trim();
@@ -72,8 +70,7 @@ export async function resolveCommit(
     );
   };
 
-  const onDefaultBranch = await repo.listCommits(
-    conn,
+  const onDefaultBranch = await metadata.listCommits(
     opts.branch,
     repository,
     COMMIT_RESOLUTION_ROW_CAP,
@@ -96,7 +93,7 @@ export async function resolveCommit(
   }
 
   // indexed snapshots record the real git branch, which often differs from the global --branch default
-  const anyBranch = await repo.listCommits(conn, null, repository, COMMIT_RESOLUTION_ROW_CAP);
+  const anyBranch = await metadata.listCommits(null, repository, COMMIT_RESOLUTION_ROW_CAP);
   if (anyBranch.length === 0) {
     return {
       kind: 'missing',

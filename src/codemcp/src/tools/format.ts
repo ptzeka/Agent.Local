@@ -1,4 +1,4 @@
-import type { ChunkRow } from '../db/pgRepository.js';
+import type { ChunkRow } from '../retrieval/types.js';
 
 // line-anchored citation + governing CLAUDE.md files, so an assistant can quote
 // the result without hallucinating line numbers

@@ -66,6 +66,10 @@ export class FileVectorStore implements IVectorStore {
       .slice(0, k);
   }
 
+  async list(namespace: string, filter: MetadataFilter = {}): Promise<VectorRecord[]> {
+    return [...this.read(namespace).values()].filter(r => matchesFilter(r.metadata, filter));
+  }
+
   async delete(namespace: string, ids: string[]): Promise<void> {
     const folded = this.read(namespace);
     let changed = false;

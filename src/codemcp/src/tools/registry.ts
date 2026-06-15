@@ -1,22 +1,20 @@
 import { z } from 'zod';
-import type { DbConnectionFactory } from '../db/types.js';
-import type { PgReaderRepository } from '../db/pgRepository.js';
 import type { IVectorService } from '@agent-local/vectorizer';
+import type { WiredReader } from '../wiring.js';
 import { searchCode, searchCodeSchema } from './search_code.js';
 import { findSymbol, findSymbolSchema } from './find_symbol.js';
 import { getFileContext, getFileContextSchema } from './get_file_context.js';
 import { listCommits, listCommitsSchema } from './list_commits.js';
 
 export interface ToolDeps {
-  factory: DbConnectionFactory;
-  repo: PgReaderRepository;
+  reader: WiredReader;
   embedder: IVectorService;
   defaultBranch: string;
   // default repo filter when a call omits `repository`; null means unknown, so resolveCommit
   // refuses to search "any repository" rather than guessing a name
   currentRepository: string | null;
   // per-repository readers for the file backend in multi-repo mode, keyed by repository name; empty otherwise
-  repoReaders: Map<string, { factory: DbConnectionFactory; repo: PgReaderRepository }>;
+  repoReaders: Map<string, WiredReader>;
 }
 
 // effective repo from explicit input then server default; mirrors resolveCommit so callers pick a reader first
@@ -30,14 +28,11 @@ export function effectiveRepo(
 }
 
 // reader pair for a repo name, falling back to the primary reader when the repo is not in repoReaders
-export function pickReader(
-  deps: ToolDeps,
-  repoName: string | null,
-): { factory: DbConnectionFactory; repo: PgReaderRepository } {
+export function pickReader(deps: ToolDeps, repoName: string | null): WiredReader {
   if (repoName !== null && deps.repoReaders.has(repoName)) {
     return deps.repoReaders.get(repoName)!;
   }
-  return { factory: deps.factory, repo: deps.repo };
+  return deps.reader;
 }
 
 export interface ToolDef {

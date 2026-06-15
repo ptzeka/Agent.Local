@@ -14,10 +14,9 @@ export type FindSymbolInput = z.infer<typeof findSymbolSchema>;
 export async function findSymbol(input: FindSymbolInput, deps: ToolDeps): Promise<string> {
   const { defaultBranch, currentRepository } = deps;
   const repoName = effectiveRepo(input.repository, currentRepository);
-  const { factory, repo } = pickReader(deps, repoName);
-  await using conn = await factory.getConnection();
+  const { retrieval, metadata } = pickReader(deps, repoName);
 
-  const resolved = await resolveCommit(conn, repo, {
+  const resolved = await resolveCommit(metadata, {
     branch: defaultBranch,
     repositoryInput: input.repository,
     currentRepository,
@@ -25,6 +24,6 @@ export async function findSymbol(input: FindSymbolInput, deps: ToolDeps): Promis
   });
   if (resolved.kind === 'missing') return resolved.message;
 
-  const chunks = await repo.findSymbol(conn, resolved.commitSha, input.name);
+  const chunks = await retrieval.findSymbol(resolved.commitSha, input.name);
   return formatResolutionHeader(resolved) + formatChunks(chunks);
 }

@@ -96,6 +96,17 @@ export class PgVectorStore implements IVectorStore {
     return result.rows.map(row => ({ record: toRecord(row), score: Number(row.score) }));
   }
 
+  async list(namespace: string, filter: MetadataFilter = {}): Promise<VectorRecord[]> {
+    await using conn = await this.factory.getConnection();
+    const result = await conn.query<StoredRow>(
+      `SELECT id, namespace, content, embedding::text AS embedding, metadata
+       FROM ${this.table}
+       WHERE namespace = $1 AND metadata @> $2::jsonb`,
+      [namespace, JSON.stringify(filter)],
+    );
+    return result.rows.map(toRecord);
+  }
+
   async delete(namespace: string, ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     await using conn = await this.factory.getConnection();

@@ -21,6 +21,7 @@
   "dependencies": {
     "@agent-local/mcp": "*",
     "@agent-local/vectorizer": "*",
+    "@agent-local/vectorstore": "*",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "commander": "^12.1.0",
     "pg": "^8.13.1",

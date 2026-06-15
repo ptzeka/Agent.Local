@@ -1,6 +1,5 @@
 import { z } from 'zod';
-import type { DbConnectionFactory } from '../db/types.js';
-import type { PgReaderRepository, CommitRow } from '../db/pgRepository.js';
+import type { CommitRow } from '../metadata/types.js';
 import type { ToolDeps } from './registry.js';
 
 export const listCommitsSchema = z.object({
@@ -13,19 +12,8 @@ export const listCommitsSchema = z.object({
 
 export type ListCommitsInput = z.infer<typeof listCommitsSchema>;
 
-async function fetchCommits(
-  factory: DbConnectionFactory,
-  repo: PgReaderRepository,
-  branch: string | null,
-  repositoryFilter: string | null,
-  limit: number,
-): Promise<CommitRow[]> {
-  await using conn = await factory.getConnection();
-  return repo.listCommits(conn, branch, repositoryFilter, limit);
-}
-
 export async function listCommits(input: ListCommitsInput, deps: ToolDeps): Promise<string> {
-  const { factory, repo, currentRepository, repoReaders } = deps;
+  const { reader, currentRepository, repoReaders } = deps;
   const repositoryFilter = input.repository?.trim().length ? input.repository.trim() : null;
   const branchFilter = input.branch ?? null;
 
@@ -39,17 +27,16 @@ export async function listCommits(input: ListCommitsInput, deps: ToolDeps): Prom
       : [...repoReaders.entries()];
 
     const allRows: CommitRow[] = [];
-    for (const [repoName, reader] of readers) {
+    for (const [repoName, repoReader] of readers) {
       const filterForReader = repositoryFilter ?? repoName;
-      const partial = await fetchCommits(reader.factory, reader.repo, branchFilter, filterForReader, input.limit);
+      const partial = await repoReader.metadata.listCommits(branchFilter, filterForReader, input.limit);
       allRows.push(...partial);
     }
     allRows.sort((a, b) => b.indexedAt.getTime() - a.indexedAt.getTime());
     rows = allRows.slice(0, input.limit);
   } else {
     // Single backend (Postgres or single-repo file): use the primary reader.
-    await using conn = await factory.getConnection();
-    rows = await repo.listCommits(conn, branchFilter, repositoryFilter, input.limit);
+    rows = await reader.metadata.listCommits(branchFilter, repositoryFilter, input.limit);
   }
 
   if (rows.length === 0) {
