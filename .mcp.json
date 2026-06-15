@@ -9,6 +9,17 @@
         "--backend",
         "file"
       ]
+    },
+    "memomcp": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/Applications/WWW/Agent.Local/src/memomcp/dist/server.js",
+        "--backend",
+        "file",
+        "--embed-provider",
+        "local"
+      ]
     }
   }
 }

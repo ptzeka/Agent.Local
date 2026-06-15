@@ -672,6 +672,20 @@ MCP base.
   coupling cut: the store never learns "relationship," same as it never learns
   "commit."
 
+- **Memory id vs vectorId — two entities, explicit reference, never an assumed
+  shared id** (settled 2026-06-15, memomcp). A memory and the `VectorRecord`
+  holding its embedding are SEPARATE entities (1:1 today). Apply the naming rule:
+  `id` is an entity's OWN identity; a pointer to another entity is `<entity>Id`.
+  So a memory keeps its own `id`, and `vectorId` is a real reference to its vector
+  record (`= VectorRecord.id`). Do NOT collapse them onto one `id` and rely on the
+  reader knowing they're the same — that ambiguity (is `id` the owner's id or a
+  reference?) is exactly what this avoids. Wiring: `VectorRecord.id` = the
+  vectorId; the memory's own id rides in `metadata.memoryId` as the back-reference;
+  `remember` reuses the existing vectorId on overwrite (stable vector identity
+  across re-embeds), `recall` surfaces both `id` and `vectorId`. **Why it
+  generalizes:** chunking a long memory becomes one memory `id` with many
+  `vectorId`s — zero renaming, the relationship was explicit from day one.
+
 ### M3-8 · codemcp streaming — `~1d` · P2
 Today `search_code` / `find_symbol` embed the query, rank the whole result set,
 then return one buffered payload. Large `k` or big chunks block the caller until
@@ -721,41 +735,61 @@ duplicating it.
 
 ### M3-10 · Store-level AI retrieval — projection + two-tier (progressive disclosure) — `~1.5d` · P2
 Retrieval today returns full records in one shot: `search_code` returns `k` whole
-chunks, `find_symbol`/`get_file_context` return ALL matching chunk **bodies**. For
-AI analysis that's token-heavy and forces the agent to read bodies it may never
-use. Both codemcp and memomcp want the same two-tier flow: a cheap **locate/summary**
-phase that returns just enough to choose (no `content`, no `embedding`), then a
-**drill-down** by id for the few that matter. This is the capability deliberately
-deferred from the engine swap (M3-7 item 4), where the per-server repository stayed
-the retrieval contract and `IVectorStore` was kept similarity-only.
+chunks, `find_symbol`/`get_file_context` return ALL matching chunk **bodies**, and
+memomcp `recall` pulls every `core` record in full. For AI analysis that's
+token-heavy and forces the agent to read bodies it may never use — you cannot scan a
+whole collection to decide *what* to look at without first dragging everything across.
+Both codemcp and memomcp want the same two-tier flow: a cheap **locate/summary** phase
+that returns just enough to choose (no `content`, no `embedding`), then a
+**drill-down** by id for the few that matter. Deferred from the engine swap (M3-7 item
+4), which kept `IVectorStore` similarity-only.
 
-- [ ] **Projection on read.** `searchByEmbedding`/`list` can return summary-only
-      records (id, namespace, metadata; no `content`/`embedding`). pg selects only
-      the projected columns so bodies never cross the wire; the file backend strips
-      before return. `get(namespace, id)` stays the full-record drill-down.
-- [ ] **Generic metadata-filter `list()`.** Promote the codemcp-private exact-match
-      read to a generic `list(namespace, filter?, limit?)` on `IVectorStore`: all
-      records matching an equality filter, **no embedding**, ALL by default (`limit`
-      an optional defensive cap). This is the method we kept local during M3-7 —
-      promoted now that a second consumer (memomcp) needs the identical shape.
+Status since groom: `list(namespace, filter?)` was already promoted onto
+`IVectorStore` early (commit 76596e5) — so the promotion is done, but in its **blunt
+form**: no `limit`, no projection, returns full records. memomcp is now the live proof
+of the waste: `recall` calls `store.list(collection, { kind: 'core' })` then
+`toRecalled` **discards the embedding** ([memoryRepository.ts](src/memomcp/src/memory/memoryRepository.ts)) — every 768-float vector crosses the wire and is thrown away. The "second consumer"
+gate is satisfied, so the refinement is justified now.
+
+Design decision (agreed): there are **two distinct reductions**, do them in order.
+
+**Phase 1 — embeddings become write-only on reads (low-risk, universal, do first).**
+No reader ever consumes `.embedding` off a result: codemcp `toChunkRow` and memomcp
+`toRecalled` both drop it; `searchByEmbedding` uses it *internally* for scoring only.
+So returning it is dead weight in 100% of call sites — and it is the single biggest
+field.
+- [ ] Make `embedding` an **input-only** field: present on the `upsert` record type,
+      absent from `SearchHit.record` / `list()` results (`{ id, namespace, content,
+      metadata }`). `get(namespace, id)` keeps the full record (re-embed / migrate /
+      export are the only callers that need the vector back).
+- [ ] pg: drop `embedding` from the read `SELECT`s (it never leaves the DB); file:
+      strip before return.
+- [ ] Add the optional defensive `limit?` to `list(namespace, filter?, limit?)` while
+      here (ALL by default).
+- [ ] Tests: read paths ship no `embedding`; `get` still returns it; recall result is
+      byte-identical minus the vector; `list` respects the cap.
+
+**Phase 2 — content-free summary tier (the two-tier locate→expand).**
+Distinct honest type, not a flag on the existing methods: both consumers already
+hand-roll the narrowed shape (`RecalledMemory`, `ChunkRow`-without-body), and a record
+with `content: ''` would make the type lie.
+- [ ] `interface VectorSummary { id; namespace; metadata }` (+ `score?` on a hit) and
+      `searchSummaries(...)` / `listSummaries(...)` on `IVectorStore`; `get(namespace,
+      id)` is the expand. pg selects only summary columns; file strips `content` too.
 - [ ] **codemcp two-tier tools.** `search_code`/`find_symbol` can return a summary
-      (`path:lines · symbol · kind · score · signature`); a follow-up expand-by-id /
-      `get_file_context` outline → chunk bodies. Additive — the buffered full-result
-      path stays for callers that want one shot.
-- [ ] **memomcp recall two-tier.** Core records + top-k archival returned as
-      summaries first, expand chosen ids — reuses the same projection + `list()`
-      primitives, not a second mechanism.
-- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once"
-      goal; the summary tier is exactly what gets streamed. Groom together so the
-      summary surface and the streaming surface are one mechanism, not two.
-- [ ] Tests: a projected search ships no `content` (pg) / drops it (file); `list`
-      returns all matches with no embedding and respects an optional cap;
+      (`path:lines · symbol · kind · score · signature`); follow-up expand-by-id /
+      `get_file_context` outline → chunk bodies. Additive — the one-shot full path stays.
+- [ ] **memomcp recall two-tier.** Core + top-k archival as summaries first, expand
+      chosen ids — same `VectorSummary` primitive, not a second mechanism.
+- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once" goal;
+      the summary tier is exactly what gets streamed — one mechanism, not two.
+- [ ] Tests: a summary search ships no `content` (pg never selects it / file drops it);
       expand-by-id returns the same body the one-shot path did.
 
-**Done when:** codemcp and memomcp retrieve in two tiers — a content-free summary
-to locate, then by-id drill-down to expand — and the store exposes projection +
-metadata-filter `list()` as generic primitives both consume, with no body shipped
-until the caller asks to expand.
+**Done when:** reads never carry an embedding; codemcp and memomcp retrieve in two
+tiers — a content-free summary to locate, then by-id drill-down to expand — and the
+store exposes `VectorSummary` + `list(filter?, limit?)` as generic primitives both
+consume, with no body shipped until the caller asks to expand.
 
 ### M3-11 · Indexer → codemcp index bundle (publish + handoff) — `~0.5d` · P2
 The vector store and the metadata sidecar are written by the indexer but disagree on
@@ -783,6 +817,33 @@ self-contained bundle, which is then **copied** into codemcp's data dir to serve
 **Done when:** a successful `codeindex publish` yields a self-contained commits+metadata
 bundle that copies cleanly into codemcp to serve, both packages share one documented
 on-disk layout, and codemcp no longer depends on reaching into codeindex's working data dir.
+
+---
+
+### M3-12 · memomcp persistent/remote store — Voyage embeddings or local pg repository — `~1d` · P2
+memomcp today runs `--backend file --embed-provider local` purely to verify connection
+wiring (see [.mcp.json](.mcp.json)). The `local` embedder is hashed bag-of-words — no
+paraphrase recall — and the file backend is a single-process JSONL, so neither is a real
+memory store. Promote it to a persistent backend with real embeddings. Two candidate shapes
+to evaluate (the `vectorstore` engine already exposes both file and pg backends from M3-6):
+
+- [ ] **Option A — Voyage (or openai) embeddings.** Keep a durable store but swap the
+      embedder to a hosted provider for genuine semantic recall. Wire `VOYAGE_API_KEY`
+      through an `env` block in `.mcp.json` (never commit the key — same provider-key-scrub
+      rule as M0-2), set `--embed-dim` to match the model, and confirm stored dims match on
+      recall.
+- [ ] **Option B — local Postgres repository.** Run memomcp on `--backend pg` against a
+      local Postgres (`--pg-dsn` / `memomcp.config.json`), giving a real persistent, queryable
+      store instead of single-process JSONL. Reuses the pg path already in `@agent-local/vectorstore`.
+- [ ] **Decide the embed/persistence pairing.** The two options are not exclusive (pg backend
+      + Voyage embedder is the strongest combo); pick the target and document the dim/provider
+      contract so a later provider change doesn't silently mismatch stored vectors.
+- [ ] Depends on the memory-namespace work in M3-7 / [[codemcp-vectorstore-layout]]: a memory
+      namespace must get `retrieval` WITHOUT a commit.json sidecar (memory never fakes a commit).
+
+**Done when:** memomcp serves remember/recall from a persistent store (pg and/or Voyage-embedded)
+with real paraphrase recall, keys are injected via env and never committed, and the
+embed-provider/dim contract is documented so stored vectors can't silently mismatch.
 
 ---
 

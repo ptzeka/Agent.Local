@@ -13,6 +13,7 @@
     "src/agent",
     "src/codeindex",
     "src/codemcp",
+    "src/memomcp",
     "src/codemanagermcp",
     "src/openclaw"
   ],

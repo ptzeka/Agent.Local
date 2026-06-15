@@ -28,6 +28,7 @@ Thumbs.db
 /src/agent/sessions
 /src/codeindex/data
 /src/codemcp/data
+/src/memomcp/data
 
 # Local debug log sink (FileLogger)
 agent.log
