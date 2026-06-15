@@ -578,12 +578,26 @@ together itself.
       and codemcp now depend on `IVectorService`, not the raw adapter. `EmbedProvider`
       union lifted here, no longer duplicated in either config. 7 tests; both
       consumers build green.)
-- [ ] **`src/vectorstore`** (leaf, `~1.5d`) — one copy of
+- [x] **`src/vectorstore`** (leaf, `~1.5d`) — one copy of
       `DbConnection`/`DbConnectionFactory` (kills the byte-identical dupe across
       `codeindex/db/types.ts` and `codemcp/db/types.ts`), pg + file backends,
       generic `VectorRecord { id, namespace, content, embedding, metadata }` and
       `VectorStore { upsert, searchByEmbedding(ns, emb, k, filter), delete }`.
-      `namespace` is opaque; filter is generic equality over `metadata`.
+      `namespace` is opaque; filter is generic equality over `metadata`. — done
+      2026-06-14 (`@agent-local/vectorstore`: `IVectorStore` with
+      `upsert`/`get`/`searchByEmbedding`/`delete`/`deleteNamespace`/`listNamespaces`/`close`;
+      `SearchHit { record, score }` where score is cosine distance. `PgVectorStore`
+      (pgvector `<=>` rank + jsonb `@>` equality filter, `ensureSchema`, vector dim
+      left UNPINNED per the sharp edge — consumer guards it). `FileVectorStore`
+      log-structured: append on upsert, fold-by-id-last-wins on read, rewrite-compact
+      on delete; rooted at `data/`, parameterizable `{ baseDir, partitionDir,
+      recordsFile }` so `commits/<sha>/chunks.jsonl` and `memories/<ns>/records.jsonl`
+      both fit. `DbConnection`/`DbConnectionFactory` + `PgConnectionFactory` now live
+      here as the single home — codeindex/codemcp dedupe onto it when they migrate
+      (tasks below, still open). The store never learns commit/snapshot. `PgVectorStore`
+      takes a connection string OR a ready `DbConnectionFactory` so a pool can be shared
+      (also makes SQL marshalling testable). 16 tests: 11 file-backend + 5 pg marshalling
+      via a fake connection; leaf builds green, no consumers migrated yet.)
 - [ ] **`src/codeindex` on the engine** (`~1d`) — walker/chunkers/commit
       unchanged; `publish.ts` writes through `vectorstore`, code fields into
       `metadata`. Output stays byte-compatible (`data/commits/<sha>/…`);
@@ -594,9 +608,10 @@ together itself.
       filter.
 - [ ] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
       + `vectorizer`, partitioned by collection. tenant/category live in
-      `metadata` (filtering), NOT in the path; id↔association/linking is a
-      separate concern kept out of the store. Must use voyage/openai (local
-      bag-of-words can't do paraphrase recall).
+      `metadata` (filtering), NOT in the path; associations are a separate
+      sidecar via `getMemoryAssociations`, never a record field (see "Memory
+      record shape" below). Must use voyage/openai (local bag-of-words can't do
+      paraphrase recall).
 - [x] **`src/mcp`** (new base/reference, `~1d`) — extract the MCP scaffolding
       that every server re-implements into one shared package so `codemcp` /
       `memomcp` (and future servers) derive from it instead of drifting. Move
@@ -640,6 +655,23 @@ real data → 5 builds on a proven engine **and** the shared MCP base.
   surface in `src/common`. — done 2026-06-14: promoted to `@agent-local/common`
   (lifetime/eventing/container/ilogger/filelogger + `TokenUsage`); `@agent-local/mcp`
   and the agent depend on it, no longer reaching back into `src/agent`.
+
+- **Memory record shape — flat records, associations are a sidecar** (settled
+  2026-06-14, for memomcp). A memory is just a `vectorstore` `VectorRecord`; all
+  memory semantics are `metadata` conventions owned by memomcp, the store stays
+  generic. `metadata`: `kind` (`core` = small/high-salience, always loaded by id;
+  `archival` = the bulk, retrieved top-k by similarity), `category`, `tags`,
+  `tenant`, `createdAt`, `source`. Recall = load the collection's `core` records
+  **plus** top-k `archival` by embedding. Storage = JSONL rows per collection
+  (`memories/<id>/records.jsonl`), append on `remember`, upsert-by-id (no commit
+  snapshot — version key stays optional). **No inline `parentId`/links field.**
+  Associations are a SEPARATE sidecar — `memories/<id>/associations.jsonl`,
+  analogous to codeindex's `commit.json` — read via `getMemoryAssociations(id)`
+  returning edges that carry their OWN `kind` + importance ranking. Build the
+  association layer only when traversal is actually needed; until then memory is
+  flat records + generic `metadata` equality filters. Keeps the deepest M3-6
+  coupling cut: the store never learns "relationship," same as it never learns
+  "commit."
 
 ---
 

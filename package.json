@@ -8,6 +8,7 @@
     "src/common",
     "src/mcp",
     "src/vectorizer",
+    "src/vectorstore",
     "src/fsmcp",
     "src/agent",
     "src/codeindex",

@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 import { Command, Option } from 'commander';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { McpToolServer } from '@agent-local/mcp/tool-server';
 
 import {
   loadConfig,
@@ -143,50 +141,19 @@ async function serve(overrides: CliOverrides): Promise<void> {
     );
   }
 
-  const server = new Server(
-    { name: 'codemcp', version: '0.1.0' },
-    { capabilities: { tools: {} } },
-  );
-
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: TOOLS.map(t => ({
-      name: t.name,
-      description: t.description,
-      inputSchema: t.inputSchema,
-    })),
-  }));
-
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const tool = findTool(request.params.name);
-    if (!tool) {
-      return {
-        content: [{ type: 'text' as const, text: `unknown tool: ${request.params.name}` }],
-        isError: true,
-      };
-    }
-    try {
-      const text = await tool.handler(request.params.arguments ?? {}, deps);
-      return { content: [{ type: 'text' as const, text }] };
-    } catch (err) {
-      return {
-        content: [{ type: 'text' as const, text: `${tool.name} failed: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
+  const toolServer = new McpToolServer<ToolDeps>({
+    name: 'codemcp',
+    version: '0.1.0',
+    tools: TOOLS,
+    deps,
+    onShutdown: async () => {
+      try { await factory.end(); } catch { /* ignore */ }
+      for (const reader of deps.repoReaders.values()) {
+        try { await reader.factory.end(); } catch { /* ignore */ }
+      }
+    },
   });
-
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  const shutdown = async (): Promise<void> => {
-    try { await factory.end(); } catch { /* ignore */ }
-    for (const reader of deps.repoReaders.values()) {
-      try { await reader.factory.end(); } catch { /* ignore */ }
-    }
-    process.exit(0);
-  };
-  process.on('SIGINT', () => { void shutdown(); });
-  process.on('SIGTERM', () => { void shutdown(); });
+  await toolServer.start();
 }
 
 async function probe(overrides: CliOverrides, toolName: string, argsJson: string | undefined): Promise<void> {
