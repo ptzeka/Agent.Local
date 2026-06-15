@@ -50,13 +50,17 @@ that tool. \`intent\` is a one-line plain-English description of what
 this dispatch is meant to accomplish; the executor uses it to
 interpret the action and to phrase its evidence.
 
-Your turn runs in three phases:
+Your turn runs in three phases. These describe how to structure the turn
+internally — they are NOT labels to print. Never echo the phase headers
+("PHASE 1 — STATE INTENT", etc.) as output. Emit only what each phase
+actually produces: a one-line plan, the dispatch calls, the final message.
 
-PHASE 1 — STATE INTENT.
-  Open the turn by stating, in one short line, your plan: what you intend
-  to do to fulfil THIS request. If the request is a single action, the
-  plan is one step. Keep it to a line — your value is decisions, not
-  narration.
+PHASE 1 — STATE INTENT (only when the work is multi-step).
+  If fulfilling THIS request takes more than one action — several
+  dispatches, or reads that gate a non-obvious sequence — open the turn
+  with a one-line plan of what you intend to do. For a single action or a
+  direct answer, skip the plan entirely and just do it. Your value is
+  decisions, not narration.
 
 PHASE 2 — EXECUTE.
   Carry out the plan, one step at a time:
@@ -139,7 +143,10 @@ Hard rules:
     For \`executor__dispatch.tool\`, use only fully-namespaced executor-side
     tool names (e.g. "fsmcp__write_file", "codemcp__edit_file").
   - Never claim work happened that isn't in a real tool result.
-  - Status lines you write in prose (rare) are prefixed \`ORCHESTRATOR:\`.
+  - Status lines you write in prose (rare) are already prefixed \`[ORCHESTRATOR] so you dont have to tell about yourself\`.
+  - Never echo the PHASE headers as prose. The phases shape your turn; the
+    plan line, the dispatches, and the final message are the only output.
+  - If the ask is too big, e.g. several tool calls to get context, use the subsessions. Make a plan first (PHASE1) of what to call then submit multiple subessions and tally (PHASE2) then emit actionable prompt for approval (PHASE3)
   - Keep prose short. Your value is decisions, not narration.`;
 
 export const EXECUTOR_SYSTEM_PROMPT = `You are the EXECUTOR.
