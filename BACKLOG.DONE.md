@@ -14,11 +14,62 @@ Newest milestones first.
 
 ---
 
-## M3 — Engine extraction (vectorizer / vectorstore / mcp)
+## M3 — Engine extraction (vectorizer / vectorstore / mcp / codemcp / memomcp)
 
-Completed slices of the "split into 5 packages" grooming. The shared
-package-dependency diagram and the remaining consumers (`codemcp`, `memomcp`)
-stay in [BACKLOG.md](BACKLOG.md).
+Completed slices of the "split into 5 packages" grooming. All 6 packages shipped.
+
+### External MCP per-session mounting — `~1d`
+Enables the agent to connect to external stdio MCP servers (declared in `mcp.json`) at
+runtime, with per-session isolation. Prerequisite for M3-18 (start-of-turn memory recall).
+
+- [x] `runtime/middleware/external-mcp.ts`: `readMcpServerDefs` (reads `mcp.json` without
+      throwing on missing file) + `mountExternalMcp` (spawns one stdio server, wraps as `Mcp`,
+      self-disposes on `runtimeSignal`). `defaultCwd` resolves the package root from the
+      script path so codemcp's index auto-discovery works without per-server `cwd` config.
+- [x] `McpRegistryMiddleware` updated to `await mountServers`: synthetic servers matched by
+      name; any unrecognized name looked up in `mcp.json` and spawned as stdio. Declared-but-
+      unmounted semantics preserved for the executor.
+- [x] memomcp wired as a **per-session** server: `memoryCollectionFor(session)` derives the
+      collection id from the session; `memomcp` is appended with `--collection <id>` so each
+      spawned instance reads/writes only that session's memories. Added to executor + orchestrator
+      `mcp` lists in `models.json`.
+- [x] `session.ts` gets `memoryCollectionFor` helper; tests in `tests/middleware/external-mcp.test.ts`.
+
+**Done when:** the agent mounts external stdio servers from `mcp.json` at build time with no
+registry-side teardown, memomcp runs per-session-scoped, and the declared-but-unmounted executor
+semantics are unchanged. ✅ DONE
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
+### `src/codemcp` on the engine — `~1d` · P2
+Part of the M3-7 "split into 5 packages" grooming (package 4 of 6). Migrates codemcp's
+retrieval layer onto the shared `vectorstore` + `vectorizer` packages, adding the two-tier
+locate→expand and related_code tools from M3-14/M3-15.
+
+- [x] `codeRetrieval.ts` updated: `CodeRetrieval` wraps `IVectorStore`; `searchByEmbedding`,
+      `findSymbol`, `getFileChunks` route through the generic store; code fields (area/kind/
+      symbol/lines/imports) live in `metadata` via `toChunkRow`/`toFilter`. `IVectorService`
+      (from `vectorizer`) drives query embedding.
+- [x] Two-tier tools added: `locate_code`/`locate_symbol`/`locate_file` return `ChunkSummary`
+      (content-free); `expand_chunk` fetches one body by citation. One-shot
+      `search_code`/`find_symbol`/`get_file_context` unchanged.
+- [x] `related_code` tool: `CodeRetrieval.relatedTo` → `IVectorStore.relatedTo`; citation
+      parsed to chunk id; non-boundary citations refused with a corrective error.
+- [x] `vectorstore` gains `searchSummaries`/`listSummaries`/`relatedTo` (M3-14/M3-15 store
+      primitives) in the same commit; pg and file backends covered; 56 new tests.
+- [x] Integration-tested end-to-end via `src/codemcp/integrationtests.sh`; `search_code`,
+      `find_symbol`, `get_file_context`, `locate_*`, `expand_chunk`, `related_code` all
+      validated against the live index.
+
+**Done when:** codemcp reads through `IVectorStore` + `vectorizer`, one-shot tools produce
+identical output, two-tier locate→expand and `related_code` are live, integration tests green.
+✅ DONE
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
+---
+
+### Prior engine packages (vectorizer / vectorstore / codeindex / mcp / memomcp)
+
+Completed slices of the "split into 5 packages" grooming. All 6 packages done (codemcp above).
 
 ### M3-13 · Retrieval Phase 1 — embeddings write-only on reads — `~0.5d` · P2
 Phase 1 of **M3-10**. No reader ever consumes `.embedding` off a result: codemcp

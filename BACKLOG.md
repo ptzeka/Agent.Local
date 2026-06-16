@@ -25,30 +25,21 @@ Conventions used below:
 Everything here is independent of the future user-keyed store and survives it.
 
 ### M0-1 · Dispatch-time tool gate — `~1.5d` · P0
-The core fix: restrictions must hold at dispatch, not just advertisement.
-> **Superseded by MR-1/MR-2** (see milestone MR below and
-> [UNIFIED_RUNTIME_PLAN.md](UNIFIED_RUNTIME_PLAN.md)): the gate is built as
-> the first layer of the runtime ToolPort instead of patching
-> `ScopedToolClient`, so it isn't redone during the refactor. The acceptance
-> test below still applies verbatim — check this item off when MR-2 lands.
-- [ ] Add an `allowedTools: ReadonlySet<string>` to `ScopedToolClient`
-      (or a new `GatedToolClient` decorator implementing `ToolInvoker` that
-      wraps it — decorator keeps path-clamping and policy separable).
-- [ ] Deny by default: unknown or unlisted tool → return
-      `{ isError: true, content: "[policy-error] tool <name> is not permitted for this role" }`
-      so the loop re-plans instead of crashing.
-- [ ] Orchestrator (`runners/orchestrator.ts` ~L149): build the set from
-      `modelFilteredTools` (which is already role+whitelist filtered).
-- [ ] Executor (`runners/executor.ts` ~L85): build the set from its own
-      filtered `availableTools` (it has the up-front name check; keep both —
-      the gate is the backstop).
-- [ ] Tests (`tests/`): orchestrator-emitted `fsmcp__write_file` is denied;
-      executor calling a whitelisted tool passes; tool absent from the
-      per-model `mcp` list is denied even though it exists in the registry;
-      `dispatch_executor` still routes to the executor registry untouched.
+> **Superseded by MR-1/MR-2 + reframed** (see milestone MR below and
+> [UNIFIED_RUNTIME_PLAN.md](UNIFIED_RUNTIME_PLAN.md)).
+>
+> **Reframe (2026-06-16):** tool-level access is already structural — the
+> read/write server split (`fsmcp` vs `fsmcp-readonly`, `excelmcp` vs
+> `excelmcp-readonly`) means a server is either mounted for a role or not;
+> there is no need for a per-tool deny list on top. The real gate is
+> **user-role → server access**: which MCP servers a user is allowed to reach,
+> computed as model whitelist ∩ user policy (`resolveAllowedTools` in MR-1,
+> policy source in M2-3/M2-4). Currently all sessions run as anonymous so
+> model whitelist = effective set. Denial at dispatch is structural (unmounted
+> servers are unreachable), not a runtime deny list.
 
-**Done when:** a test proves a write tool named directly by the orchestrator
-model returns `[policy-error]` and no fs mutation occurred.
+**Done when:** M2-4 lands — a user with a restricted role is denied a server
+that the model whitelist would otherwise allow, enforced at mount time.
 
 ### M0-2 · Spawned-server env allowlist + provider-key scrub — `~0.5d` · P0
 - [ ] Extract `buildServerEnv(config)` from `spawnServer`
@@ -327,15 +318,22 @@ all value-level validation (types, enums, empty-string) stays server-side. ✅ D
       service mode (CLI dev mode may default to a permissive built-in).
 
 ### M2-4 · Enforce policy at the gate — `~1d` · P0
-- [ ] Effective allowed set = role-appropriate tools ∩ per-model `mcp`
-      whitelist ∩ user-policy servers/tools. Compute in ONE function
-      (`resolveAllowedTools(modelRole, userPolicy, registry)`) used by both
-      advertisement and the M0-1 gate — one artifact, two consumers, can't
-      drift.
-- [ ] `canDispatchExecutor: false` → `dispatch_executor` neither advertised
-      nor dispatchable; the executor sub-agent is unreachable.
-- [ ] Tests proving *denial* per layer: read-only user role blocks a write
-      tool even when the model whitelist allows it, and vice versa.
+Tool-level granularity is via **server naming** (`fsmcp` vs `fsmcp-readonly`)
+— no per-tool deny list is needed. The gate is user-role → server access:
+which MCP servers a user may reach, computed as model whitelist ∩ user policy
+and enforced at mount time (unmounted servers are structurally unreachable).
+Currently all sessions run as anonymous so only the model whitelist applies;
+user policy intersection activates once M2-1/M2-2/M2-3 land.
+- [ ] Effective allowed **servers** = per-model `mcp` whitelist ∩ user-policy
+      server allowlist. Compute in `resolveAllowedTools(modelRole, userPolicy,
+      registry)` (built in MR-1); `McpRegistryMiddleware.mountServers` calls
+      it instead of `getValidMcpServersForRole` alone — one artifact, can't
+      drift between advertisement and enforcement.
+- [ ] `canDispatchExecutor: false` → `executor` server neither mounted nor
+      reachable; the executor sub-agent is unreachable for that user.
+- [ ] Tests: a user policy that excludes `fsmcp` (write) gets only
+      `fsmcp-readonly` mounted even when the model whitelist includes both;
+      anonymous users fall through to model whitelist unchanged.
 
 ### M2-5 · Remote MCP servers with bearer auth — `~1.5d` · P1
 Today `McpClientRegistry` speaks stdio only; anything beyond local testing
@@ -603,31 +601,24 @@ together itself.
         +--- codeindex / codemcp / memomcp     ← each depends on BOTH
 ```
 
-> **Shipped (1 vectorizer, 2 vectorstore, 3 codeindex, 5 memomcp, 6 mcp) — see
-> [BACKLOG.DONE.md](BACKLOG.DONE.md).** Remaining: 4 codemcp.
+> **All 6 packages shipped** (1 vectorizer, 2 vectorstore, 3 codeindex, 4 codemcp,
+> 5 memomcp, 6 mcp) — see [BACKLOG.DONE.md](BACKLOG.DONE.md).
 
-- [ ] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
+- [x] **`src/codemcp` on the engine** (`~1d`) — reads via `vectorstore`, embeds
       queries via `vectorizer`. `search_code`/`find_symbol` surface + results
       unchanged; code enums become a code-only typed wrapper over the generic
-      filter. — settled 2026-06-15: **change in place; the repository stays the
-      retrieval contract.** `IVectorStore` keeps only similarity (`searchByEmbedding`)
-      + `get`; codemcp's exact-match, no-embedding reads (`find_symbol` on `symbol`,
-      `get_file_context` on `path`) and any non-similarity listing stay behind
-      codemcp's own repository folded over the store — NOT promoted to the generic
-      interface. Proper two-tier/projection retrieval (a generic `list()` +
-      summary-then-drill-down that both codemcp and memomcp want) is deferred to
-      M3-10 so the swap stays behavior-identical and verifiable against today's output.
+      filter. — done 2026-06-15: `codeRetrieval.ts` wraps `IVectorStore`; two-tier
+      tools (`locate_code`/`locate_symbol`/`locate_file`/`expand_chunk`) and
+      `related_code` added; `search_code`/`find_symbol`/`get_file_context` unchanged;
+      integration-tested via `src/codemcp/integrationtests.sh`.
 - [x] **`src/memomcp`** (new, `~1.5d`) — `remember`/`recall` over `vectorstore`
       + `vectorizer`, partitioned by collection. tenant/category live in
       `metadata` (filtering), NOT in the path; associations are a separate
       sidecar via `getMemoryAssociations`, never a record field (see "Memory
       record shape" below). Must use voyage/openai (local bag-of-words can't do
       paraphrase recall). — done 2026-06-15, see [BACKLOG.DONE.md](BACKLOG.DONE.md)
-      (standalone server, id/vectorId split settled, `integrationtest.md` recipe;
-      still untracked, not yet committed).
-**Sequencing:** 1, 2 & 6 (vectorizer, vectorstore, mcp), 3 (codeindex) and
-5 (memomcp) shipped — see [BACKLOG.DONE.md](BACKLOG.DONE.md). Remaining: 4
-(codemcp) reads via the proven engine.
+      (standalone server, id/vectorId split settled, `integrationtest.md` recipe).
+**Sequencing:** all 6 shipped — see [BACKLOG.DONE.md](BACKLOG.DONE.md).
 
 **Sharp edges to settle in grooming:**
 
@@ -1031,15 +1022,50 @@ for tracking; the plan doc has per-step file lists and acceptance criteria.
 Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
 `resolveAllowedTools` afterward.
 
-- [ ] **MR-1** · `resolveAllowedTools` + ToolPort skeleton (GATE → SCOPE →
-      TRANSPORT); replace `READ_ONLY_TAILS` heuristic with explicit
-      per-server config; M0-1 acceptance tests written here — `~1.5d`
+- [ ] **MR-1** · `resolveAllowedTools` + ToolPort skeleton (SCOPE →
+      TRANSPORT); `resolveAllowedTools(modelRole, userPolicy, registry)` =
+      model whitelist ∩ user policy at **server** granularity (tool
+      granularity is the read/write server split, not a per-tool deny list);
+      currently `userPolicy = anonymous` so model whitelist is the effective
+      set — user policy plugs in at M2-3; M0-1 acceptance test = a user
+      policy that restricts a server overrides the model whitelist at mount
+      time — `~1.5d`
 - [ ] **MR-2** · Runtime owns the port; orchestrator/executor stop building
       their own `ScopedToolClient` + filters; kill the dual descriptor
       assembly in `OrchestratorMiddleware` — `~1d`
 - [ ] **MR-3** · `SyntheticToolSet` for dispatch_executor/subsessions/excel;
       delete `refreshTurnServers` + role methods from `McpClientRegistry`
       (registry becomes a neutral transport) — `~2d`
+- [ ] **MR-4·0** · Context consolidation — `RunnerContext` is the bundle — `~0.5d` · P1
+  - **Why:** the per-turn state is split across **three** carriers today
+    (`RunOptions` → `Orchestrator.run`; `RunnerContext` → the runner onion;
+    `this.runtime` reached back into inside `run()`). The conceptual model is
+    one funnel (UNIFIED_RUNTIME_PLAN §2.0): RuntimeContext → **RunnerContext** →
+    ToolContext → SubRuntimeRefs. Collapse the three carriers into the one
+    `RunnerContext` — the orchestrator is just a runner, and **anything driven
+    in the loop (executor/evaluator/summarizer) is a runner and gets a
+    `RunnerContext`.** No separate `TurnContext` type.
+  - **`RunnerContext` and its onion already shipped** — keep the name
+    (`runners/middleware/runner-middleware.ts`: `RunnerContext`,
+    `composeRunnerPipeline`, `RunnerPipelineMiddleware`, `RunnerMiddlewareToken`).
+    This story extends `RunnerContext`, it does not rename or re-invent it.
+  - [ ] Fold `RunOptions` (`signal`, `coordinator?`, `pullInjectedPrompts?`)
+        onto `RunnerContext`; `AgentRuntime.beginTurn(options)` builds the one
+        `RunnerContext` and `dispatchAsync` stops constructing a second per-turn
+        object. The state-derived artifacts (provider, surface, context snapshot,
+        tracker) are populated here too — §2.0 DI rule.
+  - [ ] DI rides through as a handle (singletons — §2.0 rule): `RunnerContext`
+        already carries `registry`/the queryable, so **retire
+        `Orchestrator.setRuntime` + the `private runtime!` field** — `run(ctx)`
+        reads everything off `ctx`. Kills the deferred-reference smell
+        (`agent-runtime.ts` ~L146).
+  - [ ] Micro-cleanups in the same pass: drop the dead `includeSubSessions`
+        from `OrchestratorMiddlewareParams` (read only by `ContextMiddleware`),
+        and the redundant `?? "orchestrator"` default (role is required).
+  - **Done when:** `Orchestrator.run` takes a single `RunnerContext` arg and
+    imports nothing from the runtime to reconstruct state; `setRuntime` and
+    `RunOptions` no longer exist; suite green.
+
 - [ ] **MR-4** · Turn/round middleware — solid core loop, injectable
       behavior — `~3d`
   - **Goal:** `Orchestrator.run` shrinks to a stable stepper that owns
@@ -1076,6 +1102,12 @@ Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
     no diff to the core loop.
 
 #### MR-4a · Turn middleware onion — the mechanism — `~1d` · P1
+> **Mechanism shipped** as `runners/middleware/runner-middleware.ts`
+> (`RunnerContext`, `composeRunnerPipeline`, `RunnerPipelineMiddleware`,
+> `RunnerMiddlewareToken`, folded at `agent-runtime.ts` ~L190). Name kept;
+> MR-4·0 extends `RunnerContext` into the full per-turn bundle. **Still open
+> here:** the `TurnCounterMiddleware` proof-of-seam consumer.
+
 A runnable down-payment on MR-4: the onion pipeline that wraps one
 `Orchestrator.run` (one turn), without yet decomposing the loop. Same
 `(ctx, next)` contract as the init `IMiddleware` so the pattern is uniform —
@@ -1352,7 +1384,7 @@ the streaming mode flag (M1-11) live in one artifact, not scattered booleans and
 ```
 MR-1 → MR-2                                            (the gate — was M0-1)
 M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, disjoint files)
-MR-3 → MR-4 → MR-5 → MR-6                              (finish the unified runtime)
+MR-3 → MR-4·0 → MR-4 → MR-5 → MR-6                     (finish the unified runtime)
 M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-2 closed by MR-4)
 M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6 → M2-7 → M2-8  (identity/policy — after MR)
 M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)

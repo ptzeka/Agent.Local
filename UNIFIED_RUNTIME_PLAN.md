@@ -59,9 +59,18 @@ DispatchTracker is live again (per-turn caps, duplicate-mutation guard,
 `new Orchestrator(undefined as any)` is gone (acceptance item 5 ✅).
 
 **Still open from this plan:** MR-4's decomposition half (orchestrator.ts is
-~511 lines; TurnContext unbuilt), the MR-6 lint fence, policies.json
-(M2-3/M2-4), and re-mounting external MCP (`ConnectMcpServersMiddleware`
-still stubbed — codemcp/mcp.json disconnected).
+~540 lines; TurnContext unbuilt), the MR-6 lint fence, and policies.json
+(M2-3/M2-4). External MCP re-mounting is **done** — `external-mcp.ts` +
+`mountExternalMcp` landed in commit `4855dfc`; codemcp and memomcp mount from
+`mcp.json` at runtime.
+
+**Gate reframe (2026-06-16):** tool-level access is structural via the
+read/write server split (`fsmcp` vs `fsmcp-readonly`); no per-tool deny list
+is needed. `resolveAllowedTools` = model whitelist ∩ user policy at **server**
+granularity, enforced at mount time. Currently all sessions are anonymous so
+the model whitelist is the effective set; user policy plugs in when M2-1/M2-3
+land. The GATE layer in the ToolPort plan (§2.1) therefore simplifies: it is
+`resolveAllowedTools` driving `mountServers`, not a dispatch-time deny list.
 
 ---
 
@@ -166,6 +175,61 @@ construction policy locally; nothing owns "how do I make an X".
 
 ## 2. Target architecture
 
+### 2.0 The context model (read this first)
+
+*Added 2026-06-16. The refactor is easier to reason about as a hierarchy of
+**contexts**, each a projection of the one above. Every layer below is one
+real object in the codebase; the table is the map.*
+
+| Layer | Code today | Lifetime | Carries |
+|---|---|---|---|
+| **Runtime** | `AgentRuntime` | one CLI/headless run | owns the singletons, the root `scope` signal, the lifetime `events` bus |
+| **RuntimeContext** | `RuntimeContext` (`runtime/types.ts`) | compiled once by `build()` | DI `Container` + config paths + `runtimeSignal` + `eventing` |
+| **RunnerContext** | `runners/middleware/runner-middleware.ts` (shipped; absorbs `RunOptions` + the `this.runtime` pullbacks in MR-4·0) | one turn, **per runner** | DI handle (pass-through) + this turn's state (session/conversation/workspace) + glue (signal/emit) + state-derived artifacts (provider, surface, context snapshot, tracker) |
+| **ToolContext** | `synthetic-mcp/types.ts` | one tool call | the subset tools need: `{ session, workspace, sandboxRoot, coordinator, signal }` — a projection of RunnerContext |
+| **SubRuntimeRefs** | `runners/subsession.ts` | one sub-session spawn | the handshake: `{ sessionId, parentSessionId, workspaceId, user, standingContext, parentSignal }` — distilled from a ToolContext at the dispatch seam |
+
+**Naming:** the orchestrator is just a *runner* — anything driven in the loop
+(orchestrator, executor, evaluator, summarizer) is a runner and receives a
+`RunnerContext`. There is no separate `TurnContext` type; where older sections
+of this doc say "TurnContext", read **`RunnerContext`** (the shipped onion
+context, extended to be the full per-turn bundle).
+
+The chain is a **funnel** — each layer narrows the one above to exactly what
+the next needs, and the bottom re-enters at the top for the child:
+
+```
+RuntimeContext        (DI + config, build-time)
+  └─ RunnerContext          = DI (pass-through) + this turn's state + glue + artifacts
+       └─ ToolContext            = the subset tools see, projected from RunnerContext
+            └─ SubRuntimeRefs          = distilled at the spawn seam
+                 └─ RuntimeContext'         (child) — buildSubRuntime mirrors the CLI
+                                             pipeline, parent-fed instead of CLI-fed
+```
+
+Two rules make the funnel sound:
+
+- **DI is singletons, so it rides through, not re-scoped.** There is no
+  request/scoped container here — every registry is a process-wide singleton.
+  So TurnContext carries the *same* DI handle verbatim; DI is *stateless
+  resolution*, never part of "current state". `new Evaluator(di)` inside a
+  runner is fine (resolution, not state). Only **state-derived** artifacts
+  (provider-for-role, tool `surface`, context snapshot, `tracker`, scoped
+  client, subsessions rebind) are computed per turn — those are what
+  `beginTurn` builds onto the `RunnerContext` and what the loop must stop
+  constructing (acceptance §5.3).
+
+- **Signal cascades down; eventing bubbles up — and the spawn seam treats
+  them differently.** `scope`(root) → `runtimeSignal` → turn `signal` →
+  `ToolContext.signal` → `SubRuntimeRefs.parentSignal`: one cancel up high
+  collapses everything below, transitively across the spawn boundary. Eventing
+  is the mirror (turn bus chained under runtime bus chained under host) **except
+  at the spawn seam**: a child is its *own* event root and reaches the parent
+  through the executor MCP bridge (`bindTurn`), not by chaining under the parent
+  bus (`build-sub-runtime.ts` — "no parent bus"). That asymmetry is why
+  `SubRuntimeRefs` carries `parentSignal` but no parent `Eventing`:
+  **cancellation is transitive, eventing is brokered.**
+
 ### 2.1 One connector: `RuntimeToolPort`
 
 A single runtime-owned object is THE tool boundary. Working name
@@ -241,7 +305,14 @@ Target:
 - `InProcessMcpServer` machinery stays only if a synthetic set ever needs to
   be exposed to an *external* MCP consumer; for our own loop it's dead weight.
 
-### 2.3 Runners become thin loops over a `TurnContext`
+### 2.3 Runners become thin loops over a `RunnerContext`
+
+*See §2.0 for what `RunnerContext` is in the funnel. The onion that folds
+middleware around `run()` already shipped as `RunnerContext` /
+`composeRunnerPipeline` — MR-4·0 keeps that name and extends it: it folds
+`RunOptions` + the `this.runtime` pullbacks into the one `RunnerContext`,
+retiring `Orchestrator.setRuntime`. The `TurnContext` name used in the prose
+below is retired — read it as `RunnerContext`.*
 
 The runtime prepares everything once per turn; runners receive it instead of
 reaching back and rebuilding:
@@ -338,18 +409,20 @@ Enforceable mechanically: an eslint/Biome `no-restricted-imports` rule on
 Ordered so the suite stays green after every step; each step is a separate
 commit/PR-sized unit. Estimates are solo focused time.
 
-### MR-1 · `resolveAllowedTools` + ToolPort skeleton with GATE — `~1.5d`
+### MR-1 · `resolveAllowedTools` + ToolPort skeleton — `~1.5d`
 - Create `runtime/tool-port.ts`: constructor takes `{ mcpRegistry,
   modelRegistry, syntheticSets: [], workspaceId }`; implement
-  `surfaceFor(role)` and `dispatch` with layers GATE → SCOPE → TRANSPORT
+  `surfaceFor(role)` and `dispatch` with layers SCOPE → TRANSPORT
   (SCOPE = wrap existing `ScopedToolClient` unchanged; synthetic ROUTE comes
-  in MR-3).
-- One `resolveAllowedTools(role, registry)` function; replace the suffix
-  heuristic with explicit per-server read/write config (move
-  `READ_ONLY_TAILS` content into a config default so behavior is identical,
-  marked for replacement by policies.json in M2-3).
-- Tests: **this delivers BACKLOG M0-1** — write its acceptance tests here
-  (orchestrator-named `fsmcp__write_file` denied; surface ≡ gate).
+  in MR-3). No dispatch-time deny list — tool granularity is the read/write
+  server split; unmounted servers are structurally unreachable.
+- `resolveAllowedTools(modelRole, userPolicy, registry)` at **server**
+  granularity: model whitelist ∩ user policy server allowlist. Called by
+  `McpRegistryMiddleware.mountServers`; currently `userPolicy = anonymous`
+  so model whitelist wins. User policy plugs in at M2-3 with no change here.
+- Tests: **delivers BACKLOG M0-1 reframed** — a user policy excluding `fsmcp`
+  causes it to be absent from both `surfaceFor()` and the mounted registry;
+  anonymous policy leaves the model whitelist unchanged.
 
 ### MR-2 · Runtime owns the port; runners consume it — `~1d`
 - `AgentRuntime.build()` constructs the ToolPort (new pipeline step or
