@@ -7,6 +7,9 @@
 - Greek technical terms with no settled translation may stay in English (e.g. "token", "signal", "middleware") within otherwise-Greek prose.
 - **Offer language corrections.** When the user's Greek (or other non-native) phrasing, spelling, or accents (τόνοι) are off, flag it — but keep it to a single terse line after answering, never blocking the answer. Format: `διόρθωση: <τύπος> <λάθος> -> <σωστό>`, e.g. `διόρθωση: ορθογραφία πος -> πώς`.
 
+## BACKLOG
+Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
+
 ## Code search: always use codemcp first
 
 ** When discussing solutions its best we focus on ontopic disucssions in a not too long thread - OFFER SUMMARY of options not entire paragraphs of solutions. Simply stay on topic then add below: concern, other options, why it fits best practices, why it diverges etc, if further discussion is needed the user will initiate or dig deeper. Keep discussions brief while hinting further expansions.
@@ -18,6 +21,7 @@ The following repositories are indexed and cached:
 | Repository | Notes |
 |---|---|
 | `Agent.Local` | This repo — `c:\www\Agent.Local`, branch `main` |
+
 
 ### Tool selection rules
 

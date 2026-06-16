@@ -9,7 +9,15 @@ import {
 } from 'node:fs';
 import { resolve, join, dirname } from 'node:path';
 
-import type { IVectorStore, MetadataFilter, SearchHit, VectorRecord } from './vector-store.js';
+import type {
+  IVectorStore,
+  MetadataFilter,
+  RetrievedRecord,
+  SearchHit,
+  SummaryHit,
+  VectorRecord,
+  VectorSummary,
+} from './vector-store.js';
 
 export interface FileVectorStoreOptions {
   baseDir?: string;
@@ -59,15 +67,54 @@ export class FileVectorStore implements IVectorStore {
     k: number,
     filter: MetadataFilter = {},
   ): Promise<SearchHit[]> {
-    return [...this.read(namespace).values()]
-      .filter(r => matchesFilter(r.metadata, filter))
-      .map(record => ({ record, score: cosineDistance(embedding, record.embedding) }))
-      .sort((a, b) => a.score - b.score)
-      .slice(0, k);
+    return rankByEmbedding([...this.read(namespace).values()], embedding, k, filter);
   }
 
-  async list(namespace: string, filter: MetadataFilter = {}): Promise<VectorRecord[]> {
-    return [...this.read(namespace).values()].filter(r => matchesFilter(r.metadata, filter));
+  async list(
+    namespace: string,
+    filter: MetadataFilter = {},
+    limit?: number,
+  ): Promise<RetrievedRecord[]> {
+    const matches = [...this.read(namespace).values()]
+      .filter(r => matchesFilter(r.metadata, filter))
+      .map(toRetrieved);
+    return limit === undefined ? matches : matches.slice(0, limit);
+  }
+
+  async searchSummaries(
+    namespace: string,
+    embedding: number[],
+    k: number,
+    filter: MetadataFilter = {},
+  ): Promise<SummaryHit[]> {
+    return rankByEmbedding([...this.read(namespace).values()], embedding, k, filter).map(hit => ({
+      summary: toSummary(hit.record),
+      score: hit.score,
+    }));
+  }
+
+  async listSummaries(
+    namespace: string,
+    filter: MetadataFilter = {},
+    limit?: number,
+  ): Promise<VectorSummary[]> {
+    const matches = [...this.read(namespace).values()]
+      .filter(r => matchesFilter(r.metadata, filter))
+      .map(toSummary);
+    return limit === undefined ? matches : matches.slice(0, limit);
+  }
+
+  async relatedTo(
+    namespace: string,
+    id: string,
+    k: number,
+    filter: MetadataFilter = {},
+  ): Promise<SearchHit[]> {
+    const folded = this.read(namespace);
+    const seed = folded.get(id);
+    if (!seed) return [];
+    const others = [...folded.values()].filter(r => r.id !== id);
+    return rankByEmbedding(others, seed.embedding, k, filter);
   }
 
   async delete(namespace: string, ids: string[]): Promise<void> {
@@ -124,6 +171,36 @@ export class FileVectorStore implements IVectorStore {
     const lines = [...folded.values()].map(r => JSON.stringify(r)).join('\n');
     writeFileSync(path, lines.length > 0 ? lines + '\n' : '', 'utf-8');
   }
+}
+
+// shared ranking: filter, score by cosine distance to the query vector, sort closest-first, cap at k.
+// strips the embedding off each result — reads never ship the vector back (it stayed in the store)
+function rankByEmbedding(
+  records: VectorRecord[],
+  embedding: number[],
+  k: number,
+  filter: MetadataFilter,
+): SearchHit[] {
+  return records
+    .filter(r => matchesFilter(r.metadata, filter))
+    .map(record => ({ record: toRetrieved(record), score: cosineDistance(embedding, record.embedding) }))
+    .sort((a, b) => a.score - b.score)
+    .slice(0, k);
+}
+
+// the read shape: everything except the embedding
+function toRetrieved(record: VectorRecord): RetrievedRecord {
+  return {
+    id: record.id,
+    namespace: record.namespace,
+    content: record.content,
+    metadata: record.metadata ?? {},
+  };
+}
+
+// the locate shape: id + namespace + metadata, no content
+function toSummary(record: VectorRecord | RetrievedRecord): VectorSummary {
+  return { id: record.id, namespace: record.namespace, metadata: record.metadata ?? {} };
 }
 
 function normalize(record: VectorRecord): VectorRecord {

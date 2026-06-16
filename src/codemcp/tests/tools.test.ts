@@ -12,6 +12,11 @@ import { searchCode } from "../src/tools/search_code.js";
 import { findSymbol } from "../src/tools/find_symbol.js";
 import { getFileContext } from "../src/tools/get_file_context.js";
 import { listCommits } from "../src/tools/list_commits.js";
+import { relatedCode } from "../src/tools/related_code.js";
+import { locateCode } from "../src/tools/locate_code.js";
+import { locateSymbol } from "../src/tools/locate_symbol.js";
+import { locateFile } from "../src/tools/locate_file.js";
+import { expandChunk } from "../src/tools/expand_chunk.js";
 
 // 40-hex sha so the file metadata reader recognises the commit dir
 const SHA = "a".repeat(40);
@@ -151,5 +156,56 @@ describe("codemcp tools over the shared file store", () => {
     expect(hit).toContain("src/a.ts");
     const miss = await searchCode({ query: CHUNKS[0]!.content, k: 8, area: "frontend" }, deps);
     expect(miss).toContain("(no results)");
+  });
+
+  test("related_code ranks neighbours of a seed chunk and excludes the seed itself", async () => {
+    // seed on computeSum@a.ts:1-5; its nearest neighbour is the other computeSum (b.ts), then computeProduct
+    const out = await relatedCode({ path: "src/a.ts", startLine: 1, endLine: 5, k: 8 }, deps);
+    expect(out).not.toContain("src/a.ts:1-5"); // seed excluded
+    expect(out).toContain("src/b.ts:1-4");
+    expect(out).toContain("src/a.ts:7-11");
+  });
+
+  test("related_code reports a missing seed citation", async () => {
+    const out = await relatedCode({ path: "src/a.ts", startLine: 2, endLine: 9, k: 8 }, deps);
+    expect(out).toContain("no related chunks");
+  });
+
+  test("locate_code returns content-free summaries ranked by meaning", async () => {
+    const out = await locateCode({ query: CHUNKS[1]!.content, k: 8 }, deps);
+    expect(out).toContain("src/a.ts:7-11"); // exact-content match ranks first
+    // summaries carry the citation header but not the body
+    expect(out).not.toContain(CHUNKS[1]!.content);
+  });
+
+  test("locate_symbol lists a symbol's definitions as summaries, ordered, without bodies", async () => {
+    const out = await locateSymbol({ name: "computeSum" }, deps);
+    const aIdx = out.indexOf("src/a.ts:1-5");
+    const bIdx = out.indexOf("src/b.ts:1-4");
+    expect(aIdx).toBeGreaterThanOrEqual(0);
+    expect(bIdx).toBeGreaterThan(aIdx);
+    expect(out).not.toContain("function computeSum"); // no content
+    expect(out).not.toContain("computeProduct");
+  });
+
+  test("locate_file outlines a file's chunks as summaries in line order", async () => {
+    const out = await locateFile({ path: "src/a.ts" }, deps);
+    const sumIdx = out.indexOf("src/a.ts:1-5");
+    const prodIdx = out.indexOf("src/a.ts:7-11");
+    expect(sumIdx).toBeGreaterThanOrEqual(0);
+    expect(prodIdx).toBeGreaterThan(sumIdx);
+    expect(out).not.toContain("return a + b"); // no content
+    expect(out).not.toContain("src/b.ts");
+  });
+
+  test("expand_chunk returns the full content behind an exact citation", async () => {
+    const out = await expandChunk({ path: "src/a.ts", startLine: 7, endLine: 11 }, deps);
+    expect(out).toContain("src/a.ts:7-11");
+    expect(out).toContain(CHUNKS[1]!.content); // the body is present
+  });
+
+  test("expand_chunk reports an unmatched line range", async () => {
+    const out = await expandChunk({ path: "src/a.ts", startLine: 2, endLine: 9 }, deps);
+    expect(out).toContain("no chunk at src/a.ts:2-9");
   });
 });

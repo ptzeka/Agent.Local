@@ -115,6 +115,73 @@ describe("FileVectorStore list", () => {
   });
 });
 
+describe("FileVectorStore read projections", () => {
+  beforeEach(async () => {
+    await store.upsert([
+      record("a", [1, 0, 0], { metadata: { symbol: "main", path: "a.ts" } }),
+      record("b", [0.9, 0.1, 0], { metadata: { symbol: "main", path: "b.ts" } }),
+      record("c", [0, 0, 1], { metadata: { symbol: "other", path: "a.ts" } }),
+    ]);
+  });
+
+  it("strips the embedding from search hits but keeps it on get", async () => {
+    const hits = await store.searchByEmbedding("ns", [1, 0, 0], 1);
+    expect(hits[0]!.record).not.toHaveProperty("embedding");
+    expect((await store.get("ns", "a"))?.embedding).toEqual([1, 0, 0]);
+  });
+
+  it("strips the embedding from list results", async () => {
+    const all = await store.list("ns");
+    expect(all.every(r => !("embedding" in r))).toBe(true);
+  });
+
+  it("caps list to the given limit", async () => {
+    expect(await store.list("ns", {}, 2)).toHaveLength(2);
+    expect(await store.list("ns")).toHaveLength(3);
+  });
+
+  it("searchSummaries ranks like search but returns content-free summaries", async () => {
+    const hits = await store.searchSummaries("ns", [1, 0, 0], 3);
+    expect(hits.map(h => h.summary.id)).toEqual(["a", "b", "c"]);
+    expect(hits[0]!.summary).not.toHaveProperty("content");
+    expect(hits[0]!.summary).not.toHaveProperty("embedding");
+    expect(hits[0]!.summary.metadata).toEqual({ symbol: "main", path: "a.ts" });
+  });
+
+  it("listSummaries returns content-free summaries, filtered and capped", async () => {
+    const bySymbol = await store.listSummaries("ns", { symbol: "main" });
+    expect(bySymbol.map(s => s.id).sort()).toEqual(["a", "b"]);
+    expect(bySymbol[0]).not.toHaveProperty("content");
+    expect(await store.listSummaries("ns", {}, 1)).toHaveLength(1);
+  });
+});
+
+describe("FileVectorStore relatedTo", () => {
+  beforeEach(async () => {
+    await store.upsert([
+      record("a", [1, 0, 0], { metadata: { area: "api" } }),
+      record("b", [0.9, 0.1, 0], { metadata: { area: "api" } }),
+      record("c", [0, 1, 0], { metadata: { area: "db" } }),
+    ]);
+  });
+
+  it("ranks neighbors by the seed's stored vector and excludes the seed itself", async () => {
+    const related = await store.relatedTo("ns", "a", 10);
+    expect(related.map(h => h.record.id)).not.toContain("a");
+    expect(related[0]!.record.id).toBe("b");
+    expect(related[0]!.record).not.toHaveProperty("embedding");
+  });
+
+  it("applies a metadata filter to the candidates", async () => {
+    const related = await store.relatedTo("ns", "a", 10, { area: "db" });
+    expect(related.map(h => h.record.id)).toEqual(["c"]);
+  });
+
+  it("returns an empty array when the seed id is missing", async () => {
+    expect(await store.relatedTo("ns", "nope", 5)).toEqual([]);
+  });
+});
+
 describe("FileVectorStore namespace isolation", () => {
   it("never returns another namespace's records", async () => {
     await store.upsert([record("a", [1, 0, 0], { namespace: "alpha" })]);

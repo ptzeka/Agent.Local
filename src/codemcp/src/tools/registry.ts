@@ -5,6 +5,11 @@ import { searchCode, searchCodeSchema } from './search_code.js';
 import { findSymbol, findSymbolSchema } from './find_symbol.js';
 import { getFileContext, getFileContextSchema } from './get_file_context.js';
 import { listCommits, listCommitsSchema } from './list_commits.js';
+import { relatedCode, relatedCodeSchema } from './related_code.js';
+import { locateCode, locateCodeSchema } from './locate_code.js';
+import { locateSymbol, locateSymbolSchema } from './locate_symbol.js';
+import { locateFile, locateFileSchema } from './locate_file.js';
+import { expandChunk, expandChunkSchema } from './expand_chunk.js';
 
 export interface ToolDeps {
   reader: WiredReader;
@@ -106,6 +111,93 @@ export const TOOLS: ToolDef[] = [
     },
     zodSchema: listCommitsSchema,
     handler: (input, deps) => listCommits(listCommitsSchema.parse(input), deps),
+  },
+  {
+    name: 'related_code',
+    description: 'Find code related to a chunk you already have ("more like this"): ranks the index by semantic similarity to the seed chunk\'s own stored vector, excluding the seed itself. Pass the [path:start-end] citation of the seed (from any other tool). Pure similarity — use it to discover neighbours of a function/type without crafting a query. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repository-relative path of the seed chunk, from a [path:start-end] citation.' },
+        startLine: { type: 'integer', minimum: 1, description: 'Seed chunk start line, from a [path:start-end] citation.' },
+        endLine: { type: 'integer', minimum: 1, description: 'Seed chunk end line, from a [path:start-end] citation.' },
+        k: { type: 'integer', minimum: 1, maximum: 50, default: 8 },
+        area: { type: 'string', enum: ['api', 'backend', 'frontend', 'db', 'test', 'docs', 'tools', 'pipeline', 'minikube', 'root'] },
+        kind: { type: 'string', enum: ['class', 'method', 'function', 'component', 'interface', 'record', 'section', 'statement', 'message', 'service', 'rpc', 'file', 'window', 'module'] },
+        language: { type: 'string' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['path', 'startLine', 'endLine'],
+    },
+    zodSchema: relatedCodeSchema,
+    handler: (input, deps) => relatedCode(relatedCodeSchema.parse(input), deps),
+  },
+  {
+    name: 'locate_code',
+    description: 'Cheap locate tier of two-tier retrieval: like search_code but returns content-free summaries (citation + symbol + score), not bodies. Use this first to scan many semantic candidates without pulling their content, then call expand_chunk on the [path:start-end] hits worth reading. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language or code-fragment query.' },
+        k: { type: 'integer', minimum: 1, maximum: 50, default: 12 },
+        area: { type: 'string', enum: ['api', 'backend', 'frontend', 'db', 'test', 'docs', 'tools', 'pipeline', 'minikube', 'root'] },
+        kind: { type: 'string', enum: ['class', 'method', 'function', 'component', 'interface', 'record', 'section', 'statement', 'message', 'service', 'rpc', 'file', 'window', 'module'] },
+        language: { type: 'string' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['query'],
+    },
+    zodSchema: locateCodeSchema,
+    handler: (input, deps) => locateCode(locateCodeSchema.parse(input), deps),
+  },
+  {
+    name: 'locate_symbol',
+    description: 'Exact-match locate tier: every definition of a symbol as content-free summaries (citation + line range). Like find_symbol but without bodies — use to see where a symbol lives, then expand_chunk the one you need. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Exact symbol name.' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['name'],
+    },
+    zodSchema: locateSymbolSchema,
+    handler: (input, deps) => locateSymbol(locateSymbolSchema.parse(input), deps),
+  },
+  {
+    name: 'locate_file',
+    description: 'Exact-match locate tier: a file\'s chunks as content-free summaries — an outline of its symbols and line ranges. Like get_file_context but without bodies; use to understand a file\'s shape, then expand_chunk (or get_file_context) the parts you need. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repository-relative path, forward slashes.' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['path'],
+    },
+    zodSchema: locateFileSchema,
+    handler: (input, deps) => locateFile(locateFileSchema.parse(input), deps),
+  },
+  {
+    name: 'expand_chunk',
+    description: 'Expand tier of two-tier retrieval: return the full content behind one [path:start-end] citation that a locate_code / locate_symbol / locate_file result surfaced. The line range must match a citation exactly. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Repository-relative path of the chunk, from a [path:start-end] citation.' },
+        startLine: { type: 'integer', minimum: 1, description: 'Chunk start line, from a [path:start-end] citation.' },
+        endLine: { type: 'integer', minimum: 1, description: 'Chunk end line, from a [path:start-end] citation.' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['path', 'startLine', 'endLine'],
+    },
+    zodSchema: expandChunkSchema,
+    handler: (input, deps) => expandChunk(expandChunkSchema.parse(input), deps),
   },
 ];
 

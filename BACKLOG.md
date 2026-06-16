@@ -912,6 +912,46 @@ only cosine + equality and no association sidecar.
 
 ---
 
+### M3-16 · Cancellation signal through the vector engine (embed + store reads) — `~1d` · P2
+The embed path is unabortable. `IVectorService.embedBatch`/`embedQuery`
+([vector-service.ts](src/vectorizer/src/vector-service.ts)) take no signal, and the
+Voyage/OpenAI `fetch` calls ([voyage.ts](src/vectorizer/src/voyage.ts) L38,
+[openai.ts](src/vectorizer/src/openai.ts) L26) run with no `signal` — so the longest
+operation in `codeindex publish` (the batch embed loop,
+[publish.ts](src/codeindex/src/publisher/publish.ts) L62-79) and every codemcp/memomcp
+query embed cannot honour a cutoff. Diverges from the AGENTS.md rule: one root signal
+from the source, **wrapped downward**; tools observe, never originate. This is the
+non-streaming plumbing the cancellation bullets in M3-8/M3-9 assume — a soft
+prerequisite for them.
+
+- [ ] **Leaves accept + forward an optional signal, never mint one.** Add
+      `signal?: AbortSignal` to `IVectorService.embedBatch`/`embedQuery`, the
+      `EmbedAdapter` calls, and forward to `fetch(url, { …, signal })` in voyage/openai
+      (`local` is sync compute → no-op). Optional so today's CLI callers are unaffected;
+      the leaf only forwards what the caller passes.
+- [ ] **Optionally honour it on `vectorstore` pg reads.** `PgVectorStore.searchByEmbedding`/
+      `list` ([pg-vector-store.ts](src/vectorstore/src/pg-vector-store.ts)) run bare; thread
+      the same optional signal so a cancelled query stops the round-trip. File backend is
+      sync read → check-and-bail only.
+- [ ] **Consumers wrap the source downward.** `codeindex` CLI mints a root
+      `AbortController` on SIGINT (it has none today — the M0-6 analog for the indexer) and
+      passes `signal` into the publish embed loop, checking between batches so a long index
+      stops promptly. Agent-side synthetic tools that already receive a `cutoffscope`
+      (`CancellationToken` from `@agent-local/common`) forward `cutoffscope.signal`.
+- [ ] **Cross-process MCP stays on the client-owned timeout.** codemcp/memomcp run as
+      separate stdio servers; in-process they derive a per-request token and honour it, but
+      cross-process cancel remains the per-model tool timeout the MCP client already owns
+      (AGENTS.md) — do NOT invent a second cancel channel over stdio here.
+- [ ] Tests: an aborted signal rejects an in-flight `embedBatch` (fake fetch that observes
+      `signal`); `codeindex publish` stops between batches on abort, not mid-request; a
+      no-signal call path is byte-identical to today.
+
+**Done when:** every embed/store call accepts and forwards a caller-supplied signal,
+`codeindex publish` aborts promptly on SIGINT, no leaf mints its own root signal, and the
+no-signal path is unchanged.
+
+---
+
 ## M4 — Service mode + observability (≈ 2.5–3 weeks)
 
 ### M4-1 · HTTP/SSE transport — `~3d` · P0

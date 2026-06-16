@@ -1,6 +1,14 @@
 import type { DbConnectionFactory } from './db-types.js';
 import { PgConnectionFactory } from './pg-connection.js';
-import type { IVectorStore, MetadataFilter, SearchHit, VectorRecord } from './vector-store.js';
+import type {
+  IVectorStore,
+  MetadataFilter,
+  RetrievedRecord,
+  SearchHit,
+  SummaryHit,
+  VectorRecord,
+  VectorSummary,
+} from './vector-store.js';
 
 export interface PgVectorStoreOptions {
   table?: string;
@@ -13,6 +21,21 @@ interface StoredRow {
   namespace: string;
   content: string;
   embedding: string;
+  metadata: Record<string, unknown>;
+}
+
+// read-path rows omit the embedding column — it never leaves the server on a bulk read
+interface RetrievedRow {
+  id: string;
+  namespace: string;
+  content: string;
+  metadata: Record<string, unknown>;
+}
+
+// locate-path rows omit content too
+interface SummaryRow {
+  id: string;
+  namespace: string;
   metadata: Record<string, unknown>;
 }
 
@@ -84,8 +107,9 @@ export class PgVectorStore implements IVectorStore {
     filter: MetadataFilter = {},
   ): Promise<SearchHit[]> {
     await using conn = await this.factory.getConnection();
-    const result = await conn.query<StoredRow & { score: number }>(
-      `SELECT id, namespace, content, embedding::text AS embedding, metadata,
+    // embedding stays out of the SELECT list — the read path never ships the vector back
+    const result = await conn.query<RetrievedRow & { score: number }>(
+      `SELECT id, namespace, content, metadata,
               (embedding <=> $3::vector) AS score
        FROM ${this.table}
        WHERE namespace = $1 AND metadata @> $2::jsonb
@@ -93,18 +117,87 @@ export class PgVectorStore implements IVectorStore {
        LIMIT $4`,
       [namespace, JSON.stringify(filter), toVectorLiteral(embedding), k],
     );
-    return result.rows.map(row => ({ record: toRecord(row), score: Number(row.score) }));
+    return result.rows.map(row => ({ record: toRetrieved(row), score: Number(row.score) }));
   }
 
-  async list(namespace: string, filter: MetadataFilter = {}): Promise<VectorRecord[]> {
+  async list(
+    namespace: string,
+    filter: MetadataFilter = {},
+    limit?: number,
+  ): Promise<RetrievedRecord[]> {
     await using conn = await this.factory.getConnection();
-    const result = await conn.query<StoredRow>(
-      `SELECT id, namespace, content, embedding::text AS embedding, metadata
+    const limitClause = limit === undefined ? '' : ' LIMIT $3';
+    const params: unknown[] = [namespace, JSON.stringify(filter)];
+    if (limit !== undefined) params.push(limit);
+    const result = await conn.query<RetrievedRow>(
+      `SELECT id, namespace, content, metadata
        FROM ${this.table}
-       WHERE namespace = $1 AND metadata @> $2::jsonb`,
-      [namespace, JSON.stringify(filter)],
+       WHERE namespace = $1 AND metadata @> $2::jsonb${limitClause}`,
+      params,
     );
-    return result.rows.map(toRecord);
+    return result.rows.map(toRetrieved);
+  }
+
+  async searchSummaries(
+    namespace: string,
+    embedding: number[],
+    k: number,
+    filter: MetadataFilter = {},
+  ): Promise<SummaryHit[]> {
+    await using conn = await this.factory.getConnection();
+    // content stays out too — the locate tier ships only id + metadata + score
+    const result = await conn.query<SummaryRow & { score: number }>(
+      `SELECT id, namespace, metadata,
+              (embedding <=> $3::vector) AS score
+       FROM ${this.table}
+       WHERE namespace = $1 AND metadata @> $2::jsonb
+       ORDER BY embedding <=> $3::vector ASC
+       LIMIT $4`,
+      [namespace, JSON.stringify(filter), toVectorLiteral(embedding), k],
+    );
+    return result.rows.map(row => ({ summary: toSummary(row), score: Number(row.score) }));
+  }
+
+  async listSummaries(
+    namespace: string,
+    filter: MetadataFilter = {},
+    limit?: number,
+  ): Promise<VectorSummary[]> {
+    await using conn = await this.factory.getConnection();
+    const limitClause = limit === undefined ? '' : ' LIMIT $3';
+    const params: unknown[] = [namespace, JSON.stringify(filter)];
+    if (limit !== undefined) params.push(limit);
+    const result = await conn.query<SummaryRow>(
+      `SELECT id, namespace, metadata
+       FROM ${this.table}
+       WHERE namespace = $1 AND metadata @> $2::jsonb${limitClause}`,
+      params,
+    );
+    return result.rows.map(toSummary);
+  }
+
+  async relatedTo(
+    namespace: string,
+    id: string,
+    k: number,
+    filter: MetadataFilter = {},
+  ): Promise<SearchHit[]> {
+    await using conn = await this.factory.getConnection();
+    // seed the search with the stored vector of `id` via a subquery, so the embedding never crosses the
+    // wire; exclude the seed itself. an empty seed (missing id) yields no rows from the cross join
+    const result = await conn.query<RetrievedRow & { score: number }>(
+      `WITH seed AS (
+         SELECT embedding FROM ${this.table} WHERE namespace = $1 AND id = $2
+       )
+       SELECT t.id, t.namespace, t.content, t.metadata,
+              (t.embedding <=> seed.embedding) AS score
+       FROM ${this.table} t, seed
+       WHERE t.namespace = $1 AND t.id <> $2 AND t.metadata @> $3::jsonb
+       ORDER BY t.embedding <=> seed.embedding ASC
+       LIMIT $4`,
+      [namespace, id, JSON.stringify(filter), k],
+    );
+    return result.rows.map(row => ({ record: toRetrieved(row), score: Number(row.score) }));
   }
 
   async delete(namespace: string, ids: string[]): Promise<void> {
@@ -142,6 +235,21 @@ function toRecord(row: StoredRow): VectorRecord {
     embedding: parseVectorLiteral(row.embedding),
     metadata: row.metadata ?? {},
   };
+}
+
+// read shape: no embedding column was selected, so there is nothing to parse
+function toRetrieved(row: RetrievedRow): RetrievedRecord {
+  return {
+    id: row.id,
+    namespace: row.namespace,
+    content: row.content,
+    metadata: row.metadata ?? {},
+  };
+}
+
+// locate shape: id + namespace + metadata only
+function toSummary(row: SummaryRow): VectorSummary {
+  return { id: row.id, namespace: row.namespace, metadata: row.metadata ?? {} };
 }
 
 function toVectorLiteral(values: number[]): string {

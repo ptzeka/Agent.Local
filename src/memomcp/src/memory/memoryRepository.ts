@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { IVectorStore, MetadataFilter, VectorRecord } from '@agent-local/vectorstore';
+import type { IVectorStore, MetadataFilter, RetrievedRecord, VectorRecord } from '@agent-local/vectorstore';
 import type { IVectorService } from '@agent-local/vectorizer';
 import type {
   MemoryInput,
@@ -103,7 +103,7 @@ function buildFilter(filter: RecallFilter): MetadataFilter {
 }
 
 // the memory's id is its metadata.memoryId; record.id is the vector record it lives in (the vectorId)
-function toRecalled(record: VectorRecord, score?: number): RecalledMemory {
+function toRecalled(record: RetrievedRecord, score?: number): RecalledMemory {
   const metadata = record.metadata as unknown as MemoryMetadata;
   const memory: RecalledMemory = {
     id: metadata.memoryId,

@@ -35,7 +35,20 @@
       "Bash(grep -nE '/\\\\*' ./agent/synthetic-mcp/fs-server.ts ./agent/synthetic-mcp/fs-tools/glob.ts ./agent/synthetic-mcp/fs-tools/grep.ts ./agent/tool-adapter.ts)",
       "Bash(grep -nE '/\\\\*|^\\\\s*//' fsmcp/src/search/glob.ts fsmcp/src/search/grep.ts fsmcp/src/server.ts)",
       "Bash(echo \"---EXIT:$?---\")",
-      "Bash(echo \"EXIT:$?\")"
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe locate_code '{\"query\":\"similarity search over the vector store\",\"k\":5}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe locate_symbol '{\"name\":\"CodeRetrieval\"}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe locate_file '{\"path\":\"src/codemcp/src/retrieval/codeRetrieval.ts\"}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe related_code '{\"path\":\"src/codemcp/integrationtest.md\",\"startLine\":112,\"endLine\":125,\"k\":5}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe related_code '{\"path\":\"src/codemcp/src/retrieval/codeRetrieval.ts\",\"startLine\":2,\"endLine\":9,\"k\":5}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe expand_chunk '{\"path\":\"src/codemcp/src/retrieval/codeRetrieval.ts\",\"startLine\":9,\"endLine\":13}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe expand_chunk '{\"path\":\"src/codemcp/src/retrieval/codeRetrieval.ts\",\"startLine\":2,\"endLine\":9}')",
+      "Bash(node dist/server.js --backend file --branch main --embed-provider local --embed-dim 768 probe search_code '{\"query\":\"anything\",\"repository\":\"no/such-repo\"}')",
+      "Bash(chmod +x /Applications/WWW/Agent.Local/src/codemcp/integrationtests.sh)",
+      "Bash(/Applications/WWW/Agent.Local/src/codemcp/integrationtests.sh)",
+      "mcp__codemcp__locate_code",
+      "mcp__codemcp__expand_chunk",
+      "mcp__codemcp__related_code"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"
