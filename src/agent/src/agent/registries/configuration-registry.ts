@@ -45,10 +45,14 @@ const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
 };
 
 
+// requests shorter than this many words skip the evaluator gate (e.g. "ok", "thanks") and pass as satisfied
+export const DEFAULT_SUMMARY_WORD_THRESHOLD = 2;
+
 export interface ModelsFile {
   models: Record<string, ModelDefinition>;
   roles: Record<string, string>;
-  orchestration: Partial<OrchestrationConfig>
+  orchestration: Partial<OrchestrationConfig>;
+  summaryWordThreshold: number;
 }
 
 export class ConfigurationRegistry
@@ -75,6 +79,7 @@ export class ConfigurationRegistry
         }
 
         parsed.orchestration = this.mergeOrchestration(parsed.orchestration);
+        parsed.summaryWordThreshold = parsed.summaryWordThreshold ?? DEFAULT_SUMMARY_WORD_THRESHOLD;
 
         this.modelsConfig = parsed;
         return this.modelsConfig;

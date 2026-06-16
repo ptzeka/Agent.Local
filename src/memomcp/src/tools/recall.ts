@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ToolDeps } from './registry.js';
 import { resolveCollection } from './registry.js';
 import { formatRecall } from './format.js';
+import { isQueryTooShort, queryTooShortNotice } from './query-guard.js';
 
 export const recallSchema = z.object({
   query: z.string().min(1).describe('Natural-language query to rank archival memories against.'),
@@ -16,6 +17,7 @@ export type RecallInput = z.infer<typeof recallSchema>;
 
 export async function recall(input: RecallInput, deps: ToolDeps): Promise<string> {
   const collection = resolveCollection(input.collection, deps);
+  if (isQueryTooShort(input.query)) return queryTooShortNotice(collection);
   const result = await deps.repository.recall(collection, {
     query: input.query,
     k: input.k,

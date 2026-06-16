@@ -134,6 +134,7 @@ export class McpRegistryMiddleware implements IMiddleware {
               timeout: serverTimeout,
               signal: ctx.runtimeSignal,
               extraArgs: ["--collection", session.memoryCollectionId],
+              logger: ctx.logger,
             });
             registry.registerClient(client);
             ctx.logger?.debug("mcp external mounted", { name });

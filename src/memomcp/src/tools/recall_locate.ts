@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ToolDeps } from './registry.js';
 import { resolveCollection } from './registry.js';
 import { formatLocate } from './format.js';
+import { isQueryTooShort, queryTooShortNotice } from './query-guard.js';
 
 export const recallLocateSchema = z.object({
   query: z.string().min(1).describe('Natural-language query to rank archival memories against.'),
@@ -17,6 +18,7 @@ export type RecallLocateInput = z.infer<typeof recallLocateSchema>;
 // exists, then pull the bodies it wants with recall_expand using the vectorIds shown here.
 export async function recallLocate(input: RecallLocateInput, deps: ToolDeps): Promise<string> {
   const collection = resolveCollection(input.collection, deps);
+  if (isQueryTooShort(input.query)) return queryTooShortNotice(collection);
   const result = await deps.repository.locate(collection, {
     query: input.query,
     k: input.k,

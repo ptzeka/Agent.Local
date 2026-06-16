@@ -52,7 +52,8 @@
       "Bash(node dist/server.js --backend file probe __nope)",
       "Bash(echo \"build rc=$?\")",
       "Bash(node -e \"console.log\\(require\\('./src/agent/package.json'\\).name\\)\")",
-      "Bash(echo \"EXIT=$?\")"
+      "Bash(echo \"EXIT=$?\")",
+      "PowerShell(npm --prefix src/agent run typecheck 2>&1)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

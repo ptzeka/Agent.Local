@@ -472,15 +472,19 @@ export class Orchestrator {
 
     try {
       const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+
       const evaluator = new Evaluator(this.runtime);
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
         { signal, temperature: config.orchestration.evaluatorTemperature }
       );
-      events.publish(OrchestratorEventTypes.EVALUATION_VERDICT, {
-        state: verdict.state,
-        reason: verdict.reason,
-      });
+      if (verdict?.reason)
+      {
+        events.publish(OrchestratorEventTypes.EVALUATION_VERDICT, {
+          state: verdict.state,
+          reason: verdict.reason,
+        });
+      }
       return verdict;
     } catch (err) {
       // fail open: never trap the user because the judge errored

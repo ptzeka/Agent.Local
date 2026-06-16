@@ -33,8 +33,18 @@ export class Evaluator {
     params: EvaluateParams,
     options: EvaluateOptions = {}
   ): Promise<EvaluationVerdict> {
+    const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+
+    // very short requests ("ok", "thanks") aren't worth a judge round-trip; pass them straight through
+    // empty reason: the orchestrator suppresses the verdict event when there's nothing to report
+    const wordCount = (params.question ?? "").trim().split(/\s+/).filter(Boolean).length;
+    if (wordCount < config.summaryWordThreshold) {
+      return { state: "satisfied", reason: "" };
+    }
+
     const modelsRegistry = this.runtime.getModelsRegistry();
     const provider = this.runtime.getProvidersRegistry().getProvider(modelsRegistry.getProviderForRole("evaluator"));
+
     const userMessage = [
       "ORIGINAL REQUEST:",
       params.question,
