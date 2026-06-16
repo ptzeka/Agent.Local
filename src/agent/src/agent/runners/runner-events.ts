@@ -18,6 +18,8 @@ export const OrchestratorEventTypes = {
   SUBSESSION_START: "subsession-start",
   SUBSESSION_STATUS: "subsession-status",
   SUBSESSION_FINALIZE: "subsession-finalize",
+  RECALL_START: "recall-start",
+  RECALL_FINALIZE: "recall-finalize",
   WARNING: "warning",
 } as const;
 

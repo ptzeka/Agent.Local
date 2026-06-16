@@ -104,3 +104,20 @@ down as `deps.parentSignal`. Never mint a fresh root signal partway down the cha
 - **Tools observe, never originate.** A `LocalTool.invoke` receives a
   `CancellationToken` (`cutoffscope`); honour `cutoffscope.signal` to stop early.
   A tool must not create its own root cutoff.
+
+## Economy: reuse over proliferation
+
+Be economical with the number of functions, classes, and instances. Before adding a
+new one, look for a **semantic** reuse of what already exists — extend, parameterise,
+or compose an existing abstraction rather than spawning a parallel one that clutters
+the surface.
+
+- **Prefer one configurable thing over two near-duplicates.** If a new need differs
+  only by data (a whitelist, a flag, a descriptor), drive it with that data, not a new
+  class. (The fs read-only server is the model: one tool catalog, a deterministic
+  filter — not a second hand-written server.)
+- **Reuse must be semantic, not incidental.** Share code only where the concepts truly
+  coincide; don't fold two unrelated things into one just to save a line. Forced reuse
+  is its own kind of clutter.
+- **A new abstraction must earn its place.** Add a class/instance when it carries a
+  distinct responsibility or invariant, not as the default reflex for "more behaviour".

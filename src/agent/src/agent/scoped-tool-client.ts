@@ -2,6 +2,8 @@ import { OrchestratorEventTypes } from "./runners/runner-events.js";
 import type { Eventing } from "@agent-local/common/eventing";
 import type { Mcp, ToolExecutionResult, ToolInvoker } from "@agent-local/mcp";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import type { McpClientRegistry } from "./registries/mcp-registry.js";
+import type { ModelRegistry } from "./registries/model-registry.js";
 
 // routes <server>__<tool> calls to the right MCP server and emits TOOL_CALL/TOOL_RESULT events
 // path confinement is NOT here: each fs server is rooted at its workspace segment and guards itself
@@ -11,6 +13,20 @@ export class ScopedToolClient implements ToolInvoker {
 
   constructor(clients: Mcp[]) {
     this.clientsByServer = new Map(clients.map((c) => [c.name, c]));
+  }
+
+  // composes a role's visible tool surface from the registry's clients — only servers in the role's
+  // whitelist are fronted, so a registered-but-unmapped server (e.g. memomcp recall) can never be called
+  public static forRole(
+    registry: McpClientRegistry,
+    models: ModelRegistry,
+    role: string
+  ): ScopedToolClient {
+    const clients = models
+      .getValidMcpServersForRole(role)
+      .map((name) => registry.getClient(name))
+      .filter((client): client is Mcp => client !== undefined);
+    return new ScopedToolClient(clients);
   }
 
   public listTools(): ToolDescriptor[] {

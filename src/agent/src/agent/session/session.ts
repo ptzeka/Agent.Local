@@ -60,6 +60,7 @@ export interface Session {
   parentSessionId?: string;
   // link to the rolling transcript; a pre-split session lacks it and gets a fresh one minted on resume
   conversationId: string;
+  memoryCollectionId?: string;
   status: SessionStatus;
   counters: SessionCounters;
   createdAt: number;
@@ -94,6 +95,7 @@ export function createSession(params: CreateSessionParams): Session {
     workspaceId: params.workspaceId,
     conversationId: params.conversationId,
     parentSessionId: params.parentSessionId,
+    memoryCollectionId: undefined,
     status: "idle",
     counters: {
       turns: 0,

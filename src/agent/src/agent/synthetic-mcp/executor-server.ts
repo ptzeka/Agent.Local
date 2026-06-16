@@ -249,7 +249,7 @@ function buildDispatchDescriptor(executorToolNames: string[]): ToolDescriptor {
     name: "dispatch",
     description: [
       "Spawn the EXECUTOR sub-agent to perform exactly one mutation.",
-      "This is the ONLY way the orchestrator can change state — write_file,",
+      "This is the ONLY way the orchestrator can change state e.g. write_file,",
       "edit_file, and shell tools are NOT directly callable by the orchestrator.",
       "",
       'Provide "tool" as the fully-namespaced executor-side tool name.',

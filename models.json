@@ -73,7 +73,7 @@
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions", "memomcp"],
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
       "toolTimeoutMs": 60000,
       "iterationCap": 16
     },
@@ -91,7 +91,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions", "memomcp"],
+      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
       "toolTimeoutMs": 600000,
       "iterationCap": 6
     },
@@ -103,13 +103,6 @@
       "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
-    },
-    "local-reranker": {
-      "provider": "local",
-      "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
-      "supportsTools": false,
-      "description": "Local cross-encoder reranker used by memomcp recall when rank=true. No API key — runs offline. memomcp resolves this role; the agent's LLM provider registry skips non-chat providers. Swap to a hosted reranker by reassigning this role.",
-      "mcp": []
     }
   },
 
@@ -118,8 +111,7 @@
     "executor": "claude-haiku-4-5-executor",
     "coder": "gemini-2.5-flash-lite-coder",
     "summarizer": "claude-haiku-4-5",
-    "evaluator": "claude-haiku-4-5",
-    "reranker": "local-reranker"
+    "evaluator": "claude-haiku-4-5"
   },
 
   "orchestration": {

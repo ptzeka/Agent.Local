@@ -1,5 +1,6 @@
 import type { Conversation } from "../conversation/conversation.js";
 import type { ToolDescriptor, ToolExecutionResult } from "@agent-local/mcp";
+import { ScopedToolClient } from "../scoped-tool-client.js";
 import type {
   ChatMessage,
   ChatResponse,
@@ -18,6 +19,7 @@ import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
+import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "@agent-local/common/eventing";
 import { ContextSnapshot } from "../context/context-loader.js";
@@ -108,8 +110,8 @@ export class Orchestrator {
     }
 
     // built after the subsessions rebind so the scoped client sees the live mounts
-    const scopedClient = mcpRegistry.createScopedClient();
-    const visibleTools = scopedClient.listTools();
+    const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, this.role);
+    const visibleTools = scopedClients.listTools();
 
     const maxDispatches = config.orchestration.maxExecutorDispatchesPerTurn!;
     const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
@@ -140,6 +142,9 @@ export class Orchestrator {
 
     // the evaluator's anchor is the FIRST drained batch, set on the opening iteration and held for the turn
     let turnRequest: string | null = null;
+
+    // recall runs once per turn, keyed on the first real request; guards against re-recalling each iteration
+    let recalled = false;
 
     // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
@@ -182,6 +187,12 @@ export class Orchestrator {
           dispatches: tracker.count,
           outcome: "satisfied",
         };
+      }
+
+      // recall on the first real request: the turn's query is now known, and an empty wake already settled above
+      if (!recalled) {
+        recalled = true;
+        await this.maybeRecallMemory(mcpRegistry, turnRequest, workingMessages, turnEvents, options.signal);
       }
 
       turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
@@ -286,7 +297,7 @@ export class Orchestrator {
         }
 
         logger.debug("tool call start", { name: call.name });
-        const execution: ToolExecutionResult = await scopedClient.callTool(
+        const execution: ToolExecutionResult = await scopedClients.callTool(
           call.name,
           call.arguments,
           turnEvents,
@@ -370,6 +381,43 @@ export class Orchestrator {
     events.publish(OrchestratorEventTypes.SYSTEM_FAILURE, { reason });
     await conversation.flush();
     return { finalMessage: failureNotice, iterations, dispatches, outcome: "failed" };
+  }
+
+  // turn-start memory recall: fetches this session's relevant memories and injects them as context.
+  // memomcp lives in the registry but in no role whitelist, so it is reachable here yet never a callable tool.
+  // no-ops when unmounted (executor role, or no collection) and fails open so recall never blocks a turn.
+  private async maybeRecallMemory(
+    mcpRegistry: McpClientRegistry,
+    query: string,
+    workingMessages: ChatMessage[],
+    events: Eventing,
+    signal: AbortSignal
+  ): Promise<void> {
+    const memory = mcpRegistry.getClient("memomcp");
+    if (!memory) return;
+
+    events.publish(OrchestratorEventTypes.RECALL_START, {});
+
+    let result: ToolExecutionResult;
+    try {
+      result = await memory.callTool("recall", { query }, signal);
+    } catch (err) {
+      events.publish(OrchestratorEventTypes.WARNING, {
+        message: `memory recall failed: ${(err as Error).message}`,
+      });
+      return;
+    }
+
+    if (result.isError || result.content.trim().length === 0) return;
+
+    // transient: pushed into the turn's working set only, never the persisted transcript — recall reruns
+    // each turn (like the request anchor), so persisting would bloat the conversation and the summary
+    workingMessages.push({
+      role: "system",
+      content: `Relevant memories recalled for this request (use if helpful):\n\n${result.content}`,
+    });
+
+    events.publish(OrchestratorEventTypes.RECALL_FINALIZE, { chars: result.content.length });
   }
 
   private async maybeSummarize(

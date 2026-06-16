@@ -4,7 +4,6 @@ import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
-import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME } from "../../synthetic-mcp/executor-server.js";
 import { McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
@@ -38,31 +37,13 @@ export class McpRegistryMiddleware implements IMiddleware {
     ctx.registry.set(McpRegistryToken, mcpRegistry);
 
     const modelName = modelsRegistry.getValidModelForRole(this.params.role);
-    const executorModelName = modelsRegistry.getValidModelForRole("executor");
-    // role mounts inherit the role model's timeout; the executor server carries its own model's
     const serverTimeout = modelsRegistry.getTimeoutForModel(modelName);
-    const executorTimeout = modelsRegistry.getTimeoutForModel(executorModelName);
-
-    // these become the orchestrator's visible tools, so a write server landing here would leak into the read-only role
+    const validMcpClients = modelsRegistry.getValidMcpServersForRole(this.params.role);
     await this.mountServers(
       mcpRegistry,
-      modelsRegistry.getValidMcpServersForRole(this.params.role),
+      validMcpClients,
       ctx,
       serverTimeout
-    );
-
-    // separate registry so the executor's write tools never reach the orchestrator's scoped client;
-    // ExecutorLocalMcp reads it only to enumerate dispatch targets — real execution builds its own registry
-    const executorServers = new McpClientRegistry(sandboxRoot);
-    await this.mountServers(
-      executorServers,
-      modelsRegistry.getValidMcpServersForRole("executor"),
-      ctx,
-      executorTimeout
-    );
-
-    mcpRegistry.registerClient(
-      new ExecutorLocalMcp(ctx, executorServers).setTimeout(executorTimeout)
     );
 
     ctx.logger?.debug("mcp end", { toolCount: mcpRegistry.listTools().length });
@@ -83,7 +64,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     const sandboxRoot = ctx.sandboxRoot;
     const fsRoot = path.join(sandboxRoot, session.workspaceId);
     const externalDefs = readMcpServerDefs(ctx.mcpConfigPath);
-
+    
     for (const mcp of serverNames ?? []) {
       switch (mcp) {
         case FS_SERVER_NAME:
@@ -144,16 +125,21 @@ export class McpRegistryMiddleware implements IMiddleware {
       ctx.logger?.debug("mcp external skip — not in mcp.json", { name });
       return;
     }
-    const extraArgs =
-      name === MEMOMCP_SERVER_NAME ? ["--collection", memoryCollectionFor(session)] : undefined;
     try {
-      const client = await mountExternalMcp(name, def, {
-        timeout: serverTimeout,
-        signal: ctx.runtimeSignal,
-        extraArgs,
-      });
-      registry.registerClient(client);
-      ctx.logger?.debug("mcp external mounted", { name });
+      switch (name) {
+        case MEMOMCP_SERVER_NAME:
+          if (session.memoryCollectionId)
+          {
+            const client = await mountExternalMcp(name, def, {
+              timeout: serverTimeout,
+              signal: ctx.runtimeSignal,
+              extraArgs: ["--collection", session.memoryCollectionId],
+            });
+            registry.registerClient(client);
+            ctx.logger?.debug("mcp external mounted", { name });
+          }
+        break;
+    }
     } catch (err) {
       ctx.logger?.warn("mcp external mount failed", { name, error: (err as Error).message });
     }

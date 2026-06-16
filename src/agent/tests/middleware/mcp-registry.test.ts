@@ -51,15 +51,13 @@ describe("McpRegistryMiddleware", () => {
     expect(mcpRegistry!.sandboxRoot).toBe("/tmp/sandbox");
     expect(mcpRegistry!.getClient("fsmcp")).toBeDefined();
     expect(mcpRegistry!.getClient("excel")).toBeDefined();
-    // The role scope is wired through: the factory fronts the whitelisted mounts.
-    expect(mcpRegistry!.createScopedClient().listTools().length).toBeGreaterThan(0);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
   test("executor dispatch advertises the executor's write tools without leaking them to the orchestrator", async () => {
     // Orchestrator mounts read-only fs; executor mounts writable fs. The
     // executor's tools must surface in the dispatch enum but NEVER in the
-    // orchestrator's own scoped (visible) tools.
+    // orchestrator's own registry.
     const splitModelsRegistry = {
       getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
       getValidMcpServersForRole: (role: string) =>
@@ -84,9 +82,8 @@ describe("McpRegistryMiddleware", () => {
     const mcpRegistry = ctx.registry.get(McpRegistryToken);
     expect(mcpRegistry.getClient("fsreadonly")).toBeDefined();
 
-    // The orchestrator's visible tools are read-only: no write tool leaks in.
-    const visible = mcpRegistry.createScopedClient().listTools().map((t) => t.name);
-    expect(visible).not.toContain("fsmcp__write_file");
+    // The write server never lands in the orchestrator's registry — it lives only in the executor's.
+    expect(mcpRegistry.getClient("fsmcp")).toBeUndefined();
 
     // The executor dispatch enum DOES expose the executor's write tools.
     const [dispatch] = mcpRegistry.getClient("executor")!.listTools();

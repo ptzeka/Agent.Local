@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { createSession, type Session } from "../../session/session.js";
+import { createSession, memoryCollectionFor, type Session } from "../../session/session.js";
 import { SessionToken, StoreToken, UserToken, WorkspaceToken, WorkspacesToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
@@ -27,6 +27,7 @@ export class SessionMiddleware implements IMiddleware {
     if (user) {
       session.user = user;
     }
+    session.memoryCollectionId = memoryCollectionFor(session)
     ctx.registry.set(SessionToken, session);
 
     const workspace = ctx.registry.get(WorkspacesToken).get(session.workspaceId);

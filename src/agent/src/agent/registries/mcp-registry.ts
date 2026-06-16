@@ -1,6 +1,5 @@
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { Mcp } from "@agent-local/mcp";
-import { ScopedToolClient } from "../scoped-tool-client.js";
 
 export class McpClientRegistry {
   private clients = new Map<string, Mcp>();
@@ -26,10 +25,5 @@ export class McpClientRegistry {
       flattened.push(...client.listTools());
     }
     return flattened;
-  }
-
-  // built per turn so it sees live rebinds; the middleware already mounted only this role's servers
-  public createScopedClient(): ScopedToolClient {
-    return new ScopedToolClient([...this.clients.values()]);
   }
 }

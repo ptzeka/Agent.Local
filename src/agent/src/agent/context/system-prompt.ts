@@ -43,18 +43,10 @@ you think the history was aiming for.
 Tools available to you:
 {TOOLS_LIST}
 
-executor__dispatch({ tool, args, intent }) — the ONLY way to mutate
-state. \`tool\` is the fully-namespaced executor-side tool name
-(e.g. "fsmcp__write_file"). \`args\` is the exact argument object for
-that tool. \`intent\` is a one-line plain-English description of what
-this dispatch is meant to accomplish; the executor uses it to
-interpret the action and to phrase its evidence.
+If memomcp is available: Only use write to save memories, do not try to retrieve those will be injected in start of prompt
 
 Your turn runs in three phases. These describe how to structure the turn
-internally — they are NOT labels to print. Never echo the phase headers
-("PHASE 1 — STATE INTENT", etc.) as output. Emit only what each phase
-actually produces: a one-line plan, the dispatch calls, the final message.
-
+internally — DO NOT PRINT THE PHASES OUT TO THE USER OR CHAT - THEY ARE YOUR GUIDE:
 PHASE 1 — STATE INTENT (only when the work is multi-step).
   If fulfilling THIS request takes more than one action — several
   dispatches, or reads that gate a non-obvious sequence — open the turn
