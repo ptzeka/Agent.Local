@@ -99,4 +99,53 @@ describe('MemoryRepository', () => {
   it('rejects empty content', async () => {
     await expect(repo.remember('alice', { content: '   ' })).rejects.toThrow(/empty/);
   });
+
+  it('locate returns content-free summaries mirroring recall, then expand pulls the bodies', async () => {
+    await repo.remember('alice', { content: 'user prefers dark mode', kind: 'core' });
+    await repo.remember('alice', { content: 'the deploy pipeline runs nightly at 2am', kind: 'archival' });
+    await repo.remember('alice', { content: 'a quarterly budget review meeting', kind: 'archival' });
+
+    const located = await repo.locate('alice', { query: 'when does the deploy pipeline run', k: 1 });
+
+    // same core + top-k archival split as recall
+    expect(located.collection).toBe('alice');
+    expect(located.core).toHaveLength(1);
+    expect(located.archival).toHaveLength(1);
+    expect(located.archival[0]!.score).toBeDefined();
+
+    // summaries carry identity + metadata but NO content body
+    const coreSummary = located.core[0]!;
+    expect(coreSummary.id).toBeDefined();
+    expect(coreSummary.vectorId).toBeDefined();
+    expect(coreSummary.metadata.kind).toBe('core');
+    expect((coreSummary as unknown as { content?: unknown }).content).toBeUndefined();
+
+    // expand the chosen vectorId -> the same body recall would have returned
+    const expanded = await repo.expand('alice', [coreSummary.vectorId, located.archival[0]!.vectorId]);
+    expect(expanded.map((m) => m.content)).toEqual(
+      expect.arrayContaining(['user prefers dark mode', 'the deploy pipeline runs nightly at 2am']),
+    );
+    expect(expanded.find((m) => m.id === coreSummary.id)!.vectorId).toBe(coreSummary.vectorId);
+  });
+
+  it('locate honours the category filter like recall', async () => {
+    await repo.remember('alice', { content: 'work note', kind: 'core', category: 'work' });
+    await repo.remember('alice', { content: 'home note', kind: 'core', category: 'home' });
+    await repo.remember('alice', { content: 'work archival item', kind: 'archival', category: 'work' });
+
+    const located = await repo.locate('alice', { query: 'note', k: 5, category: 'work' });
+    expect(located.core.map((s) => s.metadata.category)).toEqual(['work']);
+    expect(located.archival.every((s) => s.metadata.category === 'work')).toBe(true);
+  });
+
+  it('expand skips unknown ids and returns empty when none resolve', async () => {
+    await repo.remember('alice', { content: 'only memory', kind: 'core' });
+    const located = await repo.locate('alice', { query: 'memory', k: 5 });
+
+    const mixed = await repo.expand('alice', ['does-not-exist', located.core[0]!.vectorId]);
+    expect(mixed.map((m) => m.content)).toEqual(['only memory']);
+
+    const none = await repo.expand('alice', ['nope-1', 'nope-2']);
+    expect(none).toEqual([]);
+  });
 });

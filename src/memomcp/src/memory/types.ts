@@ -61,3 +61,19 @@ export interface RecallResult {
   core: RecalledMemory[];
   archival: RecalledMemory[];
 }
+
+// the locate-tier projection of a memory: everything RecalledMemory carries minus the content body.
+// recall_locate ships these so an agent can scan what exists, then expand the chosen vectorIds.
+export interface MemorySummary {
+  id: string;
+  vectorId: string;
+  metadata: MemoryMetadata;
+  score?: number;
+}
+
+// the two-tier locate result: same core/archival split as RecallResult, but content-free summaries
+export interface RecallLocateResult {
+  collection: string;
+  core: MemorySummary[];
+  archival: MemorySummary[];
+}

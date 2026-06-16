@@ -758,12 +758,14 @@ Status since groom: `list(namespace, filter?)` was promoted onto `IVectorStore` 
 is the live proof of the waste. The "second consumer" gate is satisfied, so the
 refinement is justified now. **Split into three sequenced phases, each its own story:**
 
-- **M3-13 — Phase 1: embeddings write-only on reads** (low-risk, universal; do first).
-  Strip the vector from read results; `get` keeps it. Foundation for everything below.
-- **M3-14 — Phase 2: content-free summary tier** (the two-tier locate→expand). A distinct
-  `VectorSummary` type + `searchSummaries`/`listSummaries`; `get` is the expand.
-- **M3-15 — Phase 3: related search** (more-like-this + structural + hybrid), composed in
-  codemcp on the cleaned contract — the payoff Phases 1–2 unlock.
+- **M3-13 — Phase 1: embeddings write-only on reads** — ✅ **done 2026-06-15**, see
+  [BACKLOG.DONE.md](BACKLOG.DONE.md). Vector stripped from read results; `get` keeps it.
+- **M3-14 — Phase 2: content-free summary tier** (the two-tier locate→expand) — ✅ **done
+  2026-06-15**, see [BACKLOG.DONE.md](BACKLOG.DONE.md). `VectorSummary` + `searchSummaries`/
+  `listSummaries`; both codemcp and memomcp retrieve in two tiers.
+- **M3-15 — Phase 3: related search** — the semantic more-like-this primitive (`relatedTo` +
+  codemcp `related_code`) shipped ✅ **2026-06-15**; the remaining consumer-side relatedness
+  (structural + hybrid + MMR + symbol boost) is split out as **M3-15b**, still open.
 
 **Done when:** all three phase stories are closed — reads never carry an embedding, both
 servers retrieve in two tiers (summary locate → by-id expand), and codemcp answers
@@ -826,64 +828,15 @@ embed-provider/dim contract is documented so stored vectors can't silently misma
 
 ---
 
-### M3-13 · Retrieval Phase 1 — embeddings write-only on reads — `~0.5d` · P2
-Phase 1 of **M3-10**. No reader ever consumes `.embedding` off a result: codemcp
-`toChunkRow` and memomcp `toRecalled` both drop it; `searchByEmbedding` uses it
-*internally* for scoring only. So returning it is dead weight in 100% of call sites —
-and it is the single biggest field (a per-row 1024-float vector). Low-risk, universal,
-and a prerequisite for the phases below.
+### M3-15b · Retrieval Phase 3 (cont.) — consumer-side relatedness (structural + hybrid + MMR) — `~1d` · P2
+Continuation of **M3-15** (Phase 3 of **M3-10**). The semantic more-like-this primitive
+shipped 2026-06-15 (`IVectorStore.relatedTo` + codemcp `related_code`, integration-tested);
+see [BACKLOG.DONE.md](BACKLOG.DONE.md). What remains is the consumer-side relatedness that
+composes the store primitives in `CodeRetrieval` — no new store method, no association sidecar.
 
-- [ ] Make `embedding` an **input-only** field: present on the `upsert` record type,
-      absent from `SearchHit.record` / `list()` results (`{ id, namespace, content,
-      metadata }`). `get(namespace, id)` keeps the full record (re-embed / migrate /
-      export — and Phase 3 more-like-this — are the callers that need the vector back).
-- [ ] pg: drop `embedding` from the read `SELECT`s (it never leaves the DB); file:
-      strip before return.
-- [ ] Add the optional defensive `limit?` to `list(namespace, filter?, limit?)` while
-      here (ALL by default); wire it into codemcp `find_symbol`/`get_file_context`, which
-      `list()` uncapped today ([codeRetrieval.ts](src/codemcp/src/retrieval/codeRetrieval.ts)).
-- [ ] Tests: read paths ship no `embedding`; `get` still returns it; recall/search result
-      is byte-identical minus the vector; `list` respects the cap.
-
-**Done when:** `searchByEmbedding`/`list` never carry an embedding, `get` still returns it,
-and `list` accepts an optional `limit` — a universal payload cut for codemcp + memomcp.
-
----
-
-### M3-14 · Retrieval Phase 2 — content-free summary tier (two-tier locate→expand) — `~1d` · P2
-Phase 2 of **M3-10**; depends on M3-13. A distinct honest type, not a flag on the existing
-methods: both consumers already hand-roll the narrowed shape (`RecalledMemory`,
-`ChunkRow`-without-body), and a record with `content: ''` would make the type lie.
-
-- [ ] `interface VectorSummary { id; namespace; metadata }` (+ `score?` on a hit) and
-      `searchSummaries(...)` / `listSummaries(...)` on `IVectorStore`; `get(namespace,
-      id)` is the expand. pg selects only summary columns; file strips `content` too.
-- [ ] **codemcp two-tier tools.** `search_code`/`find_symbol` can return a summary
-      (`path:lines · symbol · kind · score · signature`); follow-up expand-by-id /
-      `get_file_context` outline → chunk bodies. Additive — the one-shot full path stays.
-- [ ] **memomcp recall two-tier.** Core + top-k archival as summaries first, expand
-      chosen ids — same `VectorSummary` primitive, not a second mechanism.
-- [ ] **Pairs with M3-8/M3-9 streaming.** Same "don't dump everything at once" goal;
-      the summary tier is exactly what gets streamed — one mechanism, not two.
-- [ ] Tests: a summary search ships no `content` (pg never selects it / file drops it);
-      expand-by-id returns the same body the one-shot path did.
-
-**Done when:** codemcp and memomcp retrieve in two tiers — a content-free summary to
-locate, then by-id drill-down to expand — via `VectorSummary` + `searchSummaries`/
-`listSummaries` as generic primitives both consume, with no body shipped until expand.
-
----
-
-### M3-15 · Retrieval Phase 3 — related search (more-like-this + structural + hybrid) — `~1d` · P2
-Phase 3 of **M3-10**; depends on M3-13 (`get` keeps the embedding) and M3-14 (summaries).
-codemcp can rank by a query string today but cannot answer "show me what's related to
-THIS chunk." Compose relatedness in `CodeRetrieval` from the two store primitives — no
-new store method beyond Phases 1–2, no association sidecar.
-
-- [ ] **Semantic neighbors (more-like-this).** `relatedTo(sha, recordId, k)`: `get(sha, id)`
-      for the anchor's own embedding, then `searchByEmbedding(sha, anchor.embedding, k+1)`
-      and drop self. (This is why M3-13 keeps the vector on `get`; codemcp must start
-      calling `get`, which it does not today.)
+- [x] **Semantic neighbors (more-like-this).** ✅ shipped — `relatedTo` is a single store
+      primitive (pg keeps the seed vector server-side via a CTE; file ranks by the seed's
+      stored embedding), excluding the anchor; codemcp `related_code` exposes it.
 - [ ] **Structural relatedness — metadata only, no embedding:** same file (`list {path}`),
       class siblings (`list {parentSymbol}`), symbol def (`list {symbol}`), and dependency
       neighbors by resolving the stored `imports[]` → `path` (lightweight graph edge, no
@@ -897,8 +850,8 @@ new store method beyond Phases 1–2, no association sidecar.
 - [ ] **Boost exact-symbol matches.** A query string equal to a stored `symbol` outranks
       pure vector neighbors — merge `find_symbol` into `search_code` ranking, not a separate
       tool path.
-- [ ] Tests: `relatedTo` excludes the anchor; structural queries hit metadata only (no
-      embed); MMR caps per-path duplicates; a symbol-exact hit ranks first.
+- [ ] Tests: structural queries hit metadata only (no embed); MMR caps per-path duplicates;
+      a symbol-exact hit ranks first.
 
 **Done when:** codemcp answers "related to this" by composing vector neighbors + structural
 metadata + import edges, deduped/diversified in the consumer, with the store still doing

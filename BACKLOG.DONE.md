@@ -20,6 +20,73 @@ Completed slices of the "split into 5 packages" grooming. The shared
 package-dependency diagram and the remaining consumers (`codemcp`, `memomcp`)
 stay in [BACKLOG.md](BACKLOG.md).
 
+### M3-13 · Retrieval Phase 1 — embeddings write-only on reads — `~0.5d` · P2
+Phase 1 of **M3-10**. No reader ever consumes `.embedding` off a result: codemcp
+`toChunkRow` and memomcp `toRecalled` both drop it; `searchByEmbedding` uses it
+*internally* for scoring only. So returning it is dead weight in 100% of call sites —
+and it is the single biggest field (a per-row 1024-float vector). Low-risk, universal,
+and a prerequisite for the phases below.
+
+- [x] Make `embedding` an **input-only** field: present on the `upsert` record type,
+      absent from `SearchHit.record` / `list()` results (`RetrievedRecord = Omit<VectorRecord,
+      'embedding'>`). `get(namespace, id)` keeps the full record (re-embed / migrate /
+      export — and Phase 3 more-like-this — are the callers that need the vector back).
+- [x] pg: dropped `embedding::text` from the read `SELECT`s (it never leaves the DB); file:
+      `toRetrieved` strips before return.
+- [x] Added the optional defensive `limit?` to `list(namespace, filter?, limit?)` (ALL by
+      default); wired into codemcp `find_symbol`/`get_file_context`.
+- [x] Tests: read paths ship no `embedding`; `get` still returns it; `list` respects the cap.
+
+**Done when:** `searchByEmbedding`/`list` never carry an embedding, `get` still returns it,
+and `list` accepts an optional `limit` — a universal payload cut for codemcp + memomcp. ✅ DONE
+(`RetrievedRecord` on `searchByEmbedding`/`list`; pg + file strip the vector; `get` keeps the
+full `VectorRecord`; `list` gained `limit?`. vectorstore + codemcp + memomcp build green, tests pass.)
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
+### M3-14 · Retrieval Phase 2 — content-free summary tier (two-tier locate→expand) — `~1d` · P2
+Phase 2 of **M3-10**; depends on M3-13. A distinct honest type, not a flag on the existing
+methods: both consumers already hand-roll the narrowed shape (`RecalledMemory`,
+`ChunkRow`-without-body), and a record with `content: ''` would make the type lie.
+
+- [x] `interface VectorSummary { id; namespace; metadata }` (+ `score?` on a `SummaryHit`) and
+      `searchSummaries(...)` / `listSummaries(...)` on `IVectorStore`; `get(namespace, id)` is
+      the expand. pg selects only summary columns; file strips `content` too.
+- [x] **codemcp two-tier tools.** `locate_code`/`locate_symbol`/`locate_file` return content-free
+      summaries; `expand_chunk` pulls one body by citation. Additive — the one-shot full path
+      (`search_code`/`find_symbol`/`get_file_context`) stays. Integration-tested end-to-end.
+- [x] **memomcp recall two-tier.** `recall_locate` (core + top-k archival as content-free
+      summaries) → `recall_expand` (full bodies by vectorId) — same `VectorSummary` primitive,
+      not a second mechanism. The one-shot `recall` stays.
+- [x] Tests: a summary search ships no `content` (pg never selects it / file drops it);
+      expand-by-id returns the same body the one-shot path did. (codemcp + memomcp suites.)
+- [ ] **Pairs with M3-8/M3-9 streaming** — deferred to those stories; the summary tier is the
+      unit they will stream (not a blocker for this story).
+
+**Done when:** codemcp and memomcp retrieve in two tiers — a content-free summary to locate,
+then by-id drill-down to expand — via `VectorSummary` + `searchSummaries`/`listSummaries` as
+generic primitives both consume, with no body shipped until expand. ✅ DONE (codemcp
+`locate_*`/`expand_chunk` + memomcp `recall_locate`/`recall_expand`; both suites green; codemcp
+flow validated by `src/codemcp/integrationtests.sh`).
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
+### M3-15 (part) · Retrieval Phase 3 — semantic more-like-this primitive — `~0.5d` · P2
+First slice of Phase 3 of **M3-10**; depends on M3-13 (`get` keeps the embedding) and M3-14.
+The store-level "show me what's related to THIS record" primitive. The remaining
+consumer-side relatedness (structural / hybrid / MMR / symbol boost) is tracked open as
+**M3-15b** in [BACKLOG.md](BACKLOG.md).
+
+- [x] **Semantic neighbors (more-like-this).** `relatedTo(namespace, id, k, filter?)` on
+      `IVectorStore`, excluding the anchor. pg keeps the seed vector server-side via a single
+      `WITH seed AS (SELECT embedding …)` CTE (the vector never crosses the wire); file ranks by
+      the seed's stored embedding. codemcp `CodeRetrieval.relatedTo` + the `related_code` tool
+      expose it (takes a `path:start-end` citation, refuses non-boundary ranges).
+- [x] Tests: `relatedTo` excludes the anchor; bad-citation refusal; integration-tested in
+      `src/codemcp/integrationtests.sh` (seed excluded, neighbours returned).
+
+**Done when:** a store-level `relatedTo` primitive ranks an anchor's semantic neighbours
+(seed excluded, vector never leaving the DB on pg) and codemcp exposes it. ✅ DONE.
+  _created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
 - [x] **`src/vectorizer`** (leaf, `~1d`) — `EmbedAdapter { modelId, dim,
       embedBatch, embedQuery }` + `createEmbedAdapter(provider, dim)` over
       local/voyage/openai. Deletes the hand-mirrored `LocalQueryEmbedAdapter`

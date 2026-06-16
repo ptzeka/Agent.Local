@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import type { IVectorStore, MetadataFilter, RetrievedRecord, VectorRecord } from '@agent-local/vectorstore';
+import type { IVectorStore, MetadataFilter, RetrievedRecord, VectorRecord, VectorSummary } from '@agent-local/vectorstore';
 import type { IVectorService } from '@agent-local/vectorizer';
 import type {
   MemoryInput,
   MemoryMetadata,
+  MemorySummary,
   RecallFilter,
+  RecallLocateResult,
   RecallQuery,
   RecallResult,
   RecalledMemory,
@@ -68,6 +70,33 @@ export class MemoryRepository {
     };
   }
 
+  // locate tier: the same core + top-k archival split as recall, but as content-free summaries.
+  // an agent scans these cheaply, then expands only the vectorIds it wants — no body crosses until then.
+  async locate(collection: string, query: RecallQuery): Promise<RecallLocateResult> {
+    const base = buildFilter(query);
+
+    const coreSummaries = await this.store.listSummaries(collection, { ...base, kind: 'core' });
+
+    const vector = await this.embedder.embedQuery(query.query);
+    this.assertDim(vector.length);
+    const archivalHits = await this.store.searchSummaries(collection, vector, query.k, {
+      ...base,
+      kind: 'archival',
+    });
+
+    return {
+      collection,
+      core: coreSummaries.map((s) => toMemorySummary(s)),
+      archival: archivalHits.map((h) => toMemorySummary(h.summary, h.score)),
+    };
+  }
+
+  // expand tier: the full memories behind the vectorIds a locate surfaced. Unknown ids are skipped.
+  async expand(collection: string, vectorIds: string[]): Promise<RecalledMemory[]> {
+    const records = await Promise.all(vectorIds.map((id) => this.store.get(collection, id)));
+    return records.filter((r): r is VectorRecord => r !== null).map((r) => toRecalled(r));
+  }
+
   // the existing vector id for this memory, or a fresh one — keeps memory 1:1 with its vector record
   private async resolveVectorId(collection: string, memoryId: string): Promise<string> {
     const [existing] = await this.store.list(collection, { memoryId });
@@ -113,4 +142,16 @@ function toRecalled(record: RetrievedRecord, score?: number): RecalledMemory {
   };
   if (score !== undefined) memory.score = score;
   return memory;
+}
+
+// the locate-tier mapping: a VectorSummary (no content) back into a content-free MemorySummary
+function toMemorySummary(summary: VectorSummary, score?: number): MemorySummary {
+  const metadata = summary.metadata as unknown as MemoryMetadata;
+  const out: MemorySummary = {
+    id: metadata.memoryId,
+    vectorId: summary.id,
+    metadata,
+  };
+  if (score !== undefined) out.score = score;
+  return out;
 }

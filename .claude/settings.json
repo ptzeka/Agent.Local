@@ -48,7 +48,8 @@
       "Bash(/Applications/WWW/Agent.Local/src/codemcp/integrationtests.sh)",
       "mcp__codemcp__locate_code",
       "mcp__codemcp__expand_chunk",
-      "mcp__codemcp__related_code"
+      "mcp__codemcp__related_code",
+      "Bash(node dist/server.js --backend file probe __nope)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent"

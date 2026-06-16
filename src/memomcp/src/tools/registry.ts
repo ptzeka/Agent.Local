@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { MemoryRepository } from '../memory/memoryRepository.js';
 import { remember, rememberSchema } from './remember.js';
 import { recall, recallSchema } from './recall.js';
+import { recallLocate, recallLocateSchema } from './recall_locate.js';
+import { recallExpand, recallExpandSchema } from './recall_expand.js';
 
 export interface ToolDeps {
   repository: MemoryRepository;
@@ -62,6 +64,37 @@ export const TOOLS: ToolDef[] = [
     },
     zodSchema: recallSchema,
     handler: (input, deps) => recall(recallSchema.parse(input), deps),
+  },
+  {
+    name: 'recall_locate',
+    description: 'Locate tier of two-tier recall: like `recall`, but returns content-free summaries (no memory body) so you can scan what exists cheaply before reading anything. Lists all "core" memories plus the top-k "archival" matches as `(memoryId) vectorId=… [metadata · score]` lines. Feed the vectorId values into `recall_expand` to read the bodies you actually want.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Natural-language query to rank archival memories against.' },
+        collection: { type: 'string', description: 'Collection id to recall from. Defaults to the server collection.' },
+        k: { type: 'integer', minimum: 1, maximum: 50, default: 8, description: 'How many archival memories to rank back.' },
+        category: { type: 'string', description: 'Restrict to memories with this category.' },
+        tenant: { type: 'string', description: 'Restrict to memories with this tenant.' },
+      },
+      required: ['query'],
+    },
+    zodSchema: recallLocateSchema,
+    handler: (input, deps) => recallLocate(recallLocateSchema.parse(input), deps),
+  },
+  {
+    name: 'recall_expand',
+    description: 'Expand tier of two-tier recall: returns the full content of specific memories by their `vectorId` (as shown by `recall_locate`). Pass one or more ids; unknown ids are skipped. Use this after `recall_locate` to read only the memories you chose, without pulling every body up front.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ids: { type: 'array', items: { type: 'string' }, description: 'vectorId values (from recall_locate) of the memories to expand.' },
+        collection: { type: 'string', description: 'Collection id the ids belong to. Defaults to the server collection.' },
+      },
+      required: ['ids'],
+    },
+    zodSchema: recallExpandSchema,
+    handler: (input, deps) => recallExpand(recallExpandSchema.parse(input), deps),
   },
 ];
 
