@@ -1036,35 +1036,14 @@ Absorbs M0-1 (gate) and M1-2 (token accounting); M2-4 (policy) plugs into
 - [ ] **MR-3** · `SyntheticToolSet` for dispatch_executor/subsessions/excel;
       delete `refreshTurnServers` + role methods from `McpClientRegistry`
       (registry becomes a neutral transport) — `~2d`
-- [ ] **MR-4·0** · Context consolidation — `RunnerContext` is the bundle — `~0.5d` · P1
-  - **Why:** the per-turn state is split across **three** carriers today
-    (`RunOptions` → `Orchestrator.run`; `RunnerContext` → the runner onion;
-    `this.runtime` reached back into inside `run()`). The conceptual model is
-    one funnel (UNIFIED_RUNTIME_PLAN §2.0): RuntimeContext → **RunnerContext** →
-    ToolContext → SubRuntimeRefs. Collapse the three carriers into the one
-    `RunnerContext` — the orchestrator is just a runner, and **anything driven
-    in the loop (executor/evaluator/summarizer) is a runner and gets a
-    `RunnerContext`.** No separate `TurnContext` type.
-  - **`RunnerContext` and its onion already shipped** — keep the name
-    (`runners/middleware/runner-middleware.ts`: `RunnerContext`,
-    `composeRunnerPipeline`, `RunnerPipelineMiddleware`, `RunnerMiddlewareToken`).
-    This story extends `RunnerContext`, it does not rename or re-invent it.
-  - [ ] Fold `RunOptions` (`signal`, `coordinator?`, `pullInjectedPrompts?`)
-        onto `RunnerContext`; `AgentRuntime.beginTurn(options)` builds the one
-        `RunnerContext` and `dispatchAsync` stops constructing a second per-turn
-        object. The state-derived artifacts (provider, surface, context snapshot,
-        tracker) are populated here too — §2.0 DI rule.
-  - [ ] DI rides through as a handle (singletons — §2.0 rule): `RunnerContext`
-        already carries `registry`/the queryable, so **retire
-        `Orchestrator.setRuntime` + the `private runtime!` field** — `run(ctx)`
-        reads everything off `ctx`. Kills the deferred-reference smell
-        (`agent-runtime.ts` ~L146).
-  - [ ] Micro-cleanups in the same pass: drop the dead `includeSubSessions`
-        from `OrchestratorMiddlewareParams` (read only by `ContextMiddleware`),
-        and the redundant `?? "orchestrator"` default (role is required).
-  - **Done when:** `Orchestrator.run` takes a single `RunnerContext` arg and
-    imports nothing from the runtime to reconstruct state; `setRuntime` and
-    `RunOptions` no longer exist; suite green.
+- [x] **MR-4·0** · Context consolidation — `RunnerContext` is the bundle — `~0.5d` · P1
+      — ✅ **done 2026-06-16**, see [BACKLOG.DONE.md](BACKLOG.DONE.md). `RunOptions`
+      folded onto `RunnerContext` (+ `runtime`/`coordinator`/`pullInjectedPrompts`);
+      `AgentRuntime.beginTurn` mints the one per-turn object; `Orchestrator.setRuntime`
+      + the `private runtime!` field retired; `includeSubSessions`/`?? "orchestrator"`
+      micro-cleanups landed. **State-derived artifact pre-resolution (provider, surface,
+      context snapshot, tracker) deferred to MR-4** — this story only changed *where the
+      handle comes from* (ctx, not `this`).
 
 - [ ] **MR-4** · Turn/round middleware — solid core loop, injectable
       behavior — `~3d`

@@ -14,26 +14,18 @@ import {
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { foldCounters, foldDelegatedUsage } from "../session/session.js";
-import type { SubSessionCoordinator } from "./subsession.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
+import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "@agent-local/common/eventing";
 import { ContextSnapshot } from "../context/context-loader.js";
 
 // re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
-
-export interface RunOptions {
-  signal: AbortSignal;
-  // present → expose the synthetic sub-session tools; detached runs get none, so sub-sessions are one level deep
-  coordinator?: SubSessionCoordinator;
-  // pull seam: returned strings are appended as user turns, so an outside producer steers without racing the loop
-  pullInjectedPrompts?: () => string[];
-}
 
 export interface RunResult {
   finalMessage: ChatMessage;
@@ -45,42 +37,30 @@ export interface RunResult {
 
 // narrow contract satisfied structurally by Orchestrator, so the manager stays decoupled and construction acyclic
 export interface SessionRunner {
-  run(options?: RunOptions): Promise<RunResult>;
+  run(ctx: RunnerContext): Promise<RunResult>;
 }
 
 // drives the agentic loop for any role; the role selects model, visible tools, prompt, and iteration cap
-// STATELESS: holds only app deps, while per-turn state (transcript, context) arrives via run()'s Session/Workspace
+// STATELESS: holds only its role; per-turn state and the runtime DI handle arrive via run()'s RunnerContext
 // orchestrator role gates on the evaluator; executor role ends on the first tool-free response
 export class Orchestrator {
-  private runtime!: AgentRuntimeQueryable;
-
-  constructor(private readonly role: string, runtime?: AgentRuntimeQueryable) {
-    if (runtime) {
-      this.runtime = runtime;
-    }
-  }
-
-  // set after construction by AgentRuntime.build
-  setRuntime(runtime: AgentRuntimeQueryable): void {
-    this.runtime = runtime;
-  }
+  constructor(private readonly role: string) {}
 
   // runs one user turn end-to-end, appending to the runtime's Conversation; flushes per round
   // so a crash loses at most the round in flight, with finalize() backstopping the tail
-  public async run(options: RunOptions): Promise<RunResult> {
-    // chained under the runtime's bus so the host (CLI) sees turn events without an onEvent callback
-    const turnEvents = new Eventing();
-    this.runtime.getEvents().add(turnEvents);
-    const logger = this.runtime.getLogger();
-    const session = this.runtime.getSession();
-    const workspace = this.runtime.getWorkspace();
-    const modelsRegistry = this.runtime.getModelsRegistry();
-    const mcpRegistry = this.runtime.getMcpClientRegistry();
-    const providersRegistry = this.runtime.getProvidersRegistry();
-    const conversation = this.runtime.getConversation();
+  public async run(ctx: RunnerContext): Promise<RunResult> {
+    // the turn bus is minted+chained by AgentRuntime.beginTurn; the runner only publishes onto it
+    const turnEvents = ctx.events;
+    const logger = ctx.logger;
+    const session = ctx.session;
+    const workspace = ctx.runtime.getWorkspace();
+    const modelsRegistry = ctx.runtime.getModelsRegistry();
+    const mcpRegistry = ctx.runtime.getMcpClientRegistry();
+    const providersRegistry = ctx.runtime.getProvidersRegistry();
+    const conversation = ctx.runtime.getConversation();
 
-    const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration()!;
-    const contextLoader = this.runtime.getContextLoader();
+    const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration()!;
+    const contextLoader = ctx.runtime.getContextLoader();
     // the ContextMiddleware snapshot is the ONLY source of prompt+direction, so what ran always matches the hash
     const contextHash = session.contextHashes ? session.contextHashes[this.role] : null;
     const context = contextHash ? await contextLoader.getContextSnapshot(contextHash) : null;
@@ -91,20 +71,20 @@ export class Orchestrator {
       );
     }
 
-    await this.maybeSummarize(conversation, turnEvents, options.signal);
+    await this.maybeSummarize(ctx.runtime, conversation, turnEvents, ctx.signal);
     // no opening append: every user message arrives through the inbox drain inside the loop
 
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
     // rebind the subsessions server to this turn's live coordinator so tool calls hit the right instance
-    const coordinator = options.coordinator;
+    const coordinator = ctx.coordinator;
     if (coordinator) {
       const subsessionToolCtx: ToolContext = {
         session,
         workspace,
         sandboxRoot: mcpRegistry.sandboxRoot,
         coordinator,
-        signal: options.signal,
+        signal: ctx.signal,
       };
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
     }
@@ -124,7 +104,7 @@ export class Orchestrator {
         // chained under the turn so what the executor publishes bubbles up
         const mcpClientEvents = new Eventing();
         turnEvents.add(mcpClientEvents);
-        (executorMcp as unknown as TurnBindable).bindTurn(options.signal, tracker, mcpClientEvents);
+        (executorMcp as unknown as TurnBindable).bindTurn(ctx.signal, tracker, mcpClientEvents);
       }
     }
 
@@ -160,12 +140,12 @@ export class Orchestrator {
     const temperature = this.role === "executor" ? executorTemperature! : orchestratorTemperature!;
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-      if (options.signal.aborted) {
+      if (ctx.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
 
       // inbox is the sole source of user input; the first non-empty drain is this turn's request
-      const injectedPrompts = options.pullInjectedPrompts?.() ?? [];
+      const injectedPrompts = ctx.pullInjectedPrompts?.() ?? [];
       for (const text of injectedPrompts) {
         const injected: ChatMessage = { role: "user", content: text };
         conversation.append(injected);
@@ -192,7 +172,7 @@ export class Orchestrator {
       // recall on the first real request: the turn's query is now known, and an empty wake already settled above
       if (!recalled) {
         recalled = true;
-        await this.maybeRecallMemory(mcpRegistry, turnRequest, workingMessages, turnEvents, options.signal);
+        await this.maybeRecallMemory(mcpRegistry, turnRequest, workingMessages, turnEvents, ctx.signal);
       }
 
       turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
@@ -209,7 +189,7 @@ export class Orchestrator {
         response = await provider.chat([...workingMessages, requestAnchor], {
           tools: provider.supportsNativeTools ? visibleTools : [],
           temperature,
-          signal: options.signal,
+          signal: ctx.signal,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -248,11 +228,12 @@ export class Orchestrator {
 
         // Orchestrator: gate through the evaluator.
         const verdict = await this.evaluateCompletion(
+          ctx.runtime,
           turnRequest,
           assistantMessage.content,
           workingMessages.slice(turnStartIndex),
           turnEvents,
-          options.signal
+          ctx.signal
         );
 
         if (verdict.state === "satisfied" || verdict.state === "awaiting-input") {
@@ -292,7 +273,7 @@ export class Orchestrator {
       const toolMessages: ChatMessage[] = [];
 
       for (const call of toolCalls) {
-        if (options.signal?.aborted) {
+        if (ctx.signal?.aborted) {
           throw new Error("turn aborted: user requested stop");
         }
 
@@ -301,7 +282,7 @@ export class Orchestrator {
           call.name,
           call.arguments,
           turnEvents,
-          options.signal
+          ctx.signal
         );
         logger.debug("tool call end", { name: call.name, isError: execution.isError });
         // delegated cost lands in the tallied counters so own spend and dependency spend stay separately readable
@@ -317,11 +298,12 @@ export class Orchestrator {
       // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
       if (this.role !== "executor" && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
+          ctx.runtime,
           turnRequest,
           "(in-progress checkpoint — no final answer yet)",
           workingMessages.slice(turnStartIndex),
           turnEvents,
-          options.signal
+          ctx.signal
         );
         if (verdict.state === "failed") {
           return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
@@ -421,11 +403,12 @@ export class Orchestrator {
   }
 
   private async maybeSummarize(
+    runtime: AgentRuntimeQueryable,
     conversation: Conversation,
     events: Eventing,
     signal: AbortSignal
   ): Promise<void> {
-    const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+    const config = await runtime.getConfigurationRegistry().getModelsConfiguration();
     const threshold = config.orchestration.summarizeAtMessages!;
     const messages = conversation.getMessages();
     if (messages.length <= threshold) return;
@@ -441,7 +424,7 @@ export class Orchestrator {
 
     let summaryText: string;
     try {
-      const summarizer = new Summarizer(this.runtime);
+      const summarizer = new Summarizer(runtime);
       summaryText = await summarizer.summarize(prefix, { signal });
     } catch (err) {
       events.publish(OrchestratorEventTypes.WARNING, {
@@ -462,6 +445,7 @@ export class Orchestrator {
   }
 
   private async evaluateCompletion(
+    runtime: AgentRuntimeQueryable,
     question: string,
     proposedAnswer: string,
     transcript: ChatMessage[],
@@ -471,9 +455,9 @@ export class Orchestrator {
     events.publish(OrchestratorEventTypes.EVALUATION_START, {});
 
     try {
-      const config = await this.runtime.getConfigurationRegistry().getModelsConfiguration();
+      const config = await runtime.getConfigurationRegistry().getModelsConfiguration();
 
-      const evaluator = new Evaluator(this.runtime);
+      const evaluator = new Evaluator(runtime);
       const verdict = await evaluator.evaluate(
         { question, proposedAnswer, transcript },
         { signal, temperature: config.orchestration.evaluatorTemperature }

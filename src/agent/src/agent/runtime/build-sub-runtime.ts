@@ -49,7 +49,7 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     // standing context seeds the child's fresh conversation, so it rides the conversation step, not the session step
     .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
     .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
-    .add(new OrchestratorMiddleware({ includeSubSessions: false, role: deps.orchestratorRole }))
+    .add(new OrchestratorMiddleware({ role: deps.orchestratorRole }))
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole, includeSubSessions: false }))
     .add(new InputInboxMiddleware())

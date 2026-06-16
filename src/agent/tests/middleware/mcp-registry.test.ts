@@ -91,4 +91,30 @@ describe("McpRegistryMiddleware", () => {
       .properties.tool.enum;
     expect(enumNames).toContain("fsmcp__write_file");
   });
+
+  test("an executor child gets its own write servers but NO dispatch seam (no grandchildren)", async () => {
+    // role "executor" mounts its writable fs directly; it must never receive an executor seam,
+    // or a dispatch could spawn a grandchild — the one-level-deep invariant.
+    const executorModelsRegistry = {
+      getValidModelForRole: () => "m-exec",
+      getValidMcpServersForRole: () => ["fsmcp"],
+      getTimeoutForModel: () => 60000,
+    } as unknown as ModelRegistry;
+
+    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
+    const workspace: Workspace = { workspaceId: "ws-1", root: "/tmp/workspace", projectContext: null };
+    const ctx = makeContext({
+      session,
+      workspace,
+      sandboxRoot: "/tmp/sandbox",
+      mcpRegistry: undefined,
+      modelsRegistry: executorModelsRegistry,
+    });
+
+    await new McpRegistryMiddleware({ role: "executor" }).initialize(ctx, jest.fn(async () => {}));
+
+    const mcpRegistry = ctx.registry.get(McpRegistryToken);
+    expect(mcpRegistry.getClient("fsmcp")).toBeDefined();
+    expect(mcpRegistry.getClient("executor")).toBeUndefined();
+  });
 });

@@ -14,6 +14,44 @@ Newest milestones first.
 
 ---
 
+## MR — Unified runtime refactor
+
+Completed slices of the MR milestone (see [BACKLOG.md](BACKLOG.md) for the open
+MR-1…MR-6 sequence and [UNIFIED_RUNTIME_PLAN.md](UNIFIED_RUNTIME_PLAN.md) for design).
+
+### MR-4·0 · Context consolidation — `RunnerContext` is the bundle — `~0.5d` · P1
+Per-turn state was split across **three** carriers (`RunOptions` → `Orchestrator.run`;
+`RunnerContext` → the runner onion; `this.runtime` reached back into inside `run()`).
+The funnel model (UNIFIED_RUNTIME_PLAN §2.0) is one context per layer:
+RuntimeContext → **RunnerContext** → ToolContext → SubRuntimeRefs. Decision (this
+session): the orchestrator is just a runner, so `RunnerContext` is the single per-turn
+bundle — **anything driven in the loop (executor/evaluator/summarizer) is a runner and
+gets a `RunnerContext`.** No separate `TurnContext` type. DI is all singletons, so the
+runtime handle rides through on the context rather than being wired in via a setter.
+
+- [x] Folded `RunOptions` (`signal`, `coordinator?`, `pullInjectedPrompts?`) onto
+      `RunnerContext`; `AgentRuntime.beginTurn(options)` mints the one `RunnerContext`
+      and `dispatchAsync` no longer constructs a second per-turn object.
+- [x] DI rides through as a handle (singletons — §2.0 rule): added `runtime:
+      AgentRuntimeQueryable` to `RunnerContext`; **retired `Orchestrator.setRuntime`
+      + the `private runtime!` field** — `run(ctx)` reads everything off `ctx`. Killed
+      the deferred-reference smell at `agent-runtime.ts` (the post-build setter).
+- [x] Micro-cleanups in the same pass: dropped the dead `includeSubSessions` from
+      `OrchestratorMiddlewareParams` (read only by `ContextMiddleware`) and the
+      redundant `?? "orchestrator"` default (role is required).
+- [x] **Scope note:** state-derived artifact pre-resolution (provider, surface, context
+      snapshot, tracker) was **deferred to MR-4** — this story only changed *where the
+      handle comes from* (ctx, not `this`); `run()`'s internal setup is untouched.
+
+**Done when:** `Orchestrator.run` takes a single `RunnerContext` arg and imports nothing
+from the runtime to reconstruct state; `setRuntime` and `RunOptions` no longer exist;
+suite green. ✅ DONE — `grep -rn "setRuntime\|RunOptions" src/agent/src` clean; tsc clean;
+32 suites / 165 tests green.
+
+_created 2026-06-16 · updated 2026-06-16 · by Periklis Tzeka_
+
+---
+
 ## M3 — Engine extraction (vectorizer / vectorstore / mcp / codemcp / memomcp)
 
 Completed slices of the "split into 5 packages" grooming. All 6 packages shipped.

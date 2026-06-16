@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Conversation } from "../conversation/conversation.js";
 import { InputInbox } from "../runners/input-inbox.js";
-import { Orchestrator, type RunOptions, type RunResult } from "../runners/orchestrator.js";
+import { Orchestrator, type RunResult } from "../runners/orchestrator.js";
 import {
   composeRunnerPipeline,
   type IRunnerMiddleware,
@@ -142,9 +142,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.container = ctx.registry;
     this.runnerMiddlewares = ctx.registry.getAll(RunnerMiddlewareToken);
 
-    // wire the runtime into the orchestrator so it can query for dependencies
-    this.orchestrator.setRuntime(this);
-
     // reset() rebuilds the SessionManager, so re-bind the wake or it points at the dead one
     this.rewireTurnWake();
 
@@ -156,8 +153,25 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Per-turn operations
   // --------------------------------------------------------------------------
 
+  // the single per-turn bundle: DI handle + this turn's state + glue; every runner reads off this
+  // turn bus chained under the runtime's so turn events bubble up to the host without an onEvent callback
+  private beginTurn(options: { signal: AbortSignal }): RunnerContext {
+    const events = new Eventing();
+    this.events.add(events);
+    return {
+      session: this.session,
+      events,
+      signal: options.signal,
+      logger: this.logger,
+      registry: this.container,
+      runtime: this,
+      coordinator: this.sessionManager,
+      pullInjectedPrompts: () => this.inbox.drain(this.session.sessionId),
+    };
+  }
+
   // finalize() runs in finally so every exit path (clean, capped, thrown) persists the session
-  async dispatchAsync(input: string, options: RunOptions): Promise<RunResult> {
+  async dispatchAsync(input: string, options: { signal: AbortSignal }): Promise<RunResult> {
     if (this.session.status === "running") {
       throw new Error(`Session "${this.session.sessionId}" is already running a turn.`);
     }
@@ -170,25 +184,12 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.session.status = "running";
     this.events.publish("runtime-status", { sessionId: this.session.sessionId, status: "running" });
     this.logger.debug("runtime running", { sessionId: this.session.sessionId });
-
-    const runOptions: RunOptions = {
-      ...options,
-      coordinator: this.sessionManager,
-      pullInjectedPrompts: () => this.inbox.drain(this.session.sessionId),
-    };
-
     this.logger.debug("turn start", { sessionId: this.session.sessionId });
 
     // the orchestrator run is the pipeline core; registered units fold around it as an onion
-    const runnerContext: RunnerContext = {
-      session: this.session,
-      events: this.events,
-      signal: options.signal,
-      logger: this.logger,
-      registry: this.container,
-    };
-    const runTurn = composeRunnerPipeline(this.runnerMiddlewares, runnerContext, () =>
-      this.orchestrator.run(runOptions)
+    const ctx = this.beginTurn(options);
+    const runTurn = composeRunnerPipeline(this.runnerMiddlewares, ctx, () =>
+      this.orchestrator.run(ctx)
     );
 
     try {

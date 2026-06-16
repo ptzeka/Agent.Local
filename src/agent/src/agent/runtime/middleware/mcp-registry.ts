@@ -1,9 +1,11 @@
 import path from "node:path";
 import { McpClientRegistry } from "../../registries/index.js";
+import type { ModelRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY_SERVER_NAME } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
+import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
 import { McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
@@ -46,8 +48,28 @@ export class McpRegistryMiddleware implements IMiddleware {
       serverTimeout
     );
 
+    await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx);
+
     ctx.logger?.debug("mcp end", { toolCount: mcpRegistry.listTools().length });
     await next();
+  }
+
+  // executor__dispatch is the orchestrator's ONLY path to mutation, so the seam is mounted for every
+  // non-executor role regardless of whitelist — it can't be removed by config, and a child executor
+  // never gets one (no grandchildren). The executor's write tools live in a SEPARATE registry,
+  // enumerable only through the dispatch descriptor's enum, never reachable via the scoped client.
+  private async mountExecutorSeam(
+    registry: McpClientRegistry,
+    modelsRegistry: ModelRegistry,
+    ctx: RuntimeContext
+  ): Promise<void> {
+    if (this.params.role === EXECUTOR_ROLE) return;
+    const executorServers = new McpClientRegistry(ctx.sandboxRoot);
+    const executorModel = modelsRegistry.getValidModelForRole(EXECUTOR_ROLE);
+    const executorTimeout = modelsRegistry.getTimeoutForModel(executorModel);
+    const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
+    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout);
+    registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
   }
 
   // synthetic servers are matched by name; any other name is looked up in mcp.json and spawned as a
@@ -102,6 +124,9 @@ export class McpRegistryMiddleware implements IMiddleware {
           break;
         case DELAY_SERVER_NAME:
           registry.registerClient(createDelayLocalMcp(ctx.runtimeSignal).setTimeout(serverTimeout));
+          break;
+        case EXECUTOR_SERVER_NAME:
+          // the seam is mounted once in mountExecutorSeam(); a whitelist entry here is declarative, so swallow it
           break;
         default:
           await this.mountExternal(registry, mcp, externalDefs, ctx, serverTimeout, session);
