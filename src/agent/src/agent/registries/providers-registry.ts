@@ -1,6 +1,10 @@
 import { createProvider, type LLMProvider } from "../providers/index.js";
 import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
 
+// providers the agent itself can build a chat client for; other roles (e.g. "reranker") name models
+// resolved by a different process (memomcp) and must not be instantiated here
+const CHAT_PROVIDERS = new Set(["ollama", "anthropic", "gemini"]);
+
 export class ProvidersRegistry
 {
     private definitions = {} as Record<string, ModelDefinition>;
@@ -23,6 +27,9 @@ export class ProvidersRegistry
         };
 
         for (const [id, def] of Object.entries(this.definitions)) {
+            // some roles (e.g. "reranker") name a non-chat model resolved by another process (memomcp);
+            // skip providers the agent can't build rather than crash at startup
+            if (!CHAT_PROVIDERS.has(def.provider)) continue;
             this.providers[id] = createProvider({
                 provider: def.provider,
                 model: def.model,

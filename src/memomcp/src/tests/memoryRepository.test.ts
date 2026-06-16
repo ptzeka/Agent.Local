@@ -5,13 +5,14 @@ import { join } from 'node:path';
 import { FileVectorStore } from '@agent-local/vectorstore';
 import { VectorService } from '@agent-local/vectorizer';
 import { MemoryRepository } from '../memory/memoryRepository.js';
+import { LocalReranker } from '../rerank/localReranker.js';
 
 // local hashed embedder keeps the test offline and deterministic; recall ranking is exercised by
 // keeping queries token-overlapping with the stored content (the real provider is voyage/openai)
-function buildRepo(baseDir: string): MemoryRepository {
+function buildRepo(baseDir: string, withReranker = false): MemoryRepository {
   const store = new FileVectorStore({ baseDir, partitionDir: 'memories', recordsFile: 'records.jsonl' });
   const embedder = VectorService.fromProvider('local', 64);
-  return new MemoryRepository(store, embedder);
+  return new MemoryRepository(store, embedder, withReranker ? new LocalReranker() : undefined);
 }
 
 describe('MemoryRepository', () => {
@@ -98,6 +99,45 @@ describe('MemoryRepository', () => {
 
   it('rejects empty content', async () => {
     await expect(repo.remember('alice', { content: '   ' })).rejects.toThrow(/empty/);
+  });
+
+  describe('recall with rank=true', () => {
+    let ranked: MemoryRepository;
+
+    beforeEach(async () => {
+      ranked = buildRepo(dir, true);
+      await ranked.remember('alice', { content: 'the deploy pipeline runs nightly at 2am', kind: 'archival' });
+      await ranked.remember('alice', { content: 'a quarterly budget review meeting', kind: 'archival' });
+      await ranked.remember('alice', { content: 'kubernetes ingress configuration notes', kind: 'archival' });
+    });
+
+    it('orders archival by reranker relevance and stamps rerankScore', async () => {
+      const result = await ranked.recall('alice', { query: 'deploy pipeline schedule', k: 3, rank: true });
+
+      // the lexical-overlap reranker promotes the deploy-pipeline memory to the top regardless of cosine order
+      expect(result.archival[0]!.content).toContain('deploy pipeline');
+      expect(result.archival[0]!.rerankScore).toBeDefined();
+      // ordered by descending rerank score
+      const scores = result.archival.map((m) => m.rerankScore!);
+      expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    });
+
+    it('trims to k after over-fetching candidates', async () => {
+      const result = await ranked.recall('alice', { query: 'deploy pipeline schedule', k: 1, rank: true });
+      expect(result.archival).toHaveLength(1);
+      expect(result.archival[0]!.content).toContain('deploy pipeline');
+    });
+
+    it('leaves cosine ordering untouched when rank is omitted', async () => {
+      const cosine = await ranked.recall('alice', { query: 'deploy pipeline schedule', k: 3 });
+      expect(cosine.archival.every((m) => m.rerankScore === undefined)).toBe(true);
+    });
+
+    it('ignores rank=true when no reranker is wired', async () => {
+      const noReranker = buildRepo(dir);
+      const result = await noReranker.recall('alice', { query: 'deploy pipeline schedule', k: 3, rank: true });
+      expect(result.archival.every((m) => m.rerankScore === undefined)).toBe(true);
+    });
   });
 
   it('locate returns content-free summaries mirroring recall, then expand pulls the bodies', async () => {

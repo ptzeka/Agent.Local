@@ -50,7 +50,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'recall',
-    description: 'Retrieve memories from a collection: all "core" memories plus the top-k "archival" memories ranked by similarity to `query`. Optionally narrow by category/tenant. Output lists core memories first, then archival ranked by score (cosine distance, lower is closer).',
+    description: 'Retrieve memories from a collection: all "core" memories plus the top-k "archival" memories ranked by similarity to `query`. Optionally narrow by category/tenant. Output lists core memories first, then archival ranked by score (cosine distance, lower is closer). Set `rank: true` to re-rank the archival matches by a reranker relevance score (higher is better, shown as `rerank=`) instead of pure cosine order.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -59,6 +59,7 @@ export const TOOLS: ToolDef[] = [
         k: { type: 'integer', minimum: 1, maximum: 50, default: 8, description: 'How many archival memories to rank back.' },
         category: { type: 'string', description: 'Restrict to memories with this category.' },
         tenant: { type: 'string', description: 'Restrict to memories with this tenant.' },
+        rank: { type: 'boolean', default: false, description: 'Re-rank archival matches by reranker relevance score before returning the top k, instead of pure cosine order.' },
       },
       required: ['query'],
     },

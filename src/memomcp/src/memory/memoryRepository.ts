@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IVectorStore, MetadataFilter, RetrievedRecord, VectorRecord, VectorSummary } from '@agent-local/vectorstore';
 import type { IVectorService } from '@agent-local/vectorizer';
+import type { IReranker } from '../rerank/reranker.js';
 import type {
   MemoryInput,
   MemoryMetadata,
@@ -15,10 +16,16 @@ import type {
 // folds the generic vector store into memory operations: a collection id is the store namespace,
 // memory metadata conventions (kind/category/tenant/...) are the only thing this layer adds.
 // the store never learns "memory" — same boundary that keeps it from learning "commit".
+// when reranking, fetch this many times k from the store so the second pass can promote a record
+// the cosine pass ranked below the cutoff; the reranker then trims back to k
+const RERANK_OVERFETCH = 4;
+
 export class MemoryRepository {
   constructor(
     private readonly store: IVectorStore,
     private readonly embedder: IVectorService,
+    // optional: when absent, recall ignores rank=true and stays cosine-only
+    private readonly reranker?: IReranker,
   ) {}
 
   // append (or overwrite by memory id) one memory into a collection; returns the memory's own id
@@ -50,7 +57,8 @@ export class MemoryRepository {
     return memoryId;
   }
 
-  // recall = the collection's core records (always, by equality filter) plus top-k archival by similarity
+  // recall = the collection's core records (always, by equality filter) plus top-k archival by similarity.
+  // with rank=true the archival candidates are re-ordered by the reranker's relevance score, then trimmed to k.
   async recall(collection: string, query: RecallQuery): Promise<RecallResult> {
     const base = buildFilter(query);
 
@@ -58,16 +66,40 @@ export class MemoryRepository {
 
     const vector = await this.embedder.embedQuery(query.query);
     this.assertDim(vector.length);
-    const archivalHits = await this.store.searchByEmbedding(collection, vector, query.k, {
+    const wantRerank = query.rank === true && this.reranker !== undefined;
+    const candidateK = wantRerank ? query.k * RERANK_OVERFETCH : query.k;
+    const archivalHits = await this.store.searchByEmbedding(collection, vector, candidateK, {
       ...base,
       kind: 'archival',
     });
 
+    let archival = archivalHits.map((h) => toRecalled(h.record, h.score));
+    if (wantRerank) {
+      archival = await this.rerank(query.query, archival, query.k);
+    }
+
     return {
       collection,
       core: coreRecords.map((r) => toRecalled(r)),
-      archival: archivalHits.map((h) => toRecalled(h.record, h.score)),
+      archival,
     };
+  }
+
+  // second pass: reorder candidates by the reranker's relevance score (best-first), stamp rerankScore,
+  // and trim to k. The cosine `score` on each record is left untouched so both signals stay visible.
+  private async rerank(query: string, candidates: RecalledMemory[], k: number): Promise<RecalledMemory[]> {
+    const scores = await this.reranker!.rank(
+      query,
+      candidates.map((m) => ({ id: m.vectorId, text: m.content })),
+    );
+    const byId = new Map(candidates.map((m) => [m.vectorId, m]));
+    const ranked: RecalledMemory[] = [];
+    for (const { id, score } of scores) {
+      const memory = byId.get(id);
+      if (memory) ranked.push({ ...memory, rerankScore: score });
+      if (ranked.length >= k) break;
+    }
+    return ranked;
   }
 
   // locate tier: the same core + top-k archival split as recall, but as content-free summaries.

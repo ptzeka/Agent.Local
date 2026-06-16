@@ -17,7 +17,7 @@ export function formatRecall(result: RecallResult): string {
 }
 
 function formatMemory(memory: RecalledMemory): string {
-  return `- (${memory.id}) ${memory.content}${metaSuffix(memory.metadata, memory.score)}`;
+  return `- (${memory.id}) ${memory.content}${metaSuffix(memory.metadata, memory.score, memory.rerankScore)}`;
 }
 
 // the locate tier: core summaries first, then archival ranked by score — content-free, with the
@@ -49,13 +49,14 @@ export function formatExpanded(memories: RecalledMemory[]): string {
   return memories.map((m) => formatMemory(m)).join('\n');
 }
 
-function metaSuffix(meta: RecalledMemory['metadata'], score?: number): string {
+function metaSuffix(meta: RecalledMemory['metadata'], score?: number, rerankScore?: number): string {
   const tagBits = [
     meta.category ? `category=${meta.category}` : '',
     meta.tenant ? `tenant=${meta.tenant}` : '',
     meta.tags && meta.tags.length > 0 ? `tags=${meta.tags.join(',')}` : '',
     meta.source ? `source=${meta.source}` : '',
     score !== undefined ? `score=${score.toFixed(4)}` : '',
+    rerankScore !== undefined ? `rerank=${rerankScore.toFixed(4)}` : '',
   ].filter((s) => s.length > 0);
   return tagBits.length > 0 ? ` [${tagBits.join(' · ')}]` : '';
 }

@@ -41,6 +41,9 @@ export interface RecallQuery extends RecallFilter {
   query: string;
   // how many archival memories to rank back; core records are always returned in full
   k: number;
+  // when true, re-rank the archival candidates with the reranker before trimming to k (see IReranker).
+  // off (or no reranker wired) leaves the cosine ordering untouched.
+  rank?: boolean;
 }
 
 // one memory surfaced by recall; score is set only for archival hits (cosine distance, lower is closer)
@@ -53,6 +56,9 @@ export interface RecalledMemory {
   content: string;
   metadata: MemoryMetadata;
   score?: number;
+  // relevance score from the reranker (higher = more relevant), set only when recall ran with rank=true.
+  // distinct from `score` (cosine distance, lower is closer) so both signals stay visible.
+  rerankScore?: number;
 }
 
 // core records first (always-loaded salience), then archival ranked by similarity — see "Memory record shape"

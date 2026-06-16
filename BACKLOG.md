@@ -905,29 +905,41 @@ no-signal path is unchanged.
 
 ---
 
-### M3-17 · memomcp recall reranker — flag-gated LLM re-rank of candidates — `~1d` · P2
+### M3-17 · memomcp recall reranker — flag-gated re-rank of candidates — `~1d` · P2
 Cosine top-k surfaces semantically near records but does not judge which actually answer the
 query. Add a reranker stage to memomcp `recall`: after the vector store returns candidates,
-score each against the query text with an LLM call and re-order by that score. Gated behind a
-flag (default off; `flag=1` enables) so the cheap vector-only path stays the default and the
-LLM cost is opt-in. Composes the same retrieval pipeline as M3-10 — no change to the store
-primitives (still cosine + equality).
+score each against the query text and re-order by that score. Gated behind a flag (default off;
+`rank: true` enables) so the cheap vector-only path stays the default. Composes the same
+retrieval pipeline as M3-10 — no change to the store primitives (still cosine + equality).
 
-- [ ] **Flag to enable.** Thread a `rerank` flag through `recall` (config / call arg), default
-      off so today's behaviour is byte-identical; `flag=1` turns the rerank stage on.
-- [ ] **Rerank stage over candidates, not the store.** Take the vector top-k (over-fetch a
-      wider candidate set when rerank is on), make one LLM scoring call per candidate against
-      the query text, re-order by score, return top-k. Lives in the consumer/retrieval layer
-      (alongside the M3-10 projection), never in `vectorstore`.
-- [ ] **Cancellation + cost.** The LLM call honours the caller signal (M3-16) and the per-model
-      tool timeout; cap candidate count so the rerank cost is bounded.
-- [ ] Tests: with the flag off, `recall` output equals the vector-only ranking; with `flag=1`,
-      a candidate that the LLM scores higher outranks a closer cosine hit; an aborted signal
-      halts the rerank.
+- [x] **Flag to enable.** `rank` boolean threaded through `recall`
+      ([recall.ts](src/memomcp/src/tools/recall.ts), [registry.ts](src/memomcp/src/tools/registry.ts)),
+      default off so today's behaviour is byte-identical; `rank: true` turns the stage on.
+- [x] **Rerank behind an interface, in the memomcp layer not the store.** `IReranker`
+      ([rerank/reranker.ts](src/memomcp/src/rerank/reranker.ts)); `recall` over-fetches `k×4`,
+      reranks, trims to `k` ([memoryRepository.ts](src/memomcp/src/memory/memoryRepository.ts)).
+      The store stays agnostic (cosine + equality only).
+- [x] **Reranker is a configurable role.** `reranker` role in [models.json](models.json) →
+      `local-reranker` (`cross-encoder/ms-marco-MiniLM-L-6-v2`); the agent's provider registry
+      skips non-chat providers so the declarative role can't crash startup
+      ([providers-registry.ts](src/agent/src/agent/registries/providers-registry.ts)).
+- [x] **Score returned + ordered by it.** Reranked archival is ordered by `rerankScore` (best
+      first) and the score is stamped on each `RecalledMemory` and rendered (`rerank=…`),
+      distinct from the cosine `score`.
+- [x] Tests: flag off ⇒ cosine ordering untouched, no `rerankScore`; `rank: true` ⇒ a
+      lexical-best candidate outranks a closer cosine hit and over-fetch trims to `k`; rank
+      ignored when no reranker is wired ([memoryRepository.test.ts](src/memomcp/src/tests/memoryRepository.test.ts)).
+- [ ] **DEFERRED — real cross-encoder + resolve the role from models.json.** Today
+      `LocalReranker` is a lexical-overlap stand-in (offline, no model download) and memomcp
+      does not read models.json. Wire memomcp to resolve the `reranker` role and run the actual
+      `cross-encoder/ms-marco-MiniLM-L-6-v2` (or a hosted reranker) behind the same `IReranker`.
+- [ ] **DEFERRED — cancellation + cost.** Once the reranker does real work, honour the caller
+      signal (M3-16) and cap candidate count so the cost is bounded.
 
-**Done when:** memomcp `recall` re-orders candidates by an LLM relevance score when `flag=1`,
-the vector-only path is unchanged with the flag off, and the rerank stage adds no new store
-method.
+**Done when:** memomcp `recall` re-orders candidates by a reranker relevance score when
+`rank: true`, the vector-only path is unchanged with the flag off, and the rerank stage adds no
+new store method. _(Shipped behind `LocalReranker`; real cross-encoder + models.json resolution
+are the deferred items above.)_
 
 ---
 

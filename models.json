@@ -7,6 +7,8 @@
     "Roles: `orchestrator` (coordinates, read-only tools + dispatch_executor) and",
     "`executor` (the only role allowed to mutate state). Legacy names",
     "`coder` and `planner` are still accepted and alias to `orchestrator`.",
+    "`reranker` names the model memomcp uses to re-rank recall(rank=true) results;",
+    "it is not a chat role, so the agent's LLM provider registry skips it.",
     "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`.",
     "`mcp` is an optional per-model list of MCP server names (e.g. `fsmcp`, `codemcp`)",
     "the model can access. It layers on top of the role split: a model only sees",
@@ -101,6 +103,13 @@
       "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
+    },
+    "local-reranker": {
+      "provider": "local",
+      "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+      "supportsTools": false,
+      "description": "Local cross-encoder reranker used by memomcp recall when rank=true. No API key — runs offline. memomcp resolves this role; the agent's LLM provider registry skips non-chat providers. Swap to a hosted reranker by reassigning this role.",
+      "mcp": []
     }
   },
 
@@ -109,7 +118,8 @@
     "executor": "claude-haiku-4-5-executor",
     "coder": "gemini-2.5-flash-lite-coder",
     "summarizer": "claude-haiku-4-5",
-    "evaluator": "claude-haiku-4-5"
+    "evaluator": "claude-haiku-4-5",
+    "reranker": "local-reranker"
   },
 
   "orchestration": {

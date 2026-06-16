@@ -50,7 +50,8 @@
       "mcp__codemcp__expand_chunk",
       "mcp__codemcp__related_code",
       "Bash(node dist/server.js --backend file probe __nope)",
-      "Bash(echo \"build rc=$?\")"
+      "Bash(echo \"build rc=$?\")",
+      "Bash(node -e \"console.log\\(require\\('./src/agent/package.json'\\).name\\)\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",
