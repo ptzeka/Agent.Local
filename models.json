@@ -71,7 +71,7 @@
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions", "memomcp"],
       "toolTimeoutMs": 60000,
       "iterationCap": 16
     },
@@ -89,7 +89,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
+      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 6
     },
@@ -98,7 +98,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     }

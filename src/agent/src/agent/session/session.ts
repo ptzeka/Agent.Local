@@ -70,6 +70,15 @@ export interface Session {
   contextHashes?: Record<string, string>;
 }
 
+// the memomcp collection (store namespace) a session reads and writes — the unit of memory segregation.
+// while anonymous the collection is the session's own id (a random uuid, so memory never crosses sessions);
+// once a Principal is authenticated it becomes that subject's id, so the same user's memory follows them.
+// later this is where a dedicated per-user memory-store id would be sourced from the Principal.
+export function memoryCollectionFor(session: Session): string {
+  if (session.user?.isAuthenticated && session.user.sub) return session.user.sub;
+  return session.sessionId;
+}
+
 export interface CreateSessionParams {
   sessionId: string;
   workspaceId: string;

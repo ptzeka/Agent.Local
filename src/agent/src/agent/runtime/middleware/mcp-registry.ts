@@ -7,10 +7,16 @@ import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/dela
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME } from "../../synthetic-mcp/executor-server.js";
 import { McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
+import { memoryCollectionFor, type Session } from "../../session/session.js";
+import { readMcpServerDefs, mountExternalMcp, type McpServerDef } from "./external-mcp.js";
+
+// memomcp is segregated per session: each spawned instance reads/writes only this session's collection
+const MEMOMCP_SERVER_NAME = "memomcp";
 
 // builds the MCP registry and registers the in-process synthetic servers (fsmcp, Excel, subsessions)
 // runs after SessionMiddleware so workspace and session are available for the Excel server's tool context
-// future stdio servers from mcp.json must receive ctx.runtimeSignal to self-dispose; there is no registry-side teardown
+// stdio servers declared in mcp.json (codemcp, memomcp) are spawned here and receive ctx.runtimeSignal
+// to self-dispose; there is no registry-side teardown
 export interface McpRegistryMiddlewareParams {
   // fixes the server whitelist and tool timeout the registry hands to every scoped client
   role: string;
@@ -38,7 +44,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     const executorTimeout = modelsRegistry.getTimeoutForModel(executorModelName);
 
     // these become the orchestrator's visible tools, so a write server landing here would leak into the read-only role
-    this.mountServers(
+    await this.mountServers(
       mcpRegistry,
       modelsRegistry.getValidMcpServersForRole(this.params.role),
       ctx,
@@ -48,7 +54,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     // separate registry so the executor's write tools never reach the orchestrator's scoped client;
     // ExecutorLocalMcp reads it only to enumerate dispatch targets — real execution builds its own registry
     const executorServers = new McpClientRegistry(sandboxRoot);
-    this.mountServers(
+    await this.mountServers(
       executorServers,
       modelsRegistry.getValidMcpServersForRole("executor"),
       ctx,
@@ -63,19 +69,22 @@ export class McpRegistryMiddleware implements IMiddleware {
     await next();
   }
 
-  // unmatched server names (codemcp, stdio servers) drop out — the declared-but-unmounted semantics the executor relies on
-  private mountServers(
+  // synthetic servers are matched by name; any other name is looked up in mcp.json and spawned as a
+  // stdio server (codemcp, memomcp). A name in neither place drops out — the declared-but-unmounted
+  // semantics the executor relies on.
+  private async mountServers(
     registry: McpClientRegistry,
     serverNames: string[] | undefined,
     ctx: RuntimeContext,
     serverTimeout: number
-  ): void {
+  ): Promise<void> {
     const session = ctx.registry.get(SessionToken);
     const workspace = ctx.registry.get(WorkspaceToken);
     const sandboxRoot = ctx.sandboxRoot;
     const fsRoot = path.join(sandboxRoot, session.workspaceId);
+    const externalDefs = readMcpServerDefs(ctx.mcpConfigPath);
 
-    serverNames?.forEach((mcp) => {
+    for (const mcp of serverNames ?? []) {
       switch (mcp) {
         case FS_SERVER_NAME:
           registry.registerClient(createFsLocalMcp(fsRoot).setTimeout(serverTimeout));
@@ -113,7 +122,40 @@ export class McpRegistryMiddleware implements IMiddleware {
         case DELAY_SERVER_NAME:
           registry.registerClient(createDelayLocalMcp(ctx.runtimeSignal).setTimeout(serverTimeout));
           break;
+        default:
+          await this.mountExternal(registry, mcp, externalDefs, ctx, serverTimeout, session);
       }
-    });
+    }
+  }
+
+  // spawns a stdio server from its mcp.json definition; a failed spawn is logged and skipped so one
+  // unavailable server never breaks the runtime. memomcp gets this session's collection injected so
+  // its memory is segregated (see memoryCollectionFor).
+  private async mountExternal(
+    registry: McpClientRegistry,
+    name: string,
+    defs: Record<string, McpServerDef>,
+    ctx: RuntimeContext,
+    serverTimeout: number,
+    session: Session
+  ): Promise<void> {
+    const def = defs[name];
+    if (!def) {
+      ctx.logger?.debug("mcp external skip — not in mcp.json", { name });
+      return;
+    }
+    const extraArgs =
+      name === MEMOMCP_SERVER_NAME ? ["--collection", memoryCollectionFor(session)] : undefined;
+    try {
+      const client = await mountExternalMcp(name, def, {
+        timeout: serverTimeout,
+        signal: ctx.runtimeSignal,
+        extraArgs,
+      });
+      registry.registerClient(client);
+      ctx.logger?.debug("mcp external mounted", { name });
+    } catch (err) {
+      ctx.logger?.warn("mcp external mount failed", { name, error: (err as Error).message });
+    }
   }
 }

@@ -905,6 +905,71 @@ no-signal path is unchanged.
 
 ---
 
+### M3-17 · memomcp recall reranker — flag-gated LLM re-rank of candidates — `~1d` · P2
+Cosine top-k surfaces semantically near records but does not judge which actually answer the
+query. Add a reranker stage to memomcp `recall`: after the vector store returns candidates,
+score each against the query text with an LLM call and re-order by that score. Gated behind a
+flag (default off; `flag=1` enables) so the cheap vector-only path stays the default and the
+LLM cost is opt-in. Composes the same retrieval pipeline as M3-10 — no change to the store
+primitives (still cosine + equality).
+
+- [ ] **Flag to enable.** Thread a `rerank` flag through `recall` (config / call arg), default
+      off so today's behaviour is byte-identical; `flag=1` turns the rerank stage on.
+- [ ] **Rerank stage over candidates, not the store.** Take the vector top-k (over-fetch a
+      wider candidate set when rerank is on), make one LLM scoring call per candidate against
+      the query text, re-order by score, return top-k. Lives in the consumer/retrieval layer
+      (alongside the M3-10 projection), never in `vectorstore`.
+- [ ] **Cancellation + cost.** The LLM call honours the caller signal (M3-16) and the per-model
+      tool timeout; cap candidate count so the rerank cost is bounded.
+- [ ] Tests: with the flag off, `recall` output equals the vector-only ranking; with `flag=1`,
+      a candidate that the LLM scores higher outranks a closer cosine hit; an aborted signal
+      halts the rerank.
+
+**Done when:** memomcp `recall` re-orders candidates by an LLM relevance score when `flag=1`,
+the vector-only path is unchanged with the flag off, and the rerank stage adds no new store
+method.
+
+---
+
+### M3-18 · Memory service — start-of-turn recall, `[memory]` injected into orchestrator only — `~1.5d` · P2
+Today memory is only an on-demand tool: the orchestrator must choose to call memomcp `recall`.
+Make recall automatic and symmetric to the EVALUATOR. The evaluator is the end-of-turn step
+([runners/evaluator.ts](src/agent/src/agent/runners/evaluator.ts)); add a **start-of-turn
+memory step** that recalls relevant memories from the latest user input and injects them as a
+`[memory]` block into the orchestrator's context — invisible to the user, absent from the
+executor (the executor runs one scoped ask and does not need standing memory). Depends on
+M3-17 (recall uses `ranker=1`). memomcp **stays a general-use MCP** — this adds an automatic
+caller, it does not replace the tool.
+
+- [ ] **Start-of-turn memory step.** Run a recall step before the orchestrator's first
+      iteration — the mirror of the end-of-turn evaluator. **Not gated on MR-4a:** land it
+      inline at the start of the turn first (wherever the turn begins, alongside how the
+      evaluator hangs off the end), then move it onto the MR-4a onion as a turn middleware
+      ([runtime/turn/turn-middleware.ts](src/agent/src/agent/runtime/turn/turn-middleware.ts),
+      wired at [runtime/agent-runtime.ts](src/agent/src/agent/runtime/agent-runtime.ts) ~L169)
+      once that seam exists. Empty/failed recall ≡ today's behaviour (no `[memory]` block).
+- [ ] **Recall query = recent input, not the whole transcript.** Build the query from the
+      latest user input plus a short tail of prior turns (cap N, default ~2) so the recall
+      stays scoped to current intent (same "scope to last intent" rule as M5-5), and call
+      memomcp `recall` with `ranker=1`.
+- [ ] **Inject as a `[memory]` block, orchestrator-only.** Feed the recalled memories into the
+      orchestrator context as a labelled `[memory]` section
+      ([context/context-loader.ts](src/agent/src/agent/context/context-loader.ts) /
+      [context/system-prompt.ts](src/agent/src/agent/context/system-prompt.ts)). Never surface
+      it to the user, never add it to the EXECUTOR context.
+- [ ] **memomcp stays an MCP tool too.** The synthetic/start-of-turn caller and the
+      general-use `recall`/`remember` tools share one server; do not fork a second path.
+- [ ] Tests: a turn whose input matches a stored memory injects a `[memory]` block into the
+      orchestrator context and nothing into the executor context; an empty recall leaves the
+      orchestrator context byte-identical to today; the `[memory]` block never appears in
+      user-facing output; the recall query is bounded to the last N turns.
+
+**Done when:** every turn auto-recalls from the latest user input (last-N-turns query,
+`ranker=1`) and injects a `[memory]` block into the orchestrator context only — hidden from
+the user and the executor — while memomcp remains a general-use MCP.
+
+---
+
 ## M4 — Service mode + observability (≈ 2.5–3 weeks)
 
 ### M4-1 · HTTP/SSE transport — `~3d` · P0
