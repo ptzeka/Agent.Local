@@ -1099,39 +1099,76 @@ core loop.
 - [ ] Wire at `runtime/agent-runtime.ts` (~L169): `this.orchestrator.run(opts)`
       becomes the pipeline core; `registry.getAll(TurnMiddlewareToken)` folds
       around it. **Empty group ≡ today's behavior** — the safety net.
-- [ ] `TurnCounterMiddleware` lands here as the proof-of-seam consumer:
-      subscribes to `ctx.events` for `orchestrator-message`, accumulates
-      per-round `usage` into a local tally, logs/stamps it on turn end. It does
-      **not** own a registry yet (MR-4b). Out of scope: MetricsRegistry,
-      removing the inline `session.counters` fold, delegated usage, persistence.
+- [ ] `TurnCounterMiddleware` lands here as the proof-of-seam consumer. The
+      tally is **`invoke`-local** (the middleware instance is a singleton reused
+      across turns — a field would bleed turns together); it subscribes on
+      `ctx.events` and unsubscribes in `finally`. Two disjoint fields, two events:
+      `direct` ← `MESSAGE.usage` (own model calls, per round); `delegated` ←
+      `TOOL_RESULT.usage` (child-subtree cost, per tool end). Logs/stamps on turn
+      end. It does **not** own a registry yet (MR-4b). Out of scope:
+      MetricsRegistry, removing the inline `session.counters` folds, persistence.
+- [ ] Delegated capture (the one non-orchestrator-core edit): add `usage:
+      result.usage` to the `TOOL_RESULT` payload in
+      [scoped-tool-client.ts:70](src/agent/src/agent/scoped-tool-client.ts#L70)
+      so `delegated` has a source. Self-describing event — the producer states the
+      cost, subscribers choose to record. `MESSAGE` already carries `usage`; this
+      restores symmetry. Confirm `ToolExecutionResult.usage` is typed/populated
+      first. **No diff to `orchestrator.ts` core loop** (different file).
 
-**Done when:** a no-op middleware registered in the group runs around a turn
-with the result unchanged; `TurnCounterMiddleware`'s per-round tally equals the
-sum the orchestrator folded into `session.counters` that turn; zero diff to
-`orchestrator.ts` core loop.
+**Done when:** a no-op middleware registered in the group runs around a turn with
+the result unchanged; `TurnCounterMiddleware`'s `direct + delegated` tally equals
+the sum the orchestrator folds into `session.counters` (`foldCounters` +
+`foldDelegatedUsage`) that turn; zero diff to `orchestrator.ts` core loop.
 
-#### MR-4b · MetricsRegistry — split metrics from session — `~1d` · P1
-Per-turn/per-round token metrics become a container-owned service, not session
-state. Moves ownership off `session.counters` (decision: move now — its blast
-radius is contained to this story). Depends on MR-4a.
-- [ ] `runtime/metrics/metrics-registry.ts`: `MetricsRegistry`
-      (`recordRound(usage)`, `rounds()`, `totals()`), registered via
-      `MetricsRegistryMiddleware` (init pipeline) into the Container.
-- [ ] Upgrade `TurnCounterMiddleware` from local tally → writes into
-      `MetricsRegistry` (it becomes the owner/writer).
-- [ ] Remove inline `foldCounters` / `foldDelegatedUsage` from
-      `runners/orchestrator.ts` (~L211, ~L298); the loop stops touching token
-      accounting.
-- [ ] Resolve delegated-usage capture: tap `dispatch-feedback` (verify it
-      carries `usage`; add it to the event if not) so subtree cost survives the
-      move (mirrors `foldDelegatedUsage`).
-- [ ] Persistence migration: what was in `session.counters.*Tokens*` now sources
-      from the registry — update the snapshot shape and any CLI `/context` / cost
-      readout that reads counters; add a migration shim if a stored field moves.
+#### MR-4b · MetricsRegistry — standalone fire-and-forget metric sink — `~1d` · P1
+A container-owned observability sink modelled on **logging**: a producer *emits* a
+metric and walks away — the registry never blocks the loop, never throws back into
+it, and a dropped metric is a non-event (like a dropped log line). **Explicitly
+NOT an accounting authority** — `session.counters` and the inline
+`foldCounters`/`foldDelegatedUsage` stay exactly as they are; this is *parallel*
+observability, decoupled from any counter migration. Depends on MR-4a (which
+produces the first metric worth emitting).
+- [ ] `runtime/metrics/metrics-registry.ts`: `MetricsRegistry.record(m: Metric)`
+      with a standard envelope `Metric = { type: string; sessionId: string; ts:
+      number; data: Record<string, unknown> }`. `record` is **sync, non-throwing,
+      never awaited** — buffers the metric as a JSONL line in memory.
+- [ ] Writer mirrors `Conversation`'s rolling-file pattern (watermark +
+      append-only tail, never rewrite — see [conversation.ts:5-8](src/agent/src/agent/conversation/conversation.ts#L5-L8)):
+      `flush()` appends only new lines to a per-run rolling `.jsonl` file.
+- [ ] Flush cadence: on `finalize()` as the backstop (mirrors the conversation
+      flush at [agent-runtime.ts:325-329](src/agent/src/agent/runtime/agent-runtime.ts#L325-L329));
+      an interval/heartbeat flush is **optional** and deferred — no heartbeat infra
+      exists today, so don't invent one for v1.
+- [ ] Register via `MetricsRegistryMiddleware` (init pipeline) into the Container,
+      resolved through `ctx.registry` like any other singleton.
+- [ ] First + only producer this story — `logTokenUsage`: `TurnCounterMiddleware`
+      (MR-4a) calls `record({ type: "token_usage", sessionId, ts, data: { direct,
+      delegated } })` at turn end. Keyed by `sessionId` for now.
+- [ ] Stays **additive**: MR-4a's local tally still equals `session.counters`; the
+      registry is a *second* observer, not a replacement. Removing the inline folds
+      / migrating `session.counters` is out of scope (separate future story if ever
+      wanted).
 
-**Done when:** the loop no longer mutates `session.counters`; metrics read from
-`MetricsRegistry`; token totals (direct + delegated) match pre-change figures on
-a fixture turn; cost/usage readouts still render.
+**Done when:** a turn appends one `token_usage` JSON line (per session) to the
+rolling file with `direct + delegated` matching the tally; `record` never throws
+and never blocks the loop; deleting the registry registration leaves turn
+behaviour byte-for-byte unchanged.
+
+#### MR-4c · Any metric flows through the registry, fire-and-forget — `~0.5d` · P2
+Generalize the MR-4b seam: the standard `Metric` envelope + `record()` becomes the
+*one* way anything emits a metric, so a new metric type ships with zero registry
+edits. Depends on MR-4b.
+- [ ] Treat `Metric.type` as an open namespace (`token_usage`, future
+      `tool_latency`, `round_count`, …); document the envelope as the producer
+      contract — producers depend on it, never on the sink.
+- [ ] Audit existing ad-hoc "metric-ish" logging and route what genuinely fits the
+      envelope through `registry.record(...)` (audit only — don't force-fit real
+      logs that aren't metrics).
+- [ ] Pluggable sink behind the same `record()`: JSONL file is the default; a
+      future sink (stdout / statsd / etc.) drops in with no producer change.
+
+**Done when:** adding a new metric type is a single `record({ type: "…", … })`
+call touching no registry code; producers compile against the envelope alone.
 
 - [ ] **MR-5** · Factories: `RunnerFactory` (`runtime.runners`),
       `RegistryFactory.fromConfig`, `RuntimeFactory.standard()/child()`
