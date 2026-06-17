@@ -12,6 +12,7 @@ import type { Orchestrator } from "../runners/orchestrator.js";
 import type { InputInbox } from "../runners/input-inbox.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type { IRunnerMiddleware } from "../runners/middleware/runner-middleware.js";
+import type { MetricsRegistry } from "./metrics/metrics-registry.js";
 
 // one token per runtime-scoped service; middleware set() these into ctx.registry, consumers get() them
 export const ConfigurationToken = token<ConfigurationRegistry>("configurationRegistry");
@@ -30,3 +31,5 @@ export const InboxToken = token<InputInbox>("inbox");
 export const SessionManagerToken = token<SessionManager>("sessionManager");
 // group handle: runner-middleware units register via .by(), AgentRuntime folds them with getAll() around each turn
 export const RunnerMiddlewareToken = token<IRunnerMiddleware>("runnerMiddleware");
+// runtime-scoped token tally; TurnCounterMiddleware writes it, readouts (cost/context) read it
+export const MetricsRegistryToken = token<MetricsRegistry>("metricsRegistry");

@@ -10,24 +10,43 @@ export type SessionStatus =
   | "done" // terminal — no further turns expected
   | "error"; // last turn threw; transcript may be partial
 
-export interface SessionCounters {
-  turns: number;
-
-  // THIS session's own chat spend only; delegated work is kept in the *Tallied fields so the two can't be confused
+// the token tally shared by a session's counters and the container-owned MetricsRegistry; split so
+// own spend (direct chat) never blurs with *Tallied delegated subtree spend, and either can hold it
+export interface UsageTotals {
+  // THIS owner's own chat spend only; delegated work is kept in the *Tallied fields so the two can't be confused
   inputTokens: number;
   outputTokens: number;
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
 
-  // dependency cost this session caused but didn't spend; each fold adds the child's TOTAL, so this covers the whole subtree
+  // dependency cost this owner caused but didn't spend; each fold adds the child's TOTAL, so this covers the whole subtree
   inputTokensTallied: number;
   outputTokensTallied: number;
   cacheReadInputTokensTallied: number;
   cacheCreationInputTokensTallied: number;
 }
 
-// only for tokens this session's loop spent directly; delegated cost goes through foldDelegatedUsage
-export function foldCounters(into: SessionCounters, usage: TokenUsage | undefined): void {
+export function newUsageTotals(): UsageTotals {
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadInputTokens: 0,
+    cacheCreationInputTokens: 0,
+    inputTokensTallied: 0,
+    outputTokensTallied: 0,
+    cacheReadInputTokensTallied: 0,
+    cacheCreationInputTokensTallied: 0,
+  };
+}
+
+// token spend left the session: it now lives in the container-owned MetricsRegistry, persisted to the
+// metrics JSONL keyed by sessionId; only the turn count remains run-state metadata on the session
+export interface SessionCounters {
+  turns: number;
+}
+
+// only for tokens this owner's loop spent directly; delegated cost goes through foldDelegatedUsage
+export function foldCounters(into: UsageTotals, usage: TokenUsage | undefined): void {
   if (!usage) return;
   into.inputTokens = (into.inputTokens ?? 0) + (usage.inputTokens ?? 0);
   into.outputTokens = (into.outputTokens ?? 0) + (usage.outputTokens ?? 0);
@@ -38,7 +57,7 @@ export function foldCounters(into: SessionCounters, usage: TokenUsage | undefine
 }
 
 // adds the dependency's own usage AND its tallied dependencies, so the figure is the full delegated tree cost
-export function foldDelegatedUsage(into: SessionCounters, usage: TokenUsage | undefined): void {
+export function foldDelegatedUsage(into: UsageTotals, usage: TokenUsage | undefined): void {
   if (!usage) return;
   into.inputTokensTallied =
     (into.inputTokensTallied ?? 0) + (usage.inputTokens ?? 0) + (usage.inputTokensTallied ?? 0);
@@ -97,17 +116,7 @@ export function createSession(params: CreateSessionParams): Session {
     parentSessionId: params.parentSessionId,
     memoryCollectionId: undefined,
     status: "idle",
-    counters: {
-      turns: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadInputTokens: 0,
-      cacheCreationInputTokens: 0,
-      inputTokensTallied: 0,
-      outputTokensTallied: 0,
-      cacheReadInputTokensTallied: 0,
-      cacheCreationInputTokensTallied: 0,
-    },
+    counters: { turns: 0 },
     createdAt: now,
     updatedAt: now,
   };

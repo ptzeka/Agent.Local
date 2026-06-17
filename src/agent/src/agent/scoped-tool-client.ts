@@ -32,6 +32,7 @@ export class ScopedToolClient implements ToolInvoker {
   public listTools(): ToolDescriptor[] {
     const tools: ToolDescriptor[] = [];
     for (const client of this.clientsByServer.values()) {
+      
       tools.push(...client.listTools());
     }
     return tools;
@@ -72,6 +73,8 @@ export class ScopedToolClient implements ToolInvoker {
       name,
       isError: result.isError,
       contentPreview: result.content.slice(0, 400),
+      // delegated subtree cost (set only by dispatch); the turn-counter middleware folds it into MetricsRegistry
+      usage: result.usage,
     });
     return result;
   }

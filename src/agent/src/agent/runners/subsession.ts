@@ -1,6 +1,6 @@
 import type { Principal } from "../identity/types.js";
 import type { RunResult } from "./orchestrator.js";
-import type { Session } from "../session/session.js";
+import type { Session, UsageTotals } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 
 // autonomous child run driven by the orchestrator loop until its intent is SATISFIED, with the
@@ -95,6 +95,9 @@ export interface SubRuntimeRefs {
 export interface ChildRuntime {
   build(): Promise<ChildRuntime>;
   getSession(): Session;
+  // the child's cumulative token tally, folded into the parent's MetricsRegistry when it settles;
+  // returns plain data (not the registry) so this contract stays free of runtime-layer types
+  metricsTotals(): Readonly<UsageTotals>;
   dispatchAsync(input: string, options?: { signal?: AbortSignal }): Promise<RunResult>;
   injectInput(content: string, source?: string): void;
   awaitAllSubSessions(): Promise<void>;

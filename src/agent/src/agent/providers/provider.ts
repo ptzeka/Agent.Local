@@ -44,6 +44,8 @@ export interface ChatResponse {
   hasToolCalls: boolean;
 
   usage?: {
+    // stamped by the orchestrator (the provider has no session handle) so the round stays attributable downstream
+    sessionId?: string;
     inputTokens?: number;
     outputTokens?: number;
     // cache reads cost ~0.1x input; tracked to verify cache hits actually land

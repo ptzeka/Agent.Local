@@ -13,7 +13,6 @@ import {
 } from "../tool-adapter.js";
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
-import { foldCounters, foldDelegatedUsage } from "../session/session.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
@@ -198,7 +197,9 @@ export class Orchestrator {
         );
       }
 
-      foldCounters(session.counters, response.usage);
+      // stamp before publish so the own-spend round is attributable once it leaves this runtime;
+      // TurnCounterMiddleware folds it into the MetricsRegistry off the orchestrator-message event below
+      if (response.usage) response.usage.sessionId = session.sessionId;
 
       const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, turnEvents);
 
@@ -285,8 +286,8 @@ export class Orchestrator {
           ctx.signal
         );
         logger.debug("tool call end", { name: call.name, isError: execution.isError });
-        // delegated cost lands in the tallied counters so own spend and dependency spend stay separately readable
-        foldDelegatedUsage(session.counters, execution.usage);
+        // delegated cost rides the tool-result event (published by the scoped client) into the MetricsRegistry,
+        // so the loop no longer folds it here; it stays separable as the registry's *Tallied figures
         toolMessages.push(
           wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
         );

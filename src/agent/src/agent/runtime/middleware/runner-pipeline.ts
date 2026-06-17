@@ -1,4 +1,5 @@
 import { RunnerMiddleware } from "../../runners/middleware/runner-middleware.js";
+import { TurnCounterMiddleware } from "../../runners/middleware/turn-counter-middleware.js";
 import { RunnerMiddlewareToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
@@ -7,6 +8,7 @@ import type { IMiddleware, RuntimeContext } from "../types.js";
 export class RunnerPipelineMiddleware implements IMiddleware {
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     ctx.registry.set(RunnerMiddleware, new RunnerMiddleware()).by(RunnerMiddlewareToken);
+    ctx.registry.set(TurnCounterMiddleware, new TurnCounterMiddleware()).by(RunnerMiddlewareToken);
     await next();
   }
 }

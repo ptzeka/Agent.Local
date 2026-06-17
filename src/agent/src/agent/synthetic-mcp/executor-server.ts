@@ -199,7 +199,8 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     }
 
     // exposed on the result so the parent folds the delegated cost; outside the try since a failed dispatch still burned tokens
-    if (runtime) usage = { ...runtime.getSession().counters };
+    // sourced from the child's MetricsRegistry (own + tallied subtree) now that token spend lives there, not on the session
+    if (runtime) usage = { ...runtime.metricsTotals(), sessionId: runtime.getSession().sessionId };
 
     if (tracker && ok) {
       tracker.recordSuccess(dispatchSignature({ tool, args: toolArgs, intent }));

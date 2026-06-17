@@ -1,6 +1,6 @@
 import { SessionManager } from "../../session/session-manager.js";
 import type { SubRuntimeFactory } from "../../runners/subsession.js";
-import { SessionManagerToken, SessionToken } from "../tokens.js";
+import { MetricsRegistryToken, SessionManagerToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface SessionManagerMiddlewareParams {
@@ -20,8 +20,8 @@ export class SessionManagerMiddleware implements IMiddleware {
       new SessionManager(
         this.params.subRuntimeFactory,
         this.params.maxActivePerParent,
-        // settled children fold their token tally into this session's counters
-        ctx.registry.get(SessionToken),
+        // settled children fold their delegated subtree spend into this runtime's MetricsRegistry
+        ctx.registry.get(MetricsRegistryToken),
         // children chain under the runtime's scope, so a runtime/root cancel reaches every detached child
         ctx.runtimeSignal
       )

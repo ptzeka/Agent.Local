@@ -9,7 +9,7 @@ import {
 } from "../runners/middleware/runner-middleware.js";
 import type { ContextLoader } from "../context/context-loader.js";
 import type { ChatMessage } from "../providers/provider.js";
-import type { Session } from "../session/session.js";
+import type { Session, UsageTotals } from "../session/session.js";
 import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
@@ -31,6 +31,7 @@ import {
   ConversationToken,
   InboxToken,
   McpRegistryToken,
+  MetricsRegistryToken,
   ModelsToken,
   OrchestratorToken,
   ProvidersToken,
@@ -449,6 +450,12 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // host subscribes here, or chains it under its own bus
   getEvents(): Eventing {
     return this.events;
+  }
+
+  // the container-owned token tally (own + delegated subtree); read across the ChildRuntime boundary so a
+  // parent can fold a settled child's spend without depending on the runtime-layer MetricsRegistry type
+  metricsTotals(): Readonly<UsageTotals> {
+    return this.container.get(MetricsRegistryToken).totals();
   }
 
   // --------------------------------------------------------------------------

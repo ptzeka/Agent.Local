@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { foldDelegatedUsage, type Session } from "./session.js";
+import type { MetricsRegistry } from "../runtime/metrics/metrics-registry.js";
 import {
   makeSubSession,
   toSnapshot,
@@ -36,8 +36,8 @@ export class SessionManager implements SubSessionCoordinator {
     // undefined on a leaf coordinator (cap 0), which never spawns and so never calls it
     private readonly subRuntimeFactory: SubRuntimeFactory | undefined,
     private readonly maxActivePerParent: number = DEFAULT_MAX_ACTIVE_PER_PARENT,
-    // settled children fold their tally into these counters in memory; the parent's next persist writes the sum
-    private readonly parentSession?: Session,
+    // settled children fold their delegated subtree spend into the parent's MetricsRegistry, which flushes the sum
+    private readonly parentMetrics?: MetricsRegistry,
     // children derive from this so an ancestor cancel reaches them without this manager being told
     private readonly parentSignal?: AbortSignal
   ) {}
@@ -277,9 +277,11 @@ export class SessionManager implements SubSessionCoordinator {
     // cast re-widens status: the guard narrowed it to "running" and TS can't see mutate() moved it terminal
     const settledStatus = sub.status as SubSessionStatus;
     if (settledStatus === "done" || settledStatus === "error") {
-      // folded here, not on a tool result, because a detached child settles after the parent's turn returned
-      if (this.parentSession && sub.session) {
-        foldDelegatedUsage(this.parentSession.counters, sub.session.counters);
+      // folded here, not on a tool result, because a detached child settles after the parent's turn returned;
+      // the child's spend lives in its MetricsRegistry now, so read the runtime's totals and flush the parent's sum
+      if (this.parentMetrics && sub.runtime) {
+        this.parentMetrics.recordDelegatedUsage(sub.runtime.metricsTotals());
+        this.parentMetrics.flush();
       }
       // a run that errored before its runtime came up has nothing to persist, but still notifies the failed spawn
       if (sub.runtime && sub.session) {
