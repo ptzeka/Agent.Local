@@ -7,6 +7,9 @@
   "bin": {
     "agent-local": "./dist/cli/index.js"
   },
+  "exports": {
+    "./mount": { "types": "./dist/worker/mount.d.ts", "default": "./dist/worker/mount.js" }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli/index.js",

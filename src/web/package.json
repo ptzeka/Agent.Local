@@ -1,0 +1,46 @@
+{
+  "name": "@agent-local/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Agent.Local application console (React 19 SSR) — provider stack, routes, live Workflow view over the host bus; mounted by the co-hosted express process.",
+  "exports": {
+    ".": { "types": "./dist/server/mount.d.ts", "default": "./dist/server/mount.js" }
+  },
+  "scripts": {
+    "dev": "concurrently -k -n webpack,server \"webpack --config webpack.dev.mjs --mode=development -w\" \"nodemon --watch publish --delay 1 publish/index.cjs -p 3000\"",
+    "build": "node clean.mjs && webpack --config webpack.prod.mjs --mode=production",
+    "start": "node publish/index.cjs -p 3000",
+    "clean": "node clean.mjs"
+  },
+  "dependencies": {
+    "@agent-local/common": "^0.1.0",
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@emotion/server": "^11.11.0",
+    "@mui/material": "^6.3.0",
+    "express": "^4.21.2",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router": "^7.1.1"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/preset-react": "^7.26.3",
+    "@babel/preset-typescript": "^7.26.0",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@types/react": "^19.0.2",
+    "@types/react-dom": "^19.0.2",
+    "babel-loader": "^9.2.1",
+    "concurrently": "^9.1.0",
+    "copy-webpack-plugin": "^12.0.2",
+    "nodemon": "^3.1.9",
+    "typescript": "^5.7.2",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^5.1.4",
+    "webpack-merge": "^6.0.1",
+    "webpack-node-externals": "^3.0.0"
+  }
+}
