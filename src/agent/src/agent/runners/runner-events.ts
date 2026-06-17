@@ -2,6 +2,10 @@
 export const OrchestratorEventTypes = {
   START: "orchestrator-start",
   ITERATION: "orchestrator-iteration",
+  // opens a streamed assistant message; carries { emitter } so the renderer labels it without a hardcoded branch
+  CHAT_START: "chat-start",
+  // one text delta off the provider stream; MESSAGE stays the terminal/stop event
+  MESSAGE_DELTA: "message-delta",
   MESSAGE: "orchestrator-message",
   TOOL_CALL: "tool-call",
   TOOL_RESULT: "tool-result",

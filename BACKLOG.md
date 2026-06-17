@@ -218,17 +218,88 @@ Tool calls in one assistant turn run serially (`runners/orchestrator.ts` ~L334).
       ordering hazard exists (start read-only-only).
 - [ ] Test: two read calls overlap in time; results map back to the right ids.
 
-### M1-11 · Stream assistant deltas to the UI — `~1d` · P2
-The Anthropic provider streams internally only to dodge the SDK HTTP timeout and
-returns `finalMessage()` (`providers/anthropic-provider.ts` ~L113), so a long
-generation looks hung to the user.
-- [ ] Surface token deltas through a runner event (`MESSAGE_DELTA`) the CLI/SSE
-      layer can render incrementally; keep the collected final message unchanged
-      for transcript/append.
-- [ ] Gate delta emission on a `streamOutput` feature flag (M6-1) resolved by
-      mode: interactive `chat` streams deltas; `standalone`/`api` default to
-      collect-only (SSE callers opt in). Mode comes from the runtime, the flag
-      value from the registry — no ad-hoc `if (isCli)` checks in the provider.
+### M1-11a · Event-routed assistant message (atomic baseline) — `~0.25d` · P2
+Groundwork for streaming: confirm the assistant message reaches the UI **only**
+through the event bus, atomically (collect-then-emit one event), with persistence
+decoupled — no per-delta flush yet. This is largely **already true** in code; the
+story is to verify, lock it with a test, and add the gating scaffolding M1-11b
+will flip.
+
+**Current state (already event-routed).** The orchestrator collects the response
+and publishes one `MESSAGE` event ([orchestrator.ts:209-214](src/agent/src/agent/runners/orchestrator.ts#L209-L214)),
+then `conversation.append(assistantMessage)` (L216). The repl subscribes only to
+the bus ([repl.ts:45](src/agent/src/cli/repl.ts#L45)) and renders via `formatEvent`
+→ `case "orchestrator-message"` ([render.ts:25-27](src/agent/src/cli/render.ts#L25-L27)).
+No hard wire from provider to UI; the provider still `finalMessage()`-collects
+internally ([anthropic-provider.ts:75](src/agent/src/agent/providers/anthropic-provider.ts#L75)).
+- [ ] Verify no non-event path renders assistant text (grep the CLI for direct
+      writes of `assistantMessage`/response content outside `formatEvent`).
+- [ ] Add a `streamOutput` feature flag (M6-1), default **off** → collect-only
+      atomic emit stays the behaviour for every mode. Mode from the runtime, flag
+      value from the registry — no `if (isCli)` in the provider.
+- [ ] Test: a turn emits exactly one `MESSAGE` event whose content equals the
+      persisted `append`ed message (atomic, byte-identical) — the contract M1-11b
+      must preserve.
+
+**Done when:** assistant text reaches the UI solely via the `MESSAGE` event,
+collect-then-emit; `streamOutput` exists and is off; transcript `append`/`flush`
+unchanged; a test pins one-event-per-message equal to the persisted content.
+
+### M1-11b · Stream assistant deltas to the UI — `~0.75d` · P2
+Flip M1-11a's atomic emit to a live token stream. The Anthropic provider already
+streams internally to dodge the SDK HTTP timeout but only returns `finalMessage()`,
+so a long generation looks hung. Add **one** event type to the bus M1-11a proved
+out — nothing structural changes.
+
+**Architecture.** Only the assistant *text* (generated token-by-token) needs a
+*delta* stream; atomic `TOOL_CALL`/`TOOL_RESULT` are untouched. Streaming and
+persistence stay fully decoupled: deltas are fire-and-forget to the UI while the
+buffer accumulates; on the terminal event the collected message is the final
+message and is `append`ed once (the M1-11a contract). The orchestrator ensures the
+**store** flush and forgets the UI entirely (`Conversation.append`/`flush`
+unchanged — UI is never a `Conversation` concern; Repository only calls downward).
+
+**Message-stream lifecycle (distinct from the turn lifecycle).** `turn-start`/
+`turn-done` stay the *work* boundary (they span tool calls + multiple messages and
+gate the spinner — [repl.ts:52-54](src/agent/src/cli/repl.ts#L52-L54)); they are
+NOT touched. Inside a turn, one new event frames each chat:
+`CHAT_START` → `MESSAGE_DELTA × N` → `MESSAGE` (existing, reused as the stop).
+`CHAT_START` is the `[orchestrator]` marker: print the prefix once, switch the
+renderer into incremental mode. It can fire **multiple times per turn** (one per
+streamed assistant message across iterations). **Invariant: one chat stream at a
+time** — the single turn-runner pump already serialises iterations, so streams
+never interleave; the renderer assumes at most one open `CHAT_START` before its
+`MESSAGE` stop and need not multiplex.
+- [ ] Add `CHAT_START` + `MESSAGE_DELTA` to `OrchestratorEventTypes`
+      ([runner-events.ts](src/agent/src/agent/runners/runner-events.ts)) — two
+      enum entries; `MESSAGE` stays the terminal (no new stop event).
+- [ ] `CHAT_START` carries the **emitter** in its payload (`{ emitter: string }`,
+      e.g. `roleName` — kept open so it can be anything later: orchestrator,
+      executor, a named sub-agent). The renderer prints `[${emitter}]` generically
+      from that field — NOT from a hardcoded per-source branch like today's
+      `[ORCHESTRATOR]`/`[EXECUTOR]` ([render.ts:27](src/agent/src/cli/render.ts#L27),
+      [render.ts:70-71](src/agent/src/cli/render.ts#L70-L71)). Producer owns its
+      identity; renderer just formats. Leave the existing atomic events' hardcoded
+      labels untouched — only the new streaming entry point is data-driven.
+- [ ] Provider emits `MESSAGE_DELTA` per text delta off the existing
+      `this.client.messages.stream`; keep `finalMessage()` as the in-memory result
+      so `append` stays byte-identical. Provider knows the bus, never the UI.
+- [ ] `formatEvent` renders `MESSAGE_DELTA` incrementally (no newline per delta),
+      composing with the spinner/prompt repaint per the horizontal-only render
+      constraint (`\r` + clear-line; no scroll regions / absolute cursor moves).
+- [ ] Reconcile double-render in the **UI layer only**: when deltas were streamed,
+      suppress the terminal `MESSAGE` block render (deltas are the live copy).
+      Orchestrator stays oblivious. Note one assistant message can fan out to
+      `MESSAGE_DELTA × N` (text) + `TOOL_CALL × M` (tool_use) yet persist as one
+      `append(finalMessage)`.
+- [ ] Gate emission on `streamOutput` (from M1-11a) resolved by mode: interactive
+      `chat` streams deltas; `standalone`/`api` stay collect-only (SSE callers opt
+      in).
+
+**Done when:** a long interactive turn paints tokens live via `MESSAGE_DELTA`; the
+persisted transcript is byte-identical to the M1-11a baseline; tool_call/result
+events and persistence are untouched; `standalone`/`api` still collect-only; the
+provider holds no reference to the UI.
 
 ### M1-12 · Output token-limit continuation — `~0.5d` · P2
 Don't break on *output* token-limit hits. When a response stops on `max_tokens`
@@ -1012,6 +1083,49 @@ the user and the executor — while memomcp remains a general-use MCP.
 - [ ] Nightly CI job against Ollama (or recorded fixtures) — catches prompt/
       model regressions before users do.
 
+### M4-6 · Headless session-threaded e2e smoke test — `~0.5d` · P2
+A live end-to-end smoke of the real headless CLI (`--run` / `--session`),
+distinct from M4-5: that one is a task-table + deterministic file checker; this
+is a *session-continuity* test — one logical conversation carried across four
+separate process invocations (create → read → remove → delayed background poll),
+asserting the session id threads, the file-state transitions are reflected in
+the agent's own responses, and each run exits with the right code. The real
+providers run (orchestrator=gemini, executor/evaluator=anthropic per
+`models.json`), so it doubles as a provider-wiring + sandbox smoke.
+- [x] **Session threading is `--session`-only.** `cli/args.ts` parses only
+      `--run` and `--session`; the trailing positional `{prev-session-id}` form
+      in [COMMANDS.md](COMMANDS.md) commands 3–4 is silently ignored and starts a
+      FRESH session. The harness must thread `--session <id>` on every follow-up;
+      the session id is captured from the `[session <id>]` line the CLI writes to
+      **stderr** ([cli/index.ts](src/agent/src/cli/index.ts) ~L210), not from disk.
+- [x] **Assert on the response, not the exit code alone.** The workspace is
+      partitioned per session by `workspaceId` (UUID), so the harness checks the
+      agent's stdout final answer — a deterministic content marker
+      (`HELLO_E2E_MARKER`) the read must surface — never a fixed sandbox path.
+      Asserting on the response (not exit code) is load-bearing: it caught a
+      no-op the exit code rated as success (see M5-7), which a bare exit check
+      would have called green.
+- [x] **Committed harness:** [scripts/e2e-headless.ps1](scripts/e2e-headless.ps1)
+      (Windows-primary) runs the four steps in order via `Start-Process node`,
+      threads `--session`, and prints a per-step PASS/FAIL table; fails on any
+      step that does not exit `0` or whose marker assertion misses. A `.sh`
+      sibling is deferred until a non-Windows runner needs it.
+- [x] **Delayed background step.** The 4th run (`delay … poll until done`)
+      exercises the background-task + poll path under a threaded session; asserts
+      exit `0` after the poll resolves.
+- [ ] **Strict mode surfaces orchestrator flakiness (by design).** The configured
+      orchestrator (`gemini-2.5-flash-lite`) intermittently no-ops to a
+      clarification on actionable one-liners; the harness goes red on those runs
+      rather than retrying (decided 2026-06-16). The fix lives upstream in M5-5
+      / M5-7, not in the test — keep the test honest.
+
+**Done when:** [scripts/e2e-headless.ps1](scripts/e2e-headless.ps1) carries one
+session across all four runs via `--session`, asserts each step exits `0` AND the
+read surfaces the content marker, and reports a per-step table — going red
+(non-zero) whenever the orchestrator no-ops instead of acting.
+_(Harness shipped + run 2026-06-16; the run surfaced the M5-7 headless-success
+bug, layer 1 of which is now fixed.)_
+
 ---
 
 ## MR — Unified runtime refactor (≈ 9 focused days)
@@ -1315,10 +1429,17 @@ the correct conclusion is "nothing to evaluate" — not a clarification request.
 - [ ] Test: "create it again the same way" with empty/again-only context does
       NOT yield evaluator-originated AWAITING-INPUT; it returns the
       nothing-to-evaluate outcome and the turn defers to the orchestrator.
+- [ ] **Inverse of the above (from M5-7, 2026-06-16):** the evaluator must also
+      stop rating a pure clarification *answer* as SATISFIED. Observed: the
+      orchestrator's "I need more information to create…" no-op intermittently
+      returns verdict `satisfied` → headless exit `0`, masking a no-op as success.
+      A tool-free turn whose content IS a question is AWAITING-INPUT, never
+      SATISFIED — this is the open layer-2 of M5-7's headless-success bug.
 
 **Done when:** an ambiguous, context-free request no longer produces an
-evaluator-minted AWAITING-INPUT clarification, and the evaluator's verdict is
-derived only from the last intent + this turn's transcript.
+evaluator-minted AWAITING-INPUT clarification, the evaluator never rates a
+clarification *question* as SATISFIED (M5-7 layer 2), and the evaluator's verdict
+is derived only from the last intent + this turn's transcript.
 
 ### M5-6 · Orchestrator prompt: explicit 3-phase shape — `~0.5d` · P2
 An orchestrator turn should read as three clean phases, but the prompt
@@ -1344,6 +1465,38 @@ the middle one:
 **Done when:** the orchestrator prompt is organized as the three explicit
 phases, phase-3 result types line up 1:1 with evaluator verdicts, and the
 evaluator reads a declared result rather than inferring one from prose.
+
+### M5-7 · Headless no-op clarification must not report success — `~0.5d` · P1
+Surfaced by the M4-6 e2e (2026-06-16). A turn where the orchestrator did **no
+work** and only asked the user a clarification question was indistinguishable
+from real completion in headless mode — it exited `0`. Two distinct layers, one
+fixed here, one open and owned by M5-5:
+- [x] **Exit-code conflation (FIXED).** `RunResult.outcome` collapsed
+      `awaiting-input` into `"satisfied"` ([orchestrator.ts](src/agent/src/agent/runners/orchestrator.ts)
+      ~L240), and `cli/index.ts` mapped `satisfied → 0`, so a clarification that
+      reached an `awaiting-input` *verdict* exited `0`. Fix: added a distinct
+      `"awaiting-input"` outcome member, returned it from the tool-free
+      orchestrator gate, mapped it to a new `EXIT_AWAITING_INPUT = 4` in
+      `cli/index.ts`, and made `agent-runtime.ts` treat it as the healthy
+      `awaiting-input` session status (not `error`). Verified: `--run "read me
+      something content"` (no file) now exits `4`, was `0`.
+- [ ] **Evaluator mislabels a clarification as SATISFIED (OPEN → M5-5).** The fix
+      only covers the `awaiting-input` *verdict* path. The evaluator
+      ([runners/evaluator.ts](src/agent/src/agent/runners/evaluator.ts)) is
+      inconsistent: the SAME "I need more information to create…" no-op sometimes
+      returns verdict `satisfied` → outcome `satisfied` → exit `0`, leaking the
+      no-op as success. The AWAITING-INPUT-reserved-for-questions rule
+      (`context/system-prompt.ts` rule 1) exists but the judge doesn't reliably
+      apply it. Fold into M5-5: a clarification question is never SATISFIED.
+- [ ] **Document the headless exit codes** (`0` satisfied / `1` error / `2`
+      capped / `3` failed / `4` awaiting-input) in COMMANDS.md / README so
+      callers can branch on them (closes the M0-7 "document exit codes" item for
+      this dimension).
+
+**Done when:** a headless run that ends on a clarification question exits
+non-zero by BOTH paths — the `awaiting-input` verdict (done) and the evaluator
+no longer rating a pure clarification as SATISFIED (via M5-5) — and the exit-code
+contract is documented. _(Layer 1 shipped 2026-06-16; layer 2 tracked in M5-5.)_
 
 ---
 

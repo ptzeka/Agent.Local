@@ -28,6 +28,8 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
   const childDeps: AgentRuntimeDeps = {
     ...deps,
     parentSignal: refs.parentSignal ?? deps.parentSignal,
+    // a sub-run has no live renderer of its own; it reports through the executor bridge, so it stays collect-only
+    streamOutput: false,
   };
   return new AgentRuntime(childDeps)
     .add(new ContainerMiddleware())

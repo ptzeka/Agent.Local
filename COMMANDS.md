@@ -20,8 +20,13 @@ powershell Remove-Item -Recurse -Force .\src\codeindex\data; Remove-Item -Recurs
     scripts/publish-codeindex.sh -Repository /Applications/www/Agent.Local
 # .\scripts\publish-codeindex.ps1  -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox
 
-npm run start -- --run "create hello_world.txt as background task"
-npm run start -- --run "read me hello_world.txt content" --session {perv-session-id}
-npm run start -- --run "remove hello_world.txt as background task" {perv-session-id}
-npm run start -- --run "delay as background task for 2 min poll until done" {perv-session-id}
+npm run start --session 3bd1817e-d563-43b2-a6db-771811411913
 
+npm run start -- --run "create hello_world.txt as background task"
+npm run start -- --run "any files in workspace" --session 3bd1817e-d563-43b2-a6db-771811411913
+npm run start -- --run "list me files in workspace" --session 3bd1817e-d563-43b2-a6db-771811411913
+npm run start -- --run "remove hello_world.txt file as background task" 3bd1817e-d563-43b2-a6db-771811411913
+npm run start -- --run "delay as background task for 2 min poll until done" 3bd1817e-d563-43b2-a6db-771811411913
+
+# integ test
+powershell -ExecutionPolicy Bypass -File .\scripts\e2e-headless.ps1

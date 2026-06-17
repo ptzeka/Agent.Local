@@ -22,6 +22,8 @@ export interface AgentRuntimeQueryable {
   getLogger(): ILogger;
   // a turn chains its own bus under this one, so turn events bubble up through the runtime to the host
   getEvents(): Eventing;
+  // true only for a host with a live incremental renderer (interactive REPL); off → collect-then-emit
+  isStreamOutputEnabled(): boolean;
 }
 
 export interface AgentRuntimeDeps {
@@ -37,6 +39,8 @@ export interface AgentRuntimeDeps {
   parentSignal?: AbortSignal;
   // host's bus; the runtime chains its own under it, so cancellation flows down and events bubble up
   eventing?: Eventing;
+  // opt-in live token streaming; only the interactive host sets it, sub-runtimes leave it off (collect-only)
+  streamOutput?: boolean;
 }
 
 export interface RuntimeContext {

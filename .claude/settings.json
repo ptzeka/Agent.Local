@@ -57,7 +57,10 @@
       "Bash(git stash *)",
       "Bash(echo \"\\(tsc exit $?\\)\")",
       "Bash(echo \"\\(exit $?\\)\")",
-      "Bash(echo \"=== exit code $? for last grep \\(1=clean\\) ===\")"
+      "Bash(echo \"=== exit code $? for last grep \\(1=clean\\) ===\")",
+      "PowerShell(node .\\\\src\\\\agent\\\\dist\\\\cli\\\\index.js --run \"create hello_world.txt as background task containing exactly the text HELLO_E2E_MARKER\")",
+      "PowerShell(powershell -ExecutionPolicy Bypass -File C:\\\\tmp\\\\probe.ps1)",
+      "PowerShell(powershell -ExecutionPolicy Bypass -File C:\\\\www\\\\Agent.Local\\\\scripts\\\\e2e-headless.ps1)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

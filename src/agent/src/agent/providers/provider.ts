@@ -35,6 +35,10 @@ export interface ChatOptions {
 
   // cancels an in-flight request, e.g. Ctrl+C in the REPL
   signal?: AbortSignal;
+
+  // per-text-delta sink for live streaming; absent → the provider collects silently (finalMessage only),
+  // so a provider that can't stream just ignores it and callers fall back to the atomic message
+  onDelta?: (delta: string) => void;
 }
 
 export interface ChatResponse {

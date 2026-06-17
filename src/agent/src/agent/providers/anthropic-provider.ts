@@ -73,6 +73,11 @@ export class AnthropicProvider implements LLMProvider {
     try {
       // stream so high max_tokens can't trip the SDK's non-streaming HTTP timeout
       const stream = this.client.messages.stream(request, { signal: options.signal });
+      // forward text deltas live when a sink is supplied; finalMessage() still returns the whole
+      // message, so the persisted/append path stays byte-identical whether or not anyone is streaming
+      if (options.onDelta) {
+        stream.on("text", (textDelta) => options.onDelta!(textDelta));
+      }
       response = await stream.finalMessage();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);

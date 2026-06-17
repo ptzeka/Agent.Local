@@ -75,13 +75,13 @@ export class GeminiProvider implements LLMProvider {
       if (tools.length > 0) config.tools = tools;
     }
 
-    let response;
+    const params = { model: this.modelId, contents, config };
+    let response: GenerateContentResponse;
     try {
-      response = await this.client.models.generateContent({
-        model: this.modelId,
-        contents,
-        config,
-      });
+      // stream only when a sink is listening; otherwise the single-shot call keeps the collect path unchanged
+      response = options.onDelta
+        ? await this.generateStreamed(params, options.onDelta)
+        : await this.client.models.generateContent(params);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(
@@ -109,6 +109,27 @@ export class GeminiProvider implements LLMProvider {
         totalDurationMs,
       },
     };
+  }
+
+  // folds the streamed chunks into one response so fromGeminiResponse/usage reads stay identical to the
+  // single-shot path; text parts fire onDelta as they arrive, usage is taken from the last chunk that carries it
+  private async generateStreamed(
+    params: { model: string; contents: Content[]; config: Record<string, unknown> },
+    onDelta: (delta: string) => void
+  ): Promise<GenerateContentResponse> {
+    const stream = await this.client.models.generateContentStream(params);
+    const parts: Part[] = [];
+    let usageMetadata: GenerateContentResponse["usageMetadata"];
+    for await (const chunk of stream) {
+      for (const part of chunk.candidates?.[0]?.content?.parts ?? []) {
+        parts.push(part);
+        // thought parts are reasoning, not answer text — never surface them as deltas (mirrors fromGeminiResponse)
+        if (typeof part.text === "string" && !part.thought) onDelta(part.text);
+      }
+      if (chunk.usageMetadata) usageMetadata = chunk.usageMetadata;
+    }
+    // a plain object satisfies the structural reads fromGeminiResponse and the usage mapping make
+    return { candidates: [{ content: { role: "model", parts } }], usageMetadata } as GenerateContentResponse;
   }
 
   // creation silently fails below Gemini's min token threshold or on models without caching;

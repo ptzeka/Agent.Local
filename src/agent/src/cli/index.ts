@@ -27,6 +27,8 @@ const EXIT_SATISFIED = 0;
 const EXIT_ERROR = 1;
 const EXIT_CAPPED = 2;
 const EXIT_FAILED = 3;
+// the run ended on a clarification question with no work done — non-zero so headless callers don't read it as success
+const EXIT_AWAITING_INPUT = 4;
 
 // shared infrastructure from bootstrap(); session setup is per run mode, not here
 interface Bootstrap {
@@ -132,10 +134,12 @@ async function bootstrap(): Promise<Bootstrap> {
 // ---------------------------------------------------------------------------
 
 
+// streamOutput defaults off; only the interactive REPL (a live incremental renderer) opts in
 function buildRuntime(
   boot: Bootstrap,
   eventing: Eventing,
-  sessionId?: string
+  sessionId?: string,
+  streamOutput = false
 ): AgentRuntime {
   const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
   const token = process.env.AGENT_API_TOKEN;
@@ -151,6 +155,7 @@ function buildRuntime(
     parentSignal: boot.rootSignal,
     // host's bus: the runtime chains its own under this, so runtime events bubble up to the CLI
     eventing,
+    streamOutput,
   };
   return buildRuntimeRef(deps, sessionId);
 }
@@ -165,7 +170,7 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   // no out-of-band status line: the REPL is the sole TTY writer, so a raw write would land in its pinned-prompt region
   const eventing = new Eventing();
 
-  const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined).build();
+  const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined, true).build();
   boot.registerRuntime(runtime);
 
   // surface sub-sessions that report back out-of-band between turns
@@ -225,9 +230,11 @@ async function runHeadless(
       );
       return result.outcome === "satisfied"
         ? EXIT_SATISFIED
-        : result.outcome === "failed"
-          ? EXIT_FAILED
-          : EXIT_CAPPED;
+        : result.outcome === "awaiting-input"
+          ? EXIT_AWAITING_INPUT
+          : result.outcome === "failed"
+            ? EXIT_FAILED
+            : EXIT_CAPPED;
     } finally {
       unsubEvents();
       unsubscribe();

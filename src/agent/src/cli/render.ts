@@ -7,6 +7,12 @@ import type { TurnRunnerEvent } from "../agent/runners/turn-runner.js";
 // all colour/formatting lives here so the orchestrator stays UI-agnostic and just emits structured events
 // consistent labels: ORCHESTRATOR cyan (coordinator + read tools), EXECUTOR magenta (one dispatch's ack/run/validate)
 
+// the opening label for a streamed message; data-driven from the event's emitter, not a per-source branch,
+// so a future named sub-agent labels itself by setting the field rather than adding a case here
+export function formatChatStart(emitter: string): string {
+  return chalk.cyan(`[${emitter.toUpperCase()}] `);
+}
+
 // returns rather than writes so the REPL can route it through its single write-above-the-prompt path
 export function formatEvent(event: RunnerEvent): string {
   switch (event.type) {
@@ -114,8 +120,9 @@ export function formatEvent(event: RunnerEvent): string {
     }
 
     case "system-failure": {
-      const reason = String(event.data.reason ?? "request cannot be completed");
-      return chalk.redBright(`  [SYSTEM-FAILURE] failed to complete request — ${reason}\n`);
+      // the reason is dropped here on purpose: failTurn always follows an [EVALUATOR] FAILED line that
+      // already printed the identical reason, so this stays the terse terminal marker, not a second copy
+      return chalk.redBright(`  [SYSTEM-FAILURE] request could not be completed\n`);
     }
 
     default:

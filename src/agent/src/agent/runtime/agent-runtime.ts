@@ -195,7 +195,9 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
     try {
       const result = await runTurn();
-      this.session.status = result.outcome === "satisfied" ? "awaiting-input" : "error";
+      // awaiting-input is healthy (ready for the next message), same as satisfied — only capped/failed are error
+      this.session.status =
+        result.outcome === "satisfied" || result.outcome === "awaiting-input" ? "awaiting-input" : "error";
       this.session.counters.turns += 1;
       this.events.publish("runtime-status", {
         sessionId: this.session.sessionId,
@@ -450,6 +452,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // host subscribes here, or chains it under its own bus
   getEvents(): Eventing {
     return this.events;
+  }
+
+  isStreamOutputEnabled(): boolean {
+    return this.deps.streamOutput ?? false;
   }
 
   // the container-owned token tally (own + delegated subtree); read across the ChildRuntime boundary so a

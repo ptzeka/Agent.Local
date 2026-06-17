@@ -4,9 +4,10 @@ import chalk from "chalk";
 import type { McpClientRegistry } from "../agent/registries/mcp-registry.js";
 import type { ModelRegistry } from "../agent/registries/model-registry.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
+import { OrchestratorEventTypes } from "../agent/runners/runner-events.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import { formatEvent, formatSubSessionNotification, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
+import { formatChatStart, formatEvent, formatSubSessionNotification, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
 
 // wraps one session's runtime with a readline prompt and slash commands; all logic lives in the runtime,
 // so the REPL only routes input in and events out
@@ -41,10 +42,25 @@ export async function runRepl(options: ReplOptions): Promise<void> {
     ui.write(formatSubSessionNotification(notification));
   });
 
-  // map the bus shape {type,payload} to the renderer's {type,data} at this single boundary
-  const unsubEvents = runtime.getEvents().subscribe((event) =>
-    ui.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent))
-  );
+  // map the bus shape {type,payload} to the renderer's {type,data} at this single boundary;
+  // the three streaming events take the incremental path, everything else the atomic write-above-prompt path
+  const unsubEvents = runtime.getEvents().subscribe((event) => {
+    if (event.type === OrchestratorEventTypes.CHAT_START) {
+      ui.beginStream(formatChatStart(String(event.payload.emitter ?? "")));
+      return;
+    }
+    if (event.type === OrchestratorEventTypes.MESSAGE_DELTA) {
+      ui.appendStream(String(event.payload.delta ?? ""));
+      return;
+    }
+    // when deltas already painted the message, the terminal MESSAGE just closes the stream (no double render)
+    if (event.type === OrchestratorEventTypes.MESSAGE && ui.isStreaming()) {
+      ui.endStream();
+      if (turnRunner.isBusy) ui.startSpinner();
+      return;
+    }
+    ui.write(formatEvent({ type: event.type, data: event.payload } as RunnerEvent));
+  });
 
   // every turn flows through the runner's single pump, so no producer ever races the dispatchAsync guard
   const turnRunner = runtime.startTurnLoop({
@@ -303,6 +319,8 @@ class ScreenLayout {
   private readonly tty: boolean = Boolean(process.stdout.isTTY);
   private spinnerTimer: ReturnType<typeof setInterval> | null = null;
   private frame = 0;
+  // a chat stream is open: deltas append raw at the cursor with no per-write prompt repaint
+  private streaming = false;
 
   constructor(private readonly rl: readline.Interface) {
     this.rl.prompt();
@@ -320,6 +338,38 @@ class ScreenLayout {
     }
     this.out.write(body + "\n");
     // tell readline the block restarts here (prevRows=0) so prompt(true) draws it under the output, not back up into it
+    this.setPromptRows(0);
+    this.rl.prompt(true);
+  }
+
+  isStreaming(): boolean {
+    return this.streaming;
+  }
+
+  // opens the live region: clears the pinned prompt block, prints the label, then leaves the cursor parked
+  // so deltas extend the same line(s); the spinner is stopped because the stream itself is the progress signal
+  beginStream(prefix: string): void {
+    this.stopSpinner();
+    this.streaming = true;
+    if (this.tty) {
+      const up = this.promptRows();
+      if (up > 0) this.out.write(`\x1b[${up}A`);
+      this.out.write("\r\x1b[0J");
+    }
+    this.out.write(prefix);
+  }
+
+  // pure append at the cursor: terminal wrapping handles layout, honouring the horizontal-only constraint
+  appendStream(delta: string): void {
+    if (!this.streaming) return;
+    this.out.write(delta);
+  }
+
+  // closes the live region: the streamed text is now permanent scrollback, so just newline and redraw the prompt below
+  endStream(): void {
+    if (!this.streaming) return;
+    this.streaming = false;
+    this.out.write("\n");
     this.setPromptRows(0);
     this.rl.prompt(true);
   }

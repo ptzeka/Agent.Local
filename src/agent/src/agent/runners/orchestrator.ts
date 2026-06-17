@@ -30,8 +30,9 @@ export interface RunResult {
   finalMessage: ChatMessage;
   iterations: number;
   dispatches: number;
-  // "satisfied" accepted, "capped" hit the iteration bound, "failed" judged unrecoverable; drives the headless exit code
-  outcome: "satisfied" | "capped" | "failed";
+  // "satisfied" accepted, "awaiting-input" ended on a clarification question (no work done — distinct so headless can't read it as success),
+  // "capped" hit the iteration bound, "failed" judged unrecoverable; drives the headless exit code
+  outcome: "satisfied" | "awaiting-input" | "capped" | "failed";
 }
 
 // narrow contract satisfied structurally by Orchestrator, so the manager stays decoupled and construction acyclic
@@ -138,6 +139,9 @@ export class Orchestrator {
     const executorTemperature = config.orchestration.executorTemperature;
     const temperature = this.role === "executor" ? executorTemperature! : orchestratorTemperature!;
 
+    const streaming = ctx.runtime.isStreamOutputEnabled();
+    let chatStarted = false;
+
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (ctx.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
@@ -183,12 +187,24 @@ export class Orchestrator {
       };
 
       logger.debug("model call", { iteration, provider: provider.providerName, model: provider.modelId });
+      
+    // lazily open the chat stream on the first text delta so a tool-only/empty turn never prints a bare [emitter] label
+      const onDelta = streaming
+        ? (delta: string) => {
+            if (!chatStarted) {
+              chatStarted = true;
+              turnEvents.publish(OrchestratorEventTypes.CHAT_START, { emitter: this.role });
+            }
+            turnEvents.publish(OrchestratorEventTypes.MESSAGE_DELTA, { iteration, delta });
+          }
+        : undefined;
       let response: ChatResponse;
       try {
         response = await provider.chat([...workingMessages, requestAnchor], {
           tools: provider.supportsNativeTools ? visibleTools : [],
           temperature,
           signal: ctx.signal,
+          onDelta,
         });
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err);
@@ -242,7 +258,8 @@ export class Orchestrator {
             finalMessage: assistantMessage,
             iterations: iteration,
             dispatches: tracker.count,
-            outcome: "satisfied",
+            // awaiting-input did no work — keep it distinct so headless exits non-zero instead of reporting success
+            outcome: verdict.state === "awaiting-input" ? "awaiting-input" : "satisfied",
           };
         }
 
