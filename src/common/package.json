@@ -9,6 +9,7 @@
     "./lifetime": { "types": "./dist/lifetime.d.ts", "default": "./dist/lifetime.js" },
     "./tokenusage": { "types": "./dist/tokenusage.d.ts", "default": "./dist/tokenusage.js" },
     "./eventing": { "types": "./dist/eventing.d.ts", "default": "./dist/eventing.js" },
+    "./mesh": { "types": "./dist/mesh.d.ts", "default": "./dist/mesh.js" },
     "./container": { "types": "./dist/container.d.ts", "default": "./dist/container.js" },
     "./ilogger": { "types": "./dist/ilogger.d.ts", "default": "./dist/ilogger.js" },
     "./filelogger": { "types": "./dist/filelogger.d.ts", "default": "./dist/filelogger.js" }

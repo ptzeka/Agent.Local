@@ -15,7 +15,10 @@
     "src/codemcp",
     "src/memomcp",
     "src/codemanagermcp",
-    "src/openclaw"
+    "src/openclaw",
+    "src/host",
+    "src/web",
+    "src/workflow"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

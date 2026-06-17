@@ -1520,6 +1520,283 @@ the streaming mode flag (M1-11) live in one artifact, not scattered booleans and
 
 ---
 
+## M7 — Workflow orchestration (Camunda 8 × Agentic mesh)
+
+A long-running business-process layer that *drives* the agent. Camunda 8 (Zeebe)
+owns the BPMN process state; the agent is a worker it dispatches to. The Node
+side — workflow service + agentic engine — is **co-hosted in one express process
+to start** for operational simplicity; the two are kept architecturally
+independent by the bus and are split out later when load demands it (decided
+2026-06-17, see **D6**). The Zeebe broker is always a separate Java process
+regardless of Node topology.
+
+**The bus is the seam — engines talk only through it, never by direct call.**
+That single rule is what makes co-hosting safe: nothing couples across the seam,
+so "extract into its own process" later is a *transport swap* behind the same
+`publish`/`subscribe`/`add` contract (in-memory `Eventing` today → a pub/sub
+broker next), not a rewrite.
+
+**Invariant — Camunda always initiates.** The only flow is
+`Camunda job → agent dispatch → result → Camunda completes the job → process
+advances`. The agent never starts a process; it answers jobs and reports back.
+The bus is bidirectional (events bubble both ways) but *initiation* is one-way.
+
+Depends on: M4-1 (HTTP/SSE transport — the agentic API surface), M4-2
+(packaging), and the [[eventing-migration]] bus being the live event path.
+
+> **Bootstrap landed 2026-06-17** (4 parallel agents + integration). The express
+> backend is its own workspace **`@agent-local/host` (`src/host`)** — a deliberate
+> split from "workflow bootstraps express": it owns the single `Eventing` bus root,
+> a `MountContext = { bus, logger, signal }` mount contract, the shared event
+> taxonomy (`src/host/src/events.ts`), `/healthz`, and guarded dynamic mounts so it
+> boots standalone. `@agent-local/workflow` and `@agent-local/web` mount into it;
+> verified live (host serves `/healthz` + SSR, both siblings mount, mesh wired).
+> **Eventing was NOT extracted** — it stays in `@agent-local/common`; the mesh
+> shipped as `@agent-local/common/mesh` (`wireCamundaMesh`). **Deferred next:** the
+> agentic engine (M7-2) — it fills the `dispatchToAgent` stub + `completeJob` seam;
+> and the real-broker end-to-end cycle.
+
+### M7-1 · Camunda 8 workflow engine + express bootstrap — `~3d` · P0
+A new `src/workflow` workspace: an express service that hosts Zeebe job workers
+and a thin control surface over a self-managed Zeebe broker.
+- [x] New workspace `@agent-local/workflow` (`src/workflow`), `@camunda8/sdk`;
+      signal wiring (one root `AbortController` in `main.ts`, `ctx.signal` threaded
+      to `stop()`). Express bootstrap itself lives in `@agent-local/host`; workflow
+      exposes a `mount(app, ctx)` it registers into. *(2026-06-17)*
+- [x] Self-managed Zeebe broker via `docker-compose.yml` (`camunda/zeebe:8.7.6`,
+      Operate commented optional); endpoint + auth from env, never hard-coded. *(2026-06-17)*
+- [x] `ZeebeClient` wrapper: deploys `src/workflow/bpmn/*.bpmn` on connect; control
+      surface `POST /workflow/process` (start) + `GET /workflow/process/:key`
+      (state) on the mounted app. *(2026-06-17)*
+- [x] Job worker for task type `agent-execute`: publishes `workflow.job` to the bus
+      and `forward()`s to hold the job open (real dispatch deferred to the agentic
+      package, not a no-op). *(2026-06-17)*
+- [x] Resilience: reconnect-with-backoff, graceful `stop()` on `ctx.signal` that
+      never throws, broker-down-at-boot does not crash; `GET /workflow/healthz`. *(2026-06-17)*
+- [x] Sample BPMN (`agent-execute.bpmn`, start → service task → end) + 4 Jest tests
+      — *against an injected fake gRPC*, broker not required. *(2026-06-17)*
+- [ ] Live-broker E2E (deploy + started instance parks a job on a real Zeebe) —
+      still pending; needs the docker-compose broker up.
+
+**Done when:** ~~`npm run dev -w @agent-local/workflow` boots…~~ — superseded: the
+worker, BPMN deploy, control endpoints, resilience, and tests landed 2026-06-17
+(mounted into `@agent-local/host`, verified live); only the live-broker E2E remains.
+
+### M7-2 · Packagable agentic engine — resilient background service — `~2.5d` · P0
+Wrap the host-agnostic runtime + the M4-1 HTTP surface into one embeddable
+engine object. **Co-hosted today** (mounted into the workflow express process),
+but built standalone-ready so the later split is a deploy change, not a rewrite —
+it never reaches into workflow internals, only the bus.
+- [ ] `createAgenticEngine(deps)` factory (`src/agent/src/agent/engine/`):
+      composes `buildRuntime` + the M4-1 app into `{ start(), stop(), health() }`;
+      `start()` connects MCP servers and subscribes its bus handlers, `stop()`
+      gracefully drains in-flight dispatches then releases leases (M3-3).
+- [ ] Mountable + daemon parity: expose the engine as express middleware/router
+      the workflow process mounts in-process (today), AND export the factory from
+      the package `exports` + a `bin` (`agent-engine`) for standalone hosting
+      (later) — same composition root, no logic fork between the two.
+- [ ] Resilience: crash-only supervision (uncaught/unhandled → log → flush →
+      controlled exit for a process manager to restart), MCP reconnect, `/healthz`
+      = db reachable + MCP connected + listener bound (reuse the M4-2 health
+      contract; don't fork it).
+- [ ] Job-shaped entry: a single-shot `POST /execute` (task in → final result +
+      session id out) suited to a workflow call, layered over the existing
+      `POST /sessions/:id/dispatch` — one request, one durable session, one
+      result; no new loop.
+- [ ] Tests: `start()`/`stop()` is idempotent and drains; `/healthz` flips to
+      unhealthy when an MCP server is down; `/execute` returns a result for a
+      trivial task in-process (no broker needed).
+
+**Done when:** the engine starts as a standalone daemon (`agent-engine`) serving
+`/healthz` + `/execute`, AND the same factory boots in-process from a test —
+`stop()` drains active work and the process exits clean.
+
+### M7-3 · Mesh link — Eventing in `common` + correlation routing — `~3d` · P1
+Register one bus root in the host and route by correlation id so Camunda jobs
+reach the agent and results flow back. **In-memory transport for v1** (co-hosted);
+the seam is designed so a pub/sub broker is a later transport swap, not a rewrite.
+- [x] ~~Extract `Eventing` to a standalone package~~ — **reversed 2026-06-17** (user
+      decision): `Eventing` stays in `@agent-local/common` (existing import path
+      `@agent-local/common/eventing` unchanged). The mesh shipped alongside it as
+      `@agent-local/common/mesh`, not a new workspace.
+- [ ] Define a `Transport` seam behind the **same** `publish`/`subscribe`/`add`
+      contract. v1 ships the in-memory bus only; document the broker adapter
+      (`publish` also forwards over the wire, inbound frames re-`deliver` locally)
+      as the next step — build the interface now, the wire later. No engine code
+      changes when the transport is swapped.
+- [x] One `Eventing` root registered in the host bootstrap
+      (`src/host/src/index.ts`, **not** `src/workflow`); the workflow worker
+      `publish`es `workflow.job` (`processInstanceKey`, `jobKey`, `jobType`,
+      `variables`) onto the bus instead of calling the agent — the agent subscribes,
+      never the reverse. *(2026-06-17)*
+- [x] Mesh router `wireCamundaMesh(bus, deps?)` (`common/src/mesh.ts`): correlates
+      `jobKey`/`processInstanceKey` ↔ `sessionId` (per-instance session, retired on
+      completed/failed) and routes `workflow.job` to a **`dispatchToAgent` stub
+      seam**. `agent.result` reserved as the return path. Wired into the host. *(2026-06-17)*
+- [x] Fill the seam — **landed 2026-06-17 (bus-only)**: the mesh's default
+      `dispatchToAgent` now publishes `agent.job` (correlated) instead of an HTTP
+      `/execute` call; `@agent-local/agent` exposes `mount` (`./mount`) — a
+      **bus-only worker** (ignores the express app) that subscribes to `agent.job`,
+      runs one runtime turn, and publishes `agent.result`. The workflow mount calls
+      `completeJob(jobKey, vars)` on `agent.result`. Host composition is now three
+      tidy seams in `src/host/src/index.ts`: `wireCamunda` / `wireApi` /
+      `wireAgentWorker` (`src/host/src/wiring/`).
+- [ ] *Remaining for "done":* a live-model turn + running broker E2E (the seam is
+      verified `workflow.job → agent.job → worker → session` on a real bus; the
+      model turn + `completeJob` need Ollama/a provider and a Zeebe broker).
+- [ ] Enforce the invariant in code end-to-end (agent has no path to start a
+      process) + an E2E test asserting on Camunda state, not logs.
+
+**Done when:** starting the sample process instance drives one full
+`Camunda job → agent execute → result → job complete → process advances` cycle
+over the Eventing mesh, with the agent reachable only as a worker. *(bus + mesh +
+publish/correlate landed 2026-06-17; closes once M7-2 fills the dispatch seam.)*
+
+### M7-4 · Session lifecycle status — `active | finalized | error` — `~1d` · P1
+The agent worker opens one runtime session per Camunda process instance and closes
+it on instance end (M7-3). Today `Session.status` is `idle | running |
+awaiting-input | error` — that's **per-turn** state, not lifecycle. Add an explicit
+session lifecycle status so a session's place in the instance lifetime is queryable
+and the console (M8-3) can distinguish live vs done sessions.
+- [ ] Add `lifecycle: 'active' | 'finalized' | 'error'` to `Session` (distinct from
+      the per-turn `status`); set `active` on open in `SessionMiddleware`.
+- [ ] Worker (`src/agent/src/worker/mount.ts`): set `finalized` on
+      `workflow.completed`, `error` on instance-level `workflow.failed`, **before**
+      `shutdown(drain)` so the persisted session records its terminal lifecycle.
+- [ ] Surface it on `SessionSummary` / the store so the console + session picker can
+      filter active vs finalized.
+- [ ] Tests: open → `active`; completed → `finalized` persisted; instance-failed →
+      `error` persisted.
+
+### M7-5 · Camunda IAM identity inheritance for the worker runtime — `~1.5d` · P1
+Camunda runs each process under an IAM identity (service account / similar). The
+agent worker should **inherit that identity for the process**, so the runtime
+executes as the workflow's identity rather than an ambient token. Today
+`buildWorkerRuntime` sets `credentials` from a static `AGENT_API_TOKEN` env — the
+target is the process's IAM identity carried on the job (IAM identity vs
+JWT-as-middleware).
+- [ ] Carry the identity on the bus: `workflow.job` / `agent.job` include the
+      instance's IAM identity (or a token/assertion to exchange), populated from the
+      Camunda job/process variables or job headers.
+- [ ] Worker passes it into the runtime as `credentials` (`IdentityContext`) per
+      instance instead of the ambient `AGENT_API_TOKEN`; the runtime's identity
+      middleware consumes it.
+- [ ] Identity is **per process instance** (matches the one-session-per-instance
+      lifetime, M7-3/M7-4) — every job of the instance runs as the same identity.
+- [ ] Tests: a job carrying an identity builds a runtime whose `IdentityContext`
+      reflects it; absent identity falls back to anonymous/dev.
+
+---
+
+## M8 — Frontend epic (React console + API)
+
+A web console for the co-hosted express process (D6): a React app plus the
+express API it consumes, to *start and watch* workflow instances and the agent
+runs they drive. Served by the same express process for now — one deployable,
+consistent with the co-host decision — split out only when the backend does.
+
+**Stack mirrors the `Rxo.Platform.Web.Sandbox` frontend** (verified against the
+live `src/frontend/package.json` on disk — the indexed skill doc was stale):
+React 19 + react-router 7, built with **Webpack 5 + Babel** (`webpack.dev.mjs` /
+`webpack.prod.mjs`), an express server host under `src/server/` that serves the
+build and tunnels `/api`, an `api_module/` typed client **generated from the
+OpenAPI spec** (`openapi-typescript -g typescript-fetch`) consumed via an
+**axios** factory + domain hooks, and **OIDC** (`express-openid-connect` server
+middleware + `oidc-client-ts`). Two deliberate divergences from the sandbox: the
+`/api` tunnel targets **our express** (M4-1/M7-1), *not* a .NET backend — no .NET
+in this epic; and the component library is **Material UI (MUI)**, *not* the
+sandbox's `styled-components` + `@reliability-design/*` (an internal RXO design
+system out of scope here). The host does **streaming SSR**
+(`renderToPipeableStream`, dual client+server webpack bundles) like the sandbox —
+chosen over plain CSR to keep the convention intact.
+
+The sandbox is a **copy-and-adapt bootstrap reference, not a dependency** — we
+lift its webpack/server/gen wiring into `@agent-local/web`, modify freely, and
+index *our own* workspace into the local codemcp once scaffolded.
+
+The console is a **read/observe + initiate** surface, not a new control plane: it
+calls the existing M4-1 (agent sessions/dispatch) and M7-1 (process start/state)
+endpoints, and renders the live `Eventing` stream. It must respect the M7
+invariant — the UI can start a *process*, never dispatch the agent directly.
+
+Depends on: M4-1 (SSE transport + runner-event payloads), M7-1 (process
+control surface + the express host to mount on), M7-3 (the bus root to stream
+from).
+
+### M8-1 · React + express scaffold (sandbox conventions) — `~2d` · P1
+- [x] New workspace `@agent-local/web` (`src/web`): React 19 + react-router 7 +
+      **MUI**, **Webpack 5 + Babel**, three bundles (client / standalone server /
+      `mount` library) via `webpack.dev.mjs` / `webpack.prod.mjs`. No Vite. *(2026-06-17)*
+- [x] Streaming SSR (`renderToPipeableStream`) server (`src/web/src/server/`),
+      mountable into the host via `mount(app, ctx)` (the host imports the ESM
+      `dist/server/mount.js` library + co-located static assets). *(2026-06-17)*
+- [x] Startup scripts: `dev` (concurrent webpack watch + nodemon), `build`,
+      `start`, `clean`. *(2026-06-17)*
+- [x] Minimal shell — MUI-themed layout, one react-router 7 route, hello page, a
+      health badge hitting `GET /healthz`. No feature views yet (M8-3). *(2026-06-17)*
+- [ ] `/api` tunnel + `webpack serve` dev-proxy parity — deferred to M8-2 (no API
+      to tunnel to yet).
+
+**Done when:** ~~…~~ — **met 2026-06-17**: web builds all bundles, the co-hosted
+`@agent-local/host` SSR-renders the React shell at `/`, serves `/static/app.js`
+(200), and the health badge reads the live host `/healthz`. Verified end to end.
+
+### M8-2 · Express API (OpenAPI) + bus→browser bridge — `~2d` · P1
+A thin BFF on the express host, layered over the existing endpoints, **described
+by an OpenAPI/swagger spec** the frontend generates its typed client from — plus
+the live event stream the UI renders.
+- [ ] BFF endpoints on the express host (`src/web/src/server/`): list/start
+      process instances (proxy M7-1), list/read agent sessions (proxy M4-1) —
+      shape responses for the view, don't reimplement engine logic.
+- [ ] Publish an OpenAPI/swagger spec for these endpoints; generate the client
+      with `openapi-typescript -g typescript-fetch` into `src/web/src/api_module/`
+      via an `npm run gen` script (mirrors the sandbox's `gen` flow), consumed
+      through an **axios** factory + domain hooks — `api_module/` is generated,
+      never hand-edited.
+- [ ] Bus→browser bridge: subscribe the express handler to the `Eventing` root
+      (M7-3) and stream events to the browser as **SSE**, reusing M4-1's
+      runner-event serialization 1:1 (don't invent a second wire format);
+      WebSocket only if a later view needs client→server push.
+- [ ] Correlation passthrough: each streamed event carries its
+      `processInstanceKey` / `sessionId` so the client can route it to the right
+      view without a second lookup.
+- [ ] OIDC auth mirroring the sandbox: `express-openid-connect` server middleware
+      handles login/session, `oidc-client-ts` on the client; the token is sent as
+      bearer to the `/api` tunnel → validated → `IdentityContext` on the same M4-1
+      path (no anonymous console in service mode, per D4).
+- [ ] Test: a published bus event reaches an SSE client; a started process via
+      the BFF returns the instance key from M7-1; the generated client compiles
+      against the published spec.
+
+**Done when:** the React app authenticates via OIDC, calls the express API
+through its generated typed client, opens one SSE connection, and renders live
+`workflow.job` / `agent.result` events as they bubble the bus — and can start a
+process instance.
+
+### M8-3 · React console components (workflow + agent views) — `~2.5d` · P1
+The actual feature components — MUI, react-router 7 routes — against the M8-2
+generated `api_module/` (via axios hooks) + SSE hook.
+- [ ] Process view: list instances + state (M7-1), a "start process" form, and a
+      per-instance timeline that updates from the SSE stream as jobs fire and
+      complete.
+- [ ] Agent run view: for a dispatched job, render the streamed runner events
+      (dispatch → tool calls → verdict → result) live — reuse the event `type`
+      taxonomy the CLI renderer already switches on, don't redefine it.
+- [ ] Session list + detail: summaries (M4-1 `GET /sessions`) and a read-only
+      transcript view of a selected session.
+- [ ] Components are presentational over the generated client + SSE hook; no
+      engine or bus logic in the browser — it observes and initiates only (M7
+      invariant).
+- [ ] Smoke: starting a process from the UI shows its instance appear, an agent
+      run stream, and the instance reaching its end event — end-to-end through the
+      co-hosted process.
+
+**Done when:** a user starts the M7-1 sample process from the console and watches
+the full `Camunda job → agent execute → result → process advances` cycle render
+live in the browser, sourced entirely from the SSE bus bridge.
+
+---
+
 ## Open decisions — track, don't drift
 
 - [ ] **D1 · Step-level durability.** Turn-boundary persistence loses an
@@ -1545,6 +1822,17 @@ the streaming mode flag (M1-11) live in one artifact, not scattered booleans and
       appears: a plugin system needing dynamic registration (then Awilix —
       no decorators, `createScope()` maps to session lifetime) or a NestJS
       transport in M4 (Nest DI for controllers only; agent core stays pure).
+- [x] **D6 · Workflow/agent topology — co-host now, extract later.** *(decided
+      2026-06-17)* The workflow service and agentic engine ship **co-hosted in one
+      express process** for early operational simplicity; not split into separate
+      services until load demands it. Independence is preserved structurally, not
+      operationally: the two communicate **only through the bus** (M7-3), so
+      extraction is a transport swap (in-memory `Eventing` → pub/sub broker)
+      behind an unchanged `publish`/`subscribe`/`add` contract. **Not** worker
+      threads — the agent loop is I/O-bound and already offloads execution to
+      child-process MCP servers, so threads add marshalling/lifetime cost without
+      parallelism gain; they remain reserved for genuinely CPU-bound work (the
+      vectorizer/embeddings), orthogonal to this decision.
 
 ---
 
@@ -1558,6 +1846,8 @@ M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-
 M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6 → M2-7 → M2-8  (identity/policy — after MR)
 M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)
+M7-1 ∥ M7-2 → M7-3                                     (camunda × agent mesh; after M4-1/M4-2)
+M8-1 → M8-2 → M8-3                                     (react console + api; after M7-1/M7-3)
 ```
 
 MR-1/MR-2 go first (they are the security fix). The M0 hygiene items touch

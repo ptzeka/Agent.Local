@@ -10,6 +10,12 @@
 ## BACKLOG
 Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
 
+## Decisions & preferences: persist in-repo, not global memory
+
+Persist decisions, conventions, and preferences as **repo artifacts** — backlog
+decisions in BACKLOG.md, behavioral rules here in AGENTS.md, reusable know-how as
+a local skill/rule. **Do not write to global memory** for this project.
+
 ## Code search: always use codemcp first
 
 ** When discussing solutions its best we focus on ontopic disucssions in a not too long thread - OFFER SUMMARY of options not entire paragraphs of solutions. Simply stay on topic then add below: concern, other options, why it fits best practices, why it diverges etc, if further discussion is needed the user will initiate or dig deeper. Keep discussions brief while hinting further expansions.
