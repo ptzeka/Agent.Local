@@ -32,3 +32,4 @@ Thumbs.db
 
 # Local debug log sink (FileLogger)
 agent.log
+/src/agent/metrics

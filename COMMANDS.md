@@ -30,3 +30,6 @@ npm run start -- --run "delay as background task for 2 min poll until done" 3bd1
 
 # integ test
 powershell -ExecutionPolicy Bypass -File .\scripts\e2e-headless.ps1
+
+# integ memory test
+powershell -ExecutionPolicy Bypass -File .\scripts\e2e-memory-headless.ps1
