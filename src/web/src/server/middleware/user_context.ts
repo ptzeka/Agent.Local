@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { Permissions } from "../../providers/user_context";
+import { Permissions } from "../../providers/user_context.js";
 
 // the identity attached to each request. Mirrors the sandbox's req.userContext shape so real OIDC
 // drops in behind it later — only this middleware changes, ssr_render already reads from here.

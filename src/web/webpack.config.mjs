@@ -1,7 +1,10 @@
 import path from "path";
 import { fileURLToPath } from "url";
+import webpack from "webpack";
 import nodeExternals from "webpack-node-externals";
 import CopyPlugin from "copy-webpack-plugin";
+import MiniCssExtractPlugin from "mini-css-extract-plugin";
+import { WebpackManifestPlugin } from "webpack-manifest-plugin";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +18,21 @@ export default function () {
     use: "babel-loader",
   };
 
+  // non-JS assets become empty modules in the node bundles so an isomorphic component that imports
+  // css/images doesn't break the server/mount build (the client config handles them for real)
+  const assetIgnoreRule = {
+    test: /\.(css|svg|jpg|jpeg|png|gif|mp3)$/,
+    use: path.join(__dirname, "empty-loader.cjs"),
+    exclude: [/node_modules/],
+  };
+
+  // extensionAlias lets webpack resolve the TS-ESM ".js" import specifiers (e.g. "./mount.js") to their
+  // .ts/.tsx sources; without it the node bundles fail since the on-disk files are .ts/.tsx
+  const resolve = {
+    extensions: [".js", ".jsx", ".json", ".tsx", ".ts"],
+    extensionAlias: { ".js": [".ts", ".tsx", ".js"], ".jsx": [".tsx", ".jsx"] },
+  };
+
   const clientConfig = {
     name: "client",
     context: __dirname,
@@ -26,9 +44,37 @@ export default function () {
       chunkFilename: "[name].js",
       clean: true,
     },
-    resolve: { extensions: [".js", ".jsx", ".json", ".tsx", ".ts"] },
+    resolve,
     stats: "minimal",
-    module: { rules: [babelRule] },
+    module: {
+      rules: [
+        babelRule,
+        { test: /\.css$/, use: [MiniCssExtractPlugin.loader, "css-loader"], exclude: [/node_modules/] },
+      ],
+    },
+    plugins: [
+      new MiniCssExtractPlugin({ filename: "[name].css", chunkFilename: "[id].css" }),
+      // emits manifest.json (logical name -> hashed file) keyed by /static so the runtime loader can
+      // resolve the content-hashed vendors/app bundles named by webpack.dev/prod
+      new WebpackManifestPlugin({ publicPath: "/static" }),
+    ],
+    // the vendors chunk exceeds webpack's 244 KiB hint by design; size is managed via splitChunks, not hints
+    performance: { hints: false },
+    // split node_modules into a cacheable vendors chunk; the runtime loader injects it before the entry
+    optimization: {
+      splitChunks: {
+        chunks: "all",
+        cacheGroups: {
+          defaultVendors: {
+            test: /[\\/]node_modules[\\/]/,
+            name: "vendors",
+            priority: -10,
+            reuseExistingChunk: true,
+          },
+          default: { minChunks: 4, priority: -20, reuseExistingChunk: true },
+        },
+      },
+    },
   };
 
   const serverConfig = {
@@ -47,13 +93,20 @@ export default function () {
       module: false,
       clean: true,
     },
-    resolve: { extensions: [".js", ".jsx", ".json", ".tsx", ".ts"] },
-    module: { rules: [babelRule] },
+    resolve,
+    // webpack bakes import.meta.url to the source path in a CJS bundle, so resolve assets from the real
+    // runtime __filename instead (node:false keeps webpack from mocking it)
+    node: { __dirname: false, __filename: false },
+    module: { rules: [babelRule, assetIgnoreRule] },
     plugins: [
-      // self-contained publish/: the SSR server serves browser bundles from publish/static (mount.tsx)
+      new webpack.DefinePlugin({ __MODULE_URL__: "require('url').pathToFileURL(__filename).href" }),
+      // self-contained publish/: the SSR server serves /static (bundles) and /public (loader, images)
+      // from beside its bundle, and ssr_render reads index.html next to it
       new CopyPlugin({
         patterns: [
           { from: path.join(__dirname, "dist/static"), to: path.join(__dirname, "publish/static") },
+          { from: path.join(__dirname, "src/public"), to: path.join(__dirname, "publish/public") },
+          { from: path.join(__dirname, "src/server/index.html"), to: path.join(__dirname, "publish/index.html") },
         ],
       }),
     ],
@@ -76,13 +129,17 @@ export default function () {
       module: true,
       clean: true,
     },
-    resolve: { extensions: [".js", ".jsx", ".json", ".tsx", ".ts"] },
+    resolve,
     stats: "minimal",
-    module: { rules: [babelRule] },
+    module: { rules: [babelRule, assetIgnoreRule] },
     plugins: [
+      // ESM output resolves import.meta.url genuinely at runtime, so the shared token maps straight to it
+      new webpack.DefinePlugin({ __MODULE_URL__: "import.meta.url" }),
       new CopyPlugin({
         patterns: [
           { from: path.join(__dirname, "dist/static"), to: path.join(__dirname, "dist/server/static") },
+          { from: path.join(__dirname, "src/public"), to: path.join(__dirname, "dist/server/public") },
+          { from: path.join(__dirname, "src/server/index.html"), to: path.join(__dirname, "dist/server/index.html") },
         ],
       }),
     ],

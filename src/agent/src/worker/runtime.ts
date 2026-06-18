@@ -26,6 +26,9 @@ export interface WorkerRuntimeOptions {
   logger: ILogger;
   // reuse one session per workflow process instance (the mesh passes pi:<key>)
   sessionId?: string;
+  // from appsettings.agent; takes precedence over the AGENT_* env fallbacks below
+  workspace?: string;
+  sessionsDir?: string;
 }
 
 // builds a headless AgentRuntime for one job. Deps mirror the CLI's bootstrap; paths are env-overridable.
@@ -33,11 +36,13 @@ export interface WorkerRuntimeOptions {
 export async function buildWorkerRuntime(opts: WorkerRuntimeOptions): Promise<AgentRuntime> {
   const projectRoot = findProjectRoot();
   const sandboxRoot = path.resolve(
-    process.env.AGENT_WORKSPACE ?? path.join(projectRoot, "src", "agent", "workspace"),
+    projectRoot,
+    opts.workspace ?? process.env.AGENT_WORKSPACE ?? path.join("src", "agent", "workspace"),
   );
   fs.mkdirSync(sandboxRoot, { recursive: true });
   const sessionsDir = path.resolve(
-    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, "src", "agent", "sessions"),
+    projectRoot,
+    opts.sessionsDir ?? process.env.AGENT_SESSIONS_DIR ?? path.join("src", "agent", "sessions"),
   );
   const token = process.env.AGENT_API_TOKEN;
 

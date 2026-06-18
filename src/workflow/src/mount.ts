@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import type { Express, Request, Response } from "express";
-import type { Eventing } from "@agent-local/common";
+import type { Eventing, AppSettings } from "@agent-local/common";
 import { loadConfig, AGENT_EXECUTE_TASK_TYPE } from "./config.js";
 import { ZeebeClient } from "./zeebe-client.js";
 
@@ -12,12 +12,17 @@ export interface MountContext {
   bus: Eventing;
   logger: any;
   signal: AbortSignal;
+  // the host passes the whole appsettings; the engine reads only its `workflow` section
+  settings?: AppSettings;
 }
 
 // host-called seam: starts the Zeebe client + worker and registers the control surface on the host's express app
 // uses ctx.bus to publish (never mints its own) and ctx.signal to stop cleanly when the host aborts
 export const mount = (app: Express, ctx: MountContext): void => {
-  const client = new ZeebeClient(loadConfig(process.env, packageRoot), ctx.bus, ctx.logger, ctx.signal);
+  // appsettings supplies non-secret engine knobs; ZEEBE_* connection secrets still come from env via loadConfig
+  const config = loadConfig(process.env, packageRoot);
+  if (ctx.settings?.workflow?.taskType) config.taskType = ctx.settings.workflow.taskType;
+  const client = new ZeebeClient(config, ctx.bus, ctx.logger, ctx.signal);
   void client.start();
 
   // a future agent.result drives out-of-band completion; Camunda state refreshes here, agent is never called from this side

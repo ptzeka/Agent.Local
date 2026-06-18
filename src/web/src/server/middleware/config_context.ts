@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
+import type { WebSettings } from "@agent-local/common";
 import type { ThemeName } from "../../theme/theme";
 import type { IConfiguration } from "../../providers/application_context";
 import { defaultConfig } from "../../bootstrap";
@@ -26,6 +27,20 @@ export function defaultServerConfig(overrides: Partial<IApplicationConfig> = {})
     title: "Agent.Local Console",
     theme: "light",
     ...overrides,
+  };
+}
+
+// the real source: maps the host's appsettings `web` section onto the console's request config, so SSR
+// seeds the same values the client would otherwise fetch from /appsettings.json. Replaces the stub above.
+export function serverConfigFromSettings(web: WebSettings): IApplicationConfig {
+  return {
+    config: defaultConfig({
+      basePath: web.basePath,
+      apiAddress: web.apiAddress,
+      authentication: { authorityUrl: web.oauth.authorityUrl, clientId: web.oauth.clientId },
+    }),
+    title: web.title,
+    theme: web.theme as ThemeName,
   };
 }
 

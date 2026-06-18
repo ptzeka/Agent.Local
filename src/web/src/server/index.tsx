@@ -1,6 +1,6 @@
 import express from "express";
 import { Eventing } from "@agent-local/common/eventing";
-import { mount } from "./mount";
+import { mount } from "./mount.js";
 
 // standalone dev/start host: only this entry may own an express app + bus; the co-hosted process
 // calls mount(app, ctx) directly against its own app and ctx.bus (see mount.tsx)

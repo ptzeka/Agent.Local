@@ -14,12 +14,13 @@ scripts/clear-codeindex.sh
 
 # Unblock-File .\scripts\publish-codeindex.ps1
 
-powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:\www\react_sandbox
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/Agent.Local
 powershell Remove-Item -Recurse -Force .\src\codeindex\data; Remove-Item -Recurse -Force .\src\codemcp\data;
-    scripts/publish-codeindex.sh -Repository /Applications/www/Agent.Local
-    
-    scripts/publish-codeindex.sh -Repository /Applications/www/rxoinc/platform/Rxo.Platform.Web.Sandbox
+scripts/publish-codeindex.sh -Repository /Applications/www/Agent.Local    
+scripts/publish-codeindex.sh -Repository /Applications/www/rxoinc/platform/Rxo.Platform.Web.Sandbox
+ 
+
 # .\scripts\publish-codeindex.ps1  -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox
 
 npm run start --session 3bd1817e-d563-43b2-a6db-771811411913

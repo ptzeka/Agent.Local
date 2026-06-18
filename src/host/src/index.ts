@@ -1,9 +1,10 @@
 import express from "express";
 import { Eventing, type ILogger } from "@agent-local/common";
+import { mount as mountAgent } from "@agent-local/agent/mount";
+import { mount as mountWorkflow } from "@agent-local/workflow";
+import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
-import { wireCamunda } from "./wiring/camunda.js";
-import { wireApi } from "./wiring/api.js";
-import { wireAgentWorker } from "./wiring/agent-worker.js";
+import { loadAppSettings } from "./appsettings.js";
 
 const DEFAULT_PORT = 3011;
 
@@ -15,19 +16,28 @@ const logger: ILogger = {
   debug: (message, ...args) => console.debug(message, ...args),
 };
 
-// composition root: one bus + one root signal, wired before anything mounts so cancellation flows down
-// and events bubble up. Every engine couples ONLY through the bus — these three wire* calls are the seams.
+// composition root: one bus + one root signal, shared into every mount so cancellation flows down and
+// events bubble up. Engines couple ONLY through the bus — each mount(app, ctx) is a bridge, never a peer
+// call. Mount order is load-bearing: the agent must subscribe before workflow's Zeebe client starts
+// publishing, and web mounts LAST because its SSR catch-all (app.get(/.*/)) would shadow real routes.
 async function main(): Promise<void> {
   const root = new AbortController();
   const bus = new Eventing();
   const app = express();
-  const ctx: MountContext = { bus, logger, signal: root.signal };
+  const settings = loadAppSettings();
+  const ctx: MountContext = { bus, logger, signal: root.signal, settings };
 
-  wireCamunda(bus);                 // camunda mesh: workflow.job -> agent.job (correlated)
-  await wireApi(app, ctx);          // express json + /healthz + web & workflow HTTP mounts
-  await wireAgentWorker(app, ctx);  // agent worker (bus-only): agent.job -> agent.result
+  app.use(express.json());
+  app.get("/healthz", (_req, res) => {
+    res.json({ status: "ok" });
+  });
 
-  const port = Number(process.env.PORT) || DEFAULT_PORT;
+  mountAgent(app, ctx);     // bus-only bridge: workflow.job -> runtime -> agent.result (subscribe first)
+  mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
+  mountWeb(app, ctx);       // React SSR: /static, /public, /events SSE, then the SSR catch-all (last)
+  logger.info("[host] mounted agent, workflow, web");
+
+  const port = Number(process.env.PORT) || settings.host.port || DEFAULT_PORT;
   const server = app.listen(port, () => {
     logger.info(`[host] listening on :${port}`);
   });

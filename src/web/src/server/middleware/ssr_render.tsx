@@ -1,8 +1,19 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Writable } from "stream";
 import type { Request, Response, NextFunction } from "express";
 import { renderToPipeableStream } from "react-dom/server";
 import { StaticRouter } from "react-router";
-import Root, { type Bootstrap } from "../../client/Root";
+import { template } from "lodash";
+import Root, { type Bootstrap } from "../../client/Root.js";
+
+// the SSR shell is an index.html template copied next to the server bundle (webpack CopyPlugin), so the
+// markup/head/manifest-bootstrap live in one editable file instead of hardcoded strings. Parsed once.
+// __MODULE_URL__ is injected per bundle (DefinePlugin) so the runtime dir is correct in both CJS and ESM.
+declare const __MODULE_URL__: string;
+const moduleDir = path.dirname(fileURLToPath(__MODULE_URL__));
+const renderShell = template(readFileSync(path.join(moduleDir, "index.html"), "utf-8"));
 
 // escape <, >, & so the serialized bootstrap can't break out of the inline <script>
 const serialize = (data: unknown): string =>
@@ -34,17 +45,18 @@ function GetUserContext(req: Request): Bootstrap["userContext"] {
   };
 }
 
-// the SSR shell. The bootstrap script must run before the deferred client bundle so
-// window.WEBPACK_ENTRY_DATA is set when entry.tsx hydrates. MUI injects its own <style> on hydration.
+// renders the index.html template and splits it at the <!--app--> marker so the head can flush before
+// the React stream and the tail after it. The manifest bootstrap (head script) sets WEBPACK_ENTRY_DATA
+// and loads the hashed client bundle; MUI injects its own <style> on hydration.
 function shell(bootstrap: Bootstrap): { top: string; tail: string } {
-  const title = bootstrap.applicationContext.title ?? "Agent.Local Console";
-  const top =
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"/>` +
-    `<meta name="viewport" content="width=device-width, initial-scale=1"/>` +
-    `<title>${title}</title></head><body><div id="app">`;
-  const tail =
-    `</div><script>window.WEBPACK_ENTRY_DATA=${serialize(bootstrap)}</script>` +
-    `<script src="/static/app.js" defer></script></body></html>`;
+  const { title, basePath } = bootstrap.applicationContext;
+  const html = renderShell({
+    title: title ?? "Agent.Local Console",
+    state: serialize(bootstrap),
+    entry: "app",
+    basePath: basePath ?? "",
+  });
+  const [top, tail] = html.split("<!--app-->");
   return { top, tail };
 }
 

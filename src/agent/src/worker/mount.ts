@@ -1,13 +1,13 @@
-import type { Eventing, ILogger } from "@agent-local/common";
+import type { Eventing, ILogger, AppSettings } from "@agent-local/common";
 import {
-  AGENT_JOB,
   AGENT_RESULT,
+  WORKFLOW_JOB,
   WORKFLOW_COMPLETED,
   WORKFLOW_FAILED,
-  type CorrelatedJob,
-  type WorkflowCompletedPayload,
-  type WorkflowFailedPayload,
-} from "@agent-local/common/mesh";
+  type WorkflowJob,
+  type WorkflowCompleted,
+  type WorkflowFailed,
+} from "./contract.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { buildWorkerRuntime } from "./runtime.js";
 
@@ -15,20 +15,22 @@ export interface MountContext {
   bus: Eventing;
   logger: ILogger;
   signal: AbortSignal;
+  // the host passes the whole appsettings; the worker reads only its `agent` section (workspace/sessions)
+  settings?: AppSettings;
 }
 
 // the camunda job carries the agent's instruction in a variable; accept the common spellings
-function promptFor(job: CorrelatedJob): string {
+function promptFor(job: WorkflowJob): string {
   const v = job.variables ?? {};
   return String(v.prompt ?? v.input ?? v.task ?? "").trim();
 }
 
 // agent worker — bus-only. The first arg (the host's express app) is intentionally unused and untyped:
 // the agent never serves HTTP, but keeping the uniform Mount(app, ctx) shape lets the host wire it
-// exactly like web/workflow. It listens for AGENT_JOB (emitted by the camunda mesh), runs one runtime
-// turn, and reports the outcome as AGENT_RESULT (or WORKFLOW_FAILED).
+// exactly like web/workflow. It listens for WORKFLOW_JOB directly off the bus, runs one runtime turn,
+// and reports the outcome as AGENT_RESULT (or WORKFLOW_FAILED).
 export const mount = (_app: unknown, ctx: MountContext): void => {
-  const { bus, logger, signal } = ctx;
+  const { bus, logger, signal, settings } = ctx;
 
   // one Camunda process instance == one agent session for its whole lifetime. The live runtime is held
   // here keyed by processInstanceKey so successive jobs of the same instance share conversation context;
@@ -36,10 +38,16 @@ export const mount = (_app: unknown, ctx: MountContext): void => {
   const runtimes = new Map<string, AgentRuntime>();
 
   // open the instance's session on its first job, reuse it thereafter
-  async function runtimeFor(job: CorrelatedJob): Promise<AgentRuntime> {
+  async function runtimeFor(job: WorkflowJob): Promise<AgentRuntime> {
     let runtime = runtimes.get(job.processInstanceKey);
     if (!runtime) {
-      runtime = await buildWorkerRuntime({ bus, signal, logger });
+      runtime = await buildWorkerRuntime({
+        bus,
+        signal,
+        logger,
+        workspace: settings?.agent?.workspace,
+        sessionsDir: settings?.agent?.sessionsDir,
+      });
       runtimes.set(job.processInstanceKey, runtime);
       logger.debug?.(
         `[agent-worker] opened session ${runtime.getSession().sessionId} for instance ${job.processInstanceKey}`,
@@ -62,7 +70,7 @@ export const mount = (_app: unknown, ctx: MountContext): void => {
     }
   }
 
-  async function runJob(job: CorrelatedJob): Promise<void> {
+  async function runJob(job: WorkflowJob): Promise<void> {
     const prompt = promptFor(job);
     if (!prompt) {
       bus.publish(WORKFLOW_FAILED, {
@@ -87,8 +95,10 @@ export const mount = (_app: unknown, ctx: MountContext): void => {
     });
   }
 
-  bus.subscribe(AGENT_JOB, (event) => {
-    const job = event.payload as unknown as CorrelatedJob;
+  // listen to workflow.job directly off the shared bus and correlate by processInstanceKey (the runtime
+  // owns the session id); no separate mesh router re-publishes the job — the worker IS the bridge
+  bus.subscribe(WORKFLOW_JOB, (event) => {
+    const job = event.payload as unknown as WorkflowJob;
     // fire-and-forget so the bus subscriber returns immediately; failures bubble back as workflow.failed
     void runJob(job).catch((err) => {
       logger.error?.("[agent-worker] job failed", err);
@@ -103,11 +113,11 @@ export const mount = (_app: unknown, ctx: MountContext): void => {
   // close the session at the end of the instance lifetime. Mirror the mesh: a completed instance always
   // closes; a failed event closes only when it's instance-level (no jobKey) — a single failed job may retry.
   bus.subscribe(WORKFLOW_COMPLETED, (event) => {
-    const done = event.payload as unknown as WorkflowCompletedPayload;
+    const done = event.payload as unknown as WorkflowCompleted;
     void finalizeInstance(done.processInstanceKey, "completed");
   });
   bus.subscribe(WORKFLOW_FAILED, (event) => {
-    const failed = event.payload as unknown as WorkflowFailedPayload;
+    const failed = event.payload as unknown as WorkflowFailed;
     if (!failed.jobKey) void finalizeInstance(failed.processInstanceKey, "failed");
   });
 

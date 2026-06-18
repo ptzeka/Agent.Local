@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title><%- title %></title>
+    <base href="/" />
+    <meta name="description" content="Agent.Local Console" />
+    <script type="text/javascript" src="<%= basePath ? '/' + basePath : '' %>/public/manifest.532026.js"></script>
+  </head>
+  <body>
+    <div id="app"><!--app--></div>
+    <script type="text/javascript">
+      window.WEBPACK_ENTRY_DATA = <%= state %>;
+      window.__loadManifest__("<%= basePath ? '/' + basePath : '' %>/static/manifest.json", "<%= entry %>");
+    </script>
+  </body>
+</html>

@@ -18,6 +18,9 @@
   },
   "dependencies": {
     "@agent-local/common": "*",
+    "@agent-local/agent": "*",
+    "@agent-local/workflow": "*",
+    "@agent-local/web": "*",
     "express": "^4.21.2"
   },
   "devDependencies": {

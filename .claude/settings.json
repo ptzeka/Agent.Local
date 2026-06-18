@@ -79,7 +79,13 @@
       "Bash(grep -i \"moduleResolution\\\\|\\\\\"module\\\\\"\\\\|jsx\" ../../tsconfig*.json)",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.scripts,null,1\\)\\)\")",
       "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\(JSON.stringify\\(p.exports,null,1\\)\\)\")",
-      "Bash(cat src/index.ts)"
+      "Bash(cat src/index.ts)",
+      "Bash(git check-ignore *)",
+      "mcp__fsmcp__read_file",
+      "Bash(python -c ' *)",
+      "Bash(node -e \"const p=require\\('./src/web/package.json'\\);console.log\\(JSON.stringify\\(p.exports\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./src/workflow/package.json'\\);console.log\\('name',p.name\\);console.log\\(JSON.stringify\\(p.exports\\)\\)\")",
+      "Bash(node -e \"const p=require\\('./src/workflow/package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,1\\)\\)\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",
