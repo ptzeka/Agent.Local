@@ -2,10 +2,10 @@
 // owns one appsettings.json and slices it to each feature; this type is the shared shape both sides agree on.
 // secrets never live here — each `secrets` map only NAMES the env var a value comes from (env is the source).
 
-export interface AgentSettings {
-  workspace: string;
-  sessionsDir: string;
-  secrets?: Record<string, string>;
+// host-side client config: the agent now runs as its own service, so the host only needs where to reach it.
+// the agent's runtime config (workspace/sessions/models) lives in the agent's own appsettings, not here.
+export interface AgentClientSettings {
+  baseUrl: string;
 }
 
 export interface WorkflowSettings {
@@ -29,7 +29,7 @@ export interface HostSettings {
 }
 
 export interface AppSettings {
-  agent: AgentSettings;
+  agent: AgentClientSettings;
   workflow: WorkflowSettings;
   web: WebSettings;
   host: HostSettings;

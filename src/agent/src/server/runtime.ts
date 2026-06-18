@@ -3,9 +3,7 @@ import path from "node:path";
 import url from "node:url";
 import type { Eventing } from "@agent-local/common/eventing";
 import type { ILogger } from "@agent-local/common/ilogger";
-import { buildRuntime } from "../agent/runtime/build-runtime.js";
-import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
+import { buildRuntime, type AgentRuntime, type AgentRuntimeDeps } from "../runtime.js";
 
 // walk up to the workspace root (the dir holding mcp.json) — the same anchor the CLI bootstrap uses
 function findProjectRoot(): string {
