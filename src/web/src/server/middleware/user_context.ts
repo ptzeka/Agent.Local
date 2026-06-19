@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express";
 import { Permissions } from "../../providers/user_context.js";
+import type { ResolveUser } from "../mount.js";
 
 // the identity attached to each request. Mirrors the sandbox's req.userContext shape so real OIDC
 // drops in behind it later — only this middleware changes, ssr_render already reads from here.
@@ -25,16 +26,24 @@ declare global {
   }
 }
 
-// STUB identity: auth is not yet wired, so every request resolves the same placeholder console operator
-// holding the Workflow permission (matches Permissions.Workflow). When OIDC lands this body is replaced
-// with: read the session token, fetch userinfo + permissions, attach the real req.userContext.
-export function userContextMiddleware() {
-  return (req: Request, _res: Response, next: NextFunction): void => {
-    req.userContext = {
-      accessToken: "AccessTokenHidden",
-      userInfo: { userId: "local", userName: "local@agent.local", firstName: "Local", lastName: "Operator" },
-      permissions: [Permissions.Workflow],
-    };
+// resolves req.userContext from the host's session ticket (resolveUser decrypts the cookie host-side): a valid
+// session attaches the real identity + permissions; a missing/expired one (null) renders unauthenticated so the
+// app routes to login. Without a resolver (standalone web, no host auth) it falls back to the stub operator.
+export function userContextMiddleware(resolveUser?: ResolveUser) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
+    if (!resolveUser) {
+      req.userContext = {
+        accessToken: "AccessTokenHidden",
+        userInfo: { userId: "local", userName: "local@agent.local", firstName: "Local", lastName: "Operator" },
+        permissions: [Permissions.WorkflowRead, Permissions.WorkflowWrite],
+      };
+      next();
+      return;
+    }
+    const user = await resolveUser(req);
+    req.userContext = user
+      ? { accessToken: user.accessToken, userInfo: user.userInfo, permissions: user.permissions }
+      : { accessToken: null, userInfo: null, permissions: [] };
     next();
   };
 }

@@ -9,36 +9,50 @@ import Alert from "@mui/material/Alert";
 import Chip from "@mui/material/Chip";
 import Divider from "@mui/material/Divider";
 import { useApplicationContext } from "../providers/application_context.js";
-import { getStoredToken, decodeToken, clearStoredToken, type TokenClaims } from "../components/shared/token";
 import type IPage from "./IPage.ts";
 
 // page contract — consumed by PageMenu + routeConfig so nav and routing derive from one source
 export const Page: IPage = { pageName: "profile", displayLabel: "Profile" };
 
-// shows the identity carried INSIDE the stored JWT (firstName/lastName/permissions). Token read/decode is
-// client-only, so it runs in an effect after hydration — on the server and first paint there is no token.
+// the identity the host exposes for the current session; the access token stays inside the httpOnly cookie
+interface Me {
+  sub: string;
+  userName: string;
+  firstName: string;
+  lastName: string;
+  permissions: string[];
+}
+
+// shows the signed-in identity, read from the host's /api/me (which decrypts the session cookie server-side).
+// 401 means no/expired session -> render the signed-out state. Runs in an effect since it is a network read.
 export default function ProfilePage() {
   const { basePath } = useApplicationContext();
   const loginHref = `${basePath ? `/${basePath}` : ""}/login`;
-  const [claims, setClaims] = useState<TokenClaims | null>(null);
+  const [me, setMe] = useState<Me | null>(null);
   const [loaded, setLoaded] = useState(false);
 
-  const readToken = (): void => {
-    const token = getStoredToken();
-    setClaims(token ? decodeToken(token) : null);
-    setLoaded(true);
-  };
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/api/me")
+      .then((r) => (r.ok ? (r.json() as Promise<Me>) : null))
+      .then((data) => {
+        if (cancelled) return;
+        setMe(data);
+        setLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
-  useEffect(readToken, []);
-
-  const signOut = (): void => {
-    clearStoredToken();
-    readToken();
+  const signOut = async (): Promise<void> => {
+    await fetch("/api/logout", { method: "POST" });
+    window.location.assign(loginHref);
   };
 
   if (!loaded) return null;
 
-  if (!claims) {
+  if (!me) {
     return (
       <Stack spacing={3} sx={{ maxWidth: 420 }}>
         <Typography variant="h4">Profile</Typography>
@@ -50,35 +64,28 @@ export default function ProfilePage() {
     );
   }
 
-  const expired = claims.exp !== undefined && claims.exp * 1000 < Date.now();
-
   return (
     <Stack spacing={3} sx={{ maxWidth: 480 }}>
       <Typography variant="h4">Profile</Typography>
       <Card variant="outlined">
         <CardContent>
           <Stack spacing={2}>
-            <Field label="Name" value={`${claims.firstName} ${claims.lastName}`.trim() || "—"} />
-            <Field label="Username" value={claims.userName || "—"} />
-            <Field label="User ID" value={claims.sub || "—"} />
+            <Field label="Name" value={`${me.firstName} ${me.lastName}`.trim() || "—"} />
+            <Field label="Username" value={me.userName || "—"} />
+            <Field label="User ID" value={me.sub || "—"} />
             <div>
               <Typography variant="caption" color="text.secondary">
                 Permissions
               </Typography>
               <Stack direction="row" spacing={1} sx={{ mt: 0.5, flexWrap: "wrap" }}>
-                {claims.permissions.length === 0 ? (
+                {me.permissions.length === 0 ? (
                   <Typography variant="body2">—</Typography>
                 ) : (
-                  claims.permissions.map((p) => <Chip key={p} label={p} size="small" />)
+                  me.permissions.map((p) => <Chip key={p} label={p} size="small" />)
                 )}
               </Stack>
             </div>
             <Divider />
-            <Field
-              label="Expires"
-              value={claims.exp ? new Date(claims.exp * 1000).toLocaleString() : "—"}
-            />
-            {expired && <Alert severity="warning">This token has expired — sign in again.</Alert>}
           </Stack>
         </CardContent>
       </Card>

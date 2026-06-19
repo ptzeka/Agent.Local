@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import TextField from "@mui/material/TextField";
@@ -8,21 +7,20 @@ import Alert from "@mui/material/Alert";
 import Card from "@mui/material/Card";
 import CardContent from "@mui/material/CardContent";
 import { useApplicationContext } from "../providers/application_context";
-import { setStoredToken } from "../components/shared/token";
 import type IPage from "./IPage";
 
 // page contract — consumed by PageMenu + routeConfig so nav and routing derive from one source
 export const Page: IPage = { pageName: "login", displayLabel: "Sign in" };
 
-// LOCAL credential login: posts to the host's /api/login and stashes the returned JWT. Wiring this token
-// into UserContext (the verify/consume side) is the deferred step; this page only obtains the token.
+// LOCAL credential login: posts to the host's /api/login, which sets the encrypted httpOnly session cookie.
+// No token ever touches JS — on success we hard-navigate so the host re-renders the SSR shell with the
+// now-hydrated session (the cookie rides the same-origin navigation automatically).
 export default function LoginPage() {
   const { basePath } = useApplicationContext();
   const profileHref = `${basePath ? `/${basePath}` : ""}/profile`;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
 
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -36,9 +34,7 @@ export default function LoginPage() {
       setError("Invalid credentials");
       return;
     }
-    const data = (await res.json()) as { token: string };
-    setStoredToken(data.token);
-    setToken(data.token);
+    window.location.assign(profileHref);
   };
 
   return (
@@ -62,12 +58,6 @@ export default function LoginPage() {
               fullWidth
             />
             {error && <Alert severity="error">{error}</Alert>}
-            {token && (
-              <Alert severity="success">
-                Signed in — token stored.{" "}
-                <Link to={profileHref}>View profile</Link>
-              </Alert>
-            )}
             <Button type="submit" variant="contained">
               Sign in
             </Button>

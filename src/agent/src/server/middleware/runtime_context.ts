@@ -5,7 +5,7 @@ import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { buildRuntime, type AgentRuntime, type AgentRuntimeDeps } from "../../runtime.js";
 
 // the work unit's session id, sent by the host on every call; selects which runtime/session serves the request
-const SESSION_HEADER = "x-session-id";
+export const SESSION_HEADER = "x-session-id";
 
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace

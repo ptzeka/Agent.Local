@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import type { Express } from "express";
+import type { Express, Request } from "express";
 import type { Eventing } from "@agent-local/common/eventing";
 import type { AppSettings } from "@agent-local/common";
 import { configContextMiddleware, defaultServerConfig, serverConfigFromSettings } from "./middleware/config_context.js";
@@ -14,12 +14,26 @@ import { ssrRenderMiddleware } from "./middleware/ssr_render.js";
 declare const __MODULE_URL__: string;
 const __dirname = path.dirname(fileURLToPath(__MODULE_URL__));
 
+// the identity the host hands back per request, resolved from its session cookie; mirrors IRequestUserContext
+// minus the null cases (a null return from ResolveUser means "no/expired session" -> render unauthenticated).
+export interface ResolvedUser {
+  userInfo: { userId: string; userName: string; firstName: string; lastName: string };
+  permissions: string[];
+  accessToken: string;
+}
+
+// the host owns auth, so it injects HOW to resolve the caller (decrypt + open the session ticket); the web
+// only knows it returns the identity or null. Keeps the cookie/crypto entirely on the host side of the seam.
+export type ResolveUser = (req: Request) => Promise<ResolvedUser | null> | ResolvedUser | null;
+
 export interface MountContext {
   bus: Eventing;
   logger: IServerLogger;
   signal: AbortSignal;
   // the host passes the whole appsettings; the console reads only its `web` section
   settings?: AppSettings;
+  // host-provided session resolver; when absent the user middleware falls back to its stub operator
+  resolveUser?: ResolveUser;
 }
 
 // host seam: registers the console's middleware stack onto an externally owned express app; never
@@ -37,7 +51,7 @@ export const mount = (app: Express, ctx: MountContext): void => {
   const serverConfig = ctx.settings ? serverConfigFromSettings(ctx.settings.web) : defaultServerConfig();
   app.use(configContextMiddleware(serverConfig));
   app.use(loggerContextMiddleware(ctx.logger));
-  app.use(userContextMiddleware());
+  app.use(userContextMiddleware(ctx.resolveUser));
 
   app.use("/static", staticAssetsMiddleware(staticDir));
   app.use("/public", staticAssetsMiddleware(publicDir));

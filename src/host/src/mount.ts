@@ -1,4 +1,5 @@
 import { type Eventing, type ILogger as Logger, type AppSettings } from "@agent-local/common";
+import { type ResolveUser } from "@agent-local/web";
 import { type JobRegistry } from "./jobs/job-registry.js";
 
 // the seam every feature workspace mounts through: it receives the host's bus, logger, root signal, and
@@ -11,6 +12,8 @@ export type MountContext = {
   signal: AbortSignal;
   settings: AppSettings;
   jobs: JobRegistry;
+  // host-provided session resolver passed through to the web mount (decrypts the cookie ticket -> identity)
+  resolveUser?: ResolveUser;
 };
 
 export type Mount = (app: import("express").Express, ctx: MountContext) => void;

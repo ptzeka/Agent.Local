@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { AGENT_INVOKE_PERMISSION, EXECUTE_WORK_PERMISSION, type IdentityClaims } from "@agent-local/common";
+import { type IdentityClaims } from "@agent-local/common";
 
 // LOCAL DEV ONLY credential store: md5 is deliberately weak and the operators are hardcoded below. This
 // exists so the JWT issuer has something to authenticate against before real IAM lands — never ship it.
@@ -24,8 +24,27 @@ const USERS: UserEntry[] = [
     userName: "peritze",
     firstName: "Local",
     lastName: "Operator",
-    permissions: ["workflow", ACCESS_TOKEN_PERMISSION, EXECUTE_WORK_PERMISSION, AGENT_INVOKE_PERMISSION],
+    // the human operator drives the workflow UI/APIs; agent:trigger/host:callback are service scopes, not theirs
+    permissions: ["workflow:read", "workflow:write", ACCESS_TOKEN_PERMISSION],
     passwordHash: md5("Password1"),
+  },
+  // the agent's client-credentials identity: it fetches a token from /api/auth/token and presents host:callback on /receive
+  {
+    userId: "8001",
+    userName: "agentic-client-dev",
+    firstName: "Agent",
+    lastName: "Client",
+    permissions: ["host:callback"],
+    passwordHash: md5("AgentClient1"),
+  },
+  // the host's OWN dispatch identity: it fetches a token from /api/auth/token and presents agent:trigger to the agent
+  {
+    userId: "8002",
+    userName: "host-dispatch-dev",
+    firstName: "Host",
+    lastName: "Dispatch",
+    permissions: ["agent:trigger"],
+    passwordHash: md5("HostDispatch1"),
   },
 ];
 

@@ -1,5 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
-import { verifyIdentity, bearerToken, AGENT_INVOKE_PERMISSION, type JwtKeyResolver } from "@agent-local/common";
+import { verifyIdentity, bearerToken, type JwtKeyResolver } from "@agent-local/common";
+import { SESSION_HEADER } from "./runtime_context.js";
+import type { SessionRegistry } from "../session-registry.js";
 
 // the principal that called this service. host -> agent is service-to-service, so the identity is the
 // calling SERVICE, not an end user; the shape mirrors the Sandbox/console req.userContext so the wiring
@@ -23,11 +25,10 @@ declare global {
   }
 }
 
-// resolves the caller from the bearer JWT, validated against the host's JWKS (getKey selects the key by kid).
-// `authentication.required` gates enforcement: while false (the staged default) a missing/invalid token
-// still resolves to the host stub principal so nothing breaks before the sender presents one; flipping it
-// on rejects anything that fails verification. Reads req.serverConfig, so it runs after configContext.
-export function userContextMiddleware(getKey: JwtKeyResolver) {
+// resolves the caller by one of three means, in order: a verified bearer JWT (must carry agent:trigger), else
+// a live session id (its existence proves an authorized create minted it), else — only while
+// `authentication.required` is false (staged) — the host stub. With required on, none-of-the-above is 401.
+export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionRegistry) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = req.serverConfig.authentication;
     const presented = bearerToken(req.headers.authorization);
@@ -38,7 +39,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver) {
         const claims = await verifyIdentity(getKey, presented, { issuer: auth.authorityUrl });
         // a verified caller still needs the scope to talk to the agent at all; without it the token is valid
         // but unauthorized, so reject rather than fall through to the stub principal
-        if (!claims.permissions.includes(AGENT_INVOKE_PERMISSION)) {
+        if (!claims.permissions.includes("agent:trigger")) {
           res.status(403).json({ error: "forbidden" });
           return;
         }
@@ -50,13 +51,23 @@ export function userContextMiddleware(getKey: JwtKeyResolver) {
         next();
         return;
       } catch (err) {
-        if (auth.required) {
-          res.status(401).json({ error: "unauthorized" });
-          return;
-        }
-        req.logger?.warn?.(`[agent-server] token verification failed, accepting as stub: ${String(err)}`);
+        req.logger?.warn?.(`[agent-server] token verification failed: ${String(err)}`);
       }
-    } else if (auth.required) {
+    }
+
+    // session-as-capability: a live session was minted by an authorized create, so its id authorizes follow-on calls (/events) without re-presenting a token
+    const sessionId = req.header(SESSION_HEADER)?.trim();
+    if (sessionId && sessions.get(sessionId)) {
+      req.userContext = {
+        accessToken: null,
+        userInfo: { serviceId: sessionId },
+        permissions: ["agent:trigger"],
+      };
+      next();
+      return;
+    }
+
+    if (auth.required) {
       res.status(401).json({ error: "unauthorized" });
       return;
     }
@@ -64,7 +75,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver) {
     req.userContext = {
       accessToken: presented,
       userInfo: { serviceId: "host" },
-      permissions: [AGENT_INVOKE_PERMISSION],
+      permissions: ["agent:trigger"],
     };
     next();
   };

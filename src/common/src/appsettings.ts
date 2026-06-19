@@ -25,6 +25,12 @@ export interface WebSettings {
 export interface HostSettings {
   port: number;
   iam?: { issuerUrl: string; audience: string };
+  // symmetric secret the host derives the session-cookie encryption key from (see sessionKey). local-only
+  // for now (will move to a secret store); the host both seals and opens the ticket, so it never leaves it.
+  session?: { secret: string };
+  // the host's OWN service identity for calling the agent: client-credentials it exchanges at its own
+  // /api/auth/token for a short-lived agent:trigger bearer, so dispatch never rides a user's token.
+  dispatch?: { tokenUrl: string; clientId: string; clientSecret: string };
   secrets?: Record<string, string>;
 }
 

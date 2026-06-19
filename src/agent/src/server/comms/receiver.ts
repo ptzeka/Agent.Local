@@ -1,7 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import { EXECUTE_WORK_PERMISSION, type EventEnvelope } from "@agent-local/common";
+import { type EventEnvelope } from "@agent-local/common";
 import { WORKFLOW_JOB, AGENT_RESULT, WORKFLOW_FAILED, type WorkflowJob } from "./contract.js";
-import { type SessionRegistry } from "./session-registry.js";
 
 // the camunda job carries the instruction in a variable; accept the common spellings
 function promptFor(variables: Record<string, unknown>): string {
@@ -37,39 +36,10 @@ async function runJob(req: Request, job: WorkflowJob): Promise<void> {
   }
 }
 
-// session lifecycle API: minting/closing a work session needs no runtime, so it mounts BEFORE the runtime
-// middleware (which would otherwise build a runtime — and spurious session/sandbox state — per request).
-// /session/create is privileged: gated on EXECUTE_WORK_PERMISSION from the verified token. The host owns
-// workId (the unit) and workspaceId (the shared folder guid) and passes both; the agent mints the sessionId.
-export function createSessionApi(sessions: SessionRegistry): Router {
-  const router = Router();
-
-  router.post("/session/create", (req: Request, res: Response) => {
-    if (!req.userContext?.permissions?.includes(EXECUTE_WORK_PERMISSION)) {
-      res.status(403).json({ error: "forbidden" });
-      return;
-    }
-    const { workspaceId, workId } = (req.body ?? {}) as { workspaceId?: string; workId?: string };
-    if (!workspaceId || !workId) {
-      res.status(400).json({ error: "workspaceId and workId are required" });
-      return;
-    }
-    const record = sessions.create(workspaceId, workId);
-    res.status(201).json({ sessionId: record.sessionId });
-  });
-
-  router.post("/session/close", (req: Request, res: Response) => {
-    const { sessionId } = (req.body ?? {}) as { sessionId?: string };
-    res.status(202).json({ closed: sessionId ? sessions.close(sessionId) : false });
-  });
-
-  return router;
-}
-
-// receive API: the host's sender posts here. The runtime, bus and signal for the call are already resolved
-// onto req by the context middleware (a fresh runtime per request), so handlers read them off req — no
-// injected manager. /events runs a job and reports back, draining its runtime when done.
-export function createApi(): Router {
+// host -> agent RECEIVER: the host's sender posts here. The runtime, bus and signal for the call are already
+// resolved onto req by the context middleware (a fresh runtime per request), so handlers read them off req —
+// no injected manager. /events runs a job and reports back, draining its runtime when done.
+export function createReceiveApi(): Router {
   const router = Router();
 
   // envelope receiver { eventType, payload }. The answer returns out-of-band via the sender's webhook, so

@@ -138,7 +138,20 @@
       "Bash(node -e \"console.log\\(require\\('/Applications/WWW/Agent.Local/node_modules/express/package.json'\\).version\\)\")",
       "Bash(echo \"HOST_EXIT:$?\")",
       "Bash(echo \"WF_EXIT:$?\")",
-      "Bash(echo \"AGENT_EXIT:$?\")"
+      "Bash(echo \"AGENT_EXIT:$?\")",
+      "Bash(node -e \"const j=require\\('jose'\\); console.log\\(['EncryptJWT','jwtDecrypt','CompactEncrypt','compactDecrypt','base64url'].map\\(k=>k+':'+\\(typeof j[k]\\)\\).join\\(' '\\)\\)\")",
+      "Bash(node -e \"try{require.resolve\\('cookie'\\);console.log\\('cookie: yes'\\)}catch\\(e\\){console.log\\('cookie: no'\\)}\")",
+      "Bash(node -e \"console.log\\('express:', require\\('express/package.json'\\).version\\)\")",
+      "Bash(node -e \"const p=require\\('./package.json'\\); console.log\\('exports:', JSON.stringify\\(p.exports\\)\\); console.log\\('scripts:', JSON.stringify\\(p.scripts,null,1\\)\\)\")",
+      "Bash(echo \"common build: $?\")",
+      "Bash(echo \"web build: $?\")",
+      "Bash(echo \"restart: $?\")",
+      "Bash(rm -f /tmp/cookies.txt /tmp/c2.txt /tmp/*.log 2>/dev/null; echo cleaned)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git reset *)",
+      "Bash(git commit BACKLOG.md -m ' *)",
+      "Bash(node -e \"console.log\\(JSON.stringify\\(require\\('./src/web/package.json'\\).scripts,null,2\\)\\)\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

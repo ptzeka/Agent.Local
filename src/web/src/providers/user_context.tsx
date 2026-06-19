@@ -14,7 +14,8 @@ export interface IUser {
  * or components. Pass a value to AuthorizedRoute's `permission` prop or hasPermission().
  */
 export const Permissions = {
-  Workflow: "workflow",
+  WorkflowRead: "workflow:read",
+  WorkflowWrite: "workflow:write",
 };
 
 /**
@@ -40,9 +41,12 @@ const STUB_USER: IUser = {
   lastName: "Operator",
 };
 
-// stub default: every permission granted so the guarded Workflow route is reachable in dev. Real auth
-// will replace this with permissions fetched from the API using the OIDC access token.
-const STUB_PERMISSIONS: Record<string, boolean> = { [Permissions.Workflow]: true };
+// stub default used only when the bootstrap carries no permissions map (standalone/dev): grant the workflow
+// scopes so the guarded route is reachable. The host-mounted path always seeds the REAL map (see ssr_render).
+const STUB_PERMISSIONS: Record<string, boolean> = {
+  [Permissions.WorkflowRead]: true,
+  [Permissions.WorkflowWrite]: true,
+};
 
 const DEFAULT_VALUE: IUserContextType = {
   $user: miniStore.create<IUser>({ current: STUB_USER }),
@@ -68,12 +72,14 @@ export const UserContextProvider = ({
   const user = value?.user ?? STUB_USER;
   const permissions = value?.permissions ?? STUB_PERMISSIONS;
 
-  // stores created once from the seeded stub values; stable across renders via refs
+  // stores created once from the seeded values; stable across renders via refs. login state is REAL: a server
+  // bootstrap without a resolved user (no/expired session) renders signed-out so guarded routes send to login.
+  // permRef/initRef stay true — they are readiness gates (permissions resolved), not the authz check itself.
   const userRef = useRef<IUser>(user);
   const tokenRef = useRef<string>(value?.accessToken ?? "AccessTokenHidden");
   const initRef = useRef<boolean>(true);
   const permRef = useRef<boolean>(true);
-  const loginRef = useRef<boolean>(true);
+  const loginRef = useRef<boolean>(!!value?.user);
 
   const ctx = useMemo<IUserContextType>(
     () => ({

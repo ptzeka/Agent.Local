@@ -12,8 +12,8 @@ import { useMiniStore } from "../components/shared/miniStore";
 import { Permissions } from "../providers/user_context";
 import type IPage from "./IPage";
 
-// guarded page — routeConfig wraps it in AuthorizedRoute(Permissions.Workflow)
-export const Page: IPage = { pageName: "workflow", displayLabel: "Workflow", permission: Permissions.Workflow };
+// guarded page — routeConfig wraps it in AuthorizedRoute(Permissions.WorkflowRead)
+export const Page: IPage = { pageName: "workflow", displayLabel: "Workflow", permission: Permissions.WorkflowRead };
 
 const WORKFLOW_PREFIX = "workflow.";
 const AGENT_PREFIX = "agent.";

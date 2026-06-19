@@ -1,7 +1,11 @@
 import { URL } from "node:url";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import {
   SignJWT,
   jwtVerify,
+  EncryptJWT,
+  jwtDecrypt,
   importPKCS8,
   importSPKI,
   exportJWK,
@@ -29,13 +33,61 @@ export interface IdentityClaims {
   permissions: string[];
 }
 
-// permission a principal must carry to call the agent at all (enforced in the agent's userContext middleware):
-// the host grants it so the issued token — the web's session cookie — carries the scope down to the agent.
-export const AGENT_INVOKE_PERMISSION = "agent.invoke";
+// ---------------------------------------------------------------------------
+// Session ticket (encrypted cookie)
+// ---------------------------------------------------------------------------
 
-// permission a principal must carry to start a unit of work on the agent (gates POST /session/create):
-// the host grants it in the user registry and stamps it into the JWT; the agent enforces it on the token.
-export const EXECUTE_WORK_PERMISSION = "executework";
+// the host's authentication ticket: what the session cookie carries, ENCRYPTED (never readable by the
+// browser). It bundles the agent access token (the RS256 JWT, forwarded as bearer), the identity claims the
+// host hydrates request context from without re-verifying, and the auth status — mirroring an ASP.NET ticket.
+export interface AuthTicket {
+  accessToken: string;
+  claims: IdentityClaims;
+  authenticated: boolean;
+}
+
+// A256GCM with a `dir` (direct) symmetric key: the host both seals and opens the ticket, so a shared 256-bit
+// key is the right tool — no asymmetry needed, and AEAD makes the cookie tamper-evident as well as opaque.
+const TICKET_ENC = "A256GCM";
+
+// derives the 32-byte A256GCM key from the configured secret by SHA-256, so any appsettings string (a
+// passphrase now, a real secret later) yields a valid key without the operator hand-formatting 32 raw bytes.
+export function sessionKey(secret: string): Uint8Array {
+  return new Uint8Array(createHash("sha256").update(secret, "utf8").digest());
+}
+
+// encrypts the ticket into the compact JWE that becomes the cookie value (the "encrypt at response" half).
+// exp lives inside the encrypted token so a tampered/forged cookie can't extend the session past expiresIn.
+export async function sealTicket(ticket: AuthTicket, key: Uint8Array, expiresIn = "2h"): Promise<string> {
+  return new EncryptJWT({ act: ticket.accessToken, claims: ticket.claims, authenticated: ticket.authenticated })
+    .setProtectedHeader({ alg: "dir", enc: TICKET_ENC })
+    .setIssuedAt()
+    .setExpirationTime(expiresIn)
+    .encrypt(key);
+}
+
+// decrypts + validates the cookie back into a ticket (the "decrypt at middleware" half); returns null on a
+// missing, tampered, or EXPIRED cookie so callers treat any of those uniformly as "not authenticated".
+export async function openTicket(sealed: string | null | undefined, key: Uint8Array): Promise<AuthTicket | null> {
+  if (!sealed) return null;
+  try {
+    const { payload } = await jwtDecrypt(sealed, key);
+    const claims = (payload.claims ?? {}) as IdentityClaims;
+    return {
+      accessToken: String(payload.act ?? ""),
+      claims: {
+        sub: String(claims.sub ?? payload.sub ?? ""),
+        userName: String(claims.userName ?? ""),
+        firstName: String(claims.firstName ?? ""),
+        lastName: String(claims.lastName ?? ""),
+        permissions: Array.isArray(claims.permissions) ? claims.permissions : [],
+      },
+      authenticated: payload.authenticated === true,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export interface JwtOptions {
   issuer?: string;
@@ -110,6 +162,23 @@ export function bearerToken(header: string | undefined): string | null {
   if (!header) return null;
   const [scheme, value] = header.split(" ");
   return scheme?.toLowerCase() === "bearer" && value ? value : null;
+}
+
+// decodes an `Authorization: Basic <base64(user:pass)>` header into credentials; null when absent or malformed.
+// split on the FIRST colon only, so a password may itself contain colons without being truncated.
+export function basicCredentials(header: string | undefined): { username: string; password: string } | null {
+  if (!header) return null;
+  const [scheme, value] = header.split(" ");
+  if (scheme?.toLowerCase() !== "basic" || !value) return null;
+  const decoded = Buffer.from(value, "base64").toString("utf8");
+  const sep = decoded.indexOf(":");
+  if (sep === -1) return null;
+  return { username: decoded.slice(0, sep), password: decoded.slice(sep + 1) };
+}
+
+// builds an `Authorization: Basic` header value from client credentials; the agent uses it to fetch a token
+export function basicAuthHeader(username: string, password: string): string {
+  return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
 }
 
 // name of the cookie the host sets at login and reads back on its own routes; mirrors the web's TOKEN_KEY so

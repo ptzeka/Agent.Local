@@ -13,6 +13,11 @@ export interface AgentAuthSettings {
   required: boolean;
   tokenEnv: string;
   authorityUrl?: string;
+  // client-credentials the agent uses to fetch its own bearer from the host's /api/auth/token (basic -> JWT).
+  // LOCAL DEV: the secret is inline here; in prod appsettings is resolved from a secret store, not committed.
+  tokenUrl?: string;
+  clientId?: string;
+  clientSecret?: string;
 }
 
 export interface AgentServerSettings {

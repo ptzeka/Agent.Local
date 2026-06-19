@@ -10,7 +10,7 @@ import {
   type WorkflowFailedPayload,
 } from "./events.js";
 import type { JobRegistry } from "./jobs/job-registry.js";
-import type { AgentClient } from "./agent-client.js";
+import type { AgentClient } from "./comms/sender.js";
 
 // owns the work unit's lifecycle: the join no single engine holds. trigger() provisions it up front (mint
 // ids -> open the agent session -> command the start), then the bus updaters fold each engine event back
@@ -42,12 +42,12 @@ export class Orchestrator {
   }
 
   // provisions a new work unit and commands its start; returns the workId the caller polls/queries by.
-  // authHeader is the caller's bearer JWT (executework), forwarded to the agent which gates session creation.
-  async trigger(workflowId: string, authHeader?: string): Promise<string> {
+  // the agent session is opened under the host's OWN agent:trigger service token (see HttpJobSender), not the caller's.
+  async trigger(workflowId: string): Promise<string> {
     const workId = randomUUID();
     const workspaceId = randomUUID();
     await this.jobs.add(workId);
-    const sessionId = await this.agent.createSession(workspaceId, workId, authHeader);
+    const sessionId = await this.agent.createSession(workspaceId, workId);
     await this.jobs.update(workId, { sessionId });
     this.bus.publish(WORKFLOW_START, { workId, workspaceId, sessionId, workflowId });
     return workId;
