@@ -1,7 +1,7 @@
 import path from "node:path";
-import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 
+import type { DatabaseHandle } from "@agent-local/common/db";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 
 export interface ContextSnapshot {
@@ -19,11 +19,16 @@ export interface ContextSnapshot {
 // namespaced so a different tool's AGENTS.md/CLAUDE.md convention can't collide
 const DEFAULT_RELATIVE_PATH = path.join("src", "context", "agentcontext.md");
 
-// reads project direction once and snapshots it, hashed, for both planner and executor
-// so every turn carries the same direction without the user re-typing it
+// reads project direction once and snapshots it, hashed, for both planner and executor so every turn carries
+// the same direction without the user re-typing it. snapshots live content-addressed in the `contexts` table
+// (agent.sqlite); the DB handle is opened once at process startup and injected, so the loader owns no connection
 export class ContextLoader
 {
-  constructor(private readonly contextsDir: string) {};
+  private constructor(private readonly db: DatabaseHandle) {}
+
+  public static create(db: DatabaseHandle): ContextLoader {
+    return new ContextLoader(db);
+  }
 
   resolveTarget(workspaceRoot: string, override: string | undefined): string {
     if (!override || override.length === 0) {
@@ -54,42 +59,28 @@ export class ContextLoader
     };
   }
 
+  // write-once: the hash is content-addressed, so INSERT OR IGNORE dedups — a re-save of identical content
+  // leaves the existing row (and its created_at) untouched
   public async saveContextSnapshot(
     snapshot: ContextSnapshot
   ): Promise<string> {
-    const dir = path.resolve(this.contextsDir);
     const hash = this.hashContextSnapshot(snapshot);
-    const target = path.join(dir, `${hash}.json`);
-
-    try {
-      await fs.access(target);
-      // identical snapshot already on disk: hash is content-addressed, so reuse it
-      return hash;
-    } catch {
-      // absent: fall through and write it
-    }
-
-    await fs.mkdir(dir, { recursive: true });
-    const tmp = `${target}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(snapshot, null, 2), "utf8");
-    await fs.rename(tmp, target);
+    this.db
+      .prepare("INSERT OR IGNORE INTO contexts (hash, payload, created_at) VALUES (?, ?, ?)")
+      .run(hash, JSON.stringify(snapshot), Date.now());
     return hash;
   }
 
-  // null (not throw) on a missing snapshot: pre-snapshot sessions and pruned dirs are expected
+  // null (not throw) on a missing snapshot: pre-snapshot sessions and pruned rows are expected.
+  // the parameterized query needs no path sanitisation — a malformed pointer simply misses
   public async getContextSnapshot(
     hash: string | undefined
   ): Promise<ContextSnapshot | null> {
     // a session persisted before its role had a pointer carries no hash
     if (!hash) return null;
-    // sanitise so a malformed pointer can't escape the contexts dir
-    const safe = hash.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    const target = path.join(path.resolve(this.contextsDir), `${safe}.json`);
-    try {
-      return JSON.parse(await fs.readFile(target, "utf8")) as ContextSnapshot;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
+    const row = this.db
+      .prepare("SELECT payload FROM contexts WHERE hash = ?")
+      .get(hash) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as ContextSnapshot) : null;
   }
 }

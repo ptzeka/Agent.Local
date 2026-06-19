@@ -52,5 +52,45 @@ export function createWorksApi(orchestrator: Orchestrator, jobs: JobRegistry, lo
     res.json({ work });
   });
 
+  // inject: operator intervention onto the caller's running work — merge variables onto its camunda instance.
+  // 404 when not the caller's, 409 when the instance has not started yet. body: { variables, scopeKey?, local? }.
+  router.post("/api/works/:workId/inject", requirePermission("workflow:write"), async (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    const variables = (body.variables ?? {}) as Record<string, unknown>;
+    const result = await orchestrator.inject(req.params.workId, owner(req), variables, {
+      scopeKey: typeof body.scopeKey === "string" ? body.scopeKey : undefined,
+      local: typeof body.local === "boolean" ? body.local : undefined,
+    });
+    if (result === null) {
+      res.status(404).json({ error: "unknown work" });
+      return;
+    }
+    if (result === false) {
+      res.status(409).json({ error: "work has no running instance" });
+      return;
+    }
+    res.status(202).json({ work: result });
+  });
+
+  // retry: re-activate a failed step of the caller's work by jobKey (from the failed-work detail). 404 when not
+  // the caller's, 400 without a jobKey. body: { jobKey, incidentKey?, retries? }. inert until jobs actually fail.
+  router.post("/api/works/:workId/retry", requirePermission("workflow:write"), async (req: Request, res: Response) => {
+    const body = req.body ?? {};
+    const jobKey = typeof body.jobKey === "string" ? body.jobKey : "";
+    if (!jobKey) {
+      res.status(400).json({ error: "jobKey required" });
+      return;
+    }
+    const work = await orchestrator.retryStep(req.params.workId, owner(req), jobKey, {
+      incidentKey: typeof body.incidentKey === "string" ? body.incidentKey : undefined,
+      retries: typeof body.retries === "number" ? body.retries : undefined,
+    });
+    if (!work) {
+      res.status(404).json({ error: "unknown work" });
+      return;
+    }
+    res.status(202).json({ work });
+  });
+
   return router;
 }

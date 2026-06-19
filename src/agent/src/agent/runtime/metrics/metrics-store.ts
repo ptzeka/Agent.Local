@@ -1,61 +1,43 @@
-import fs from "node:fs";
-import path from "node:path";
+import type { DatabaseHandle } from "@agent-local/common/db";
 
 import type { UsageTotals } from "../../session/session.js";
 
-// one cumulative snapshot of a session's token tally; a later line for the same sessionId supersedes earlier ones
+// one cumulative snapshot of a session's token tally; a later write for the same sessionId supersedes earlier ones
 export interface MetricsRecord extends UsageTotals {
   ts: string;
   sessionId: string;
   parentSessionId?: string;
 }
 
-// out-of-band JSONL sink for token accounting, mirroring FileLogger: a later line per sessionId wins,
-// so the file is read by folding to the last record bearing an id — local-dev shape until a metrics repository lands
-// appends are synchronous: volume is one line per turn, order matters, and a sync write can't be lost on exit
+// token accounting on agent.sqlite: one upserted `metrics` row per session (last-write-wins collapses the old
+// JSONL "last line wins" to a single row). The DB handle is opened once at startup and injected.
+// writes are best-effort: a metrics-write failure must never break the thing being measured
 export class MetricsStore {
-  private readonly file: string;
-
-  constructor(file?: string) {
-    this.file = file ?? resolveMetricsFile();
-  }
+  constructor(private readonly db: DatabaseHandle) {}
 
   public append(record: MetricsRecord): void {
     try {
-      // dir made here, not in the ctor, so merely constructing a registry (which seeds via latestFor) writes nothing
-      fs.mkdirSync(path.dirname(this.file), { recursive: true });
-      fs.appendFileSync(this.file, JSON.stringify(record) + "\n");
+      this.db
+        .prepare(
+          "INSERT INTO metrics (session_id, parent_session_id, payload, updated_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT (session_id) DO UPDATE SET parent_session_id = excluded.parent_session_id, payload = excluded.payload, updated_at = excluded.updated_at",
+        )
+        .run(record.sessionId, record.parentSessionId ?? null, JSON.stringify(record), record.ts);
     } catch {
       // a metrics-write failure must never break the thing being measured
     }
   }
 
-  // the session's current total is the LAST line bearing its id; absent on first run, so the caller seeds from zero
+  // the session's current total is its single upserted row; absent on first run, so the caller seeds from zero
   public latestFor(sessionId: string): MetricsRecord | null {
-    let raw: string;
     try {
-      raw = fs.readFileSync(this.file, "utf8");
+      const row = this.db
+        .prepare("SELECT payload FROM metrics WHERE session_id = ?")
+        .get(sessionId) as { payload: string } | undefined;
+      return row ? (JSON.parse(row.payload) as MetricsRecord) : null;
     } catch {
-      // no file yet (first run) — nothing to seed from
+      // a torn or missing row never invalidates the seed; start from zero
       return null;
     }
-    let latest: MetricsRecord | null = null;
-    for (const line of raw.split("\n")) {
-      if (line.length === 0) continue;
-      try {
-        const record = JSON.parse(line) as MetricsRecord;
-        if (record.sessionId === sessionId) latest = record;
-      } catch {
-        // a torn or partial line never invalidates the rest of the file
-      }
-    }
-    return latest;
   }
-}
-
-// AGENT_METRICS_FILE wins; else cwd/metrics/metrics.jsonl, sibling to the logs/ directory
-function resolveMetricsFile(): string {
-  return process.env.AGENT_METRICS_FILE
-    ? path.resolve(process.env.AGENT_METRICS_FILE)
-    : path.resolve(process.cwd(), "metrics", "metrics.jsonl");
 }

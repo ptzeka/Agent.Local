@@ -8,6 +8,8 @@
 export const WORKFLOW_START = "workflow.start" as const;
 export const WORKFLOW_STARTED = "workflow.started" as const;
 export const WORKFLOW_STOP = "workflow.stop" as const;
+export const WORKFLOW_INJECT = "workflow.inject" as const;
+export const WORKFLOW_RETRY = "workflow.retry" as const;
 export const WORKFLOW_JOB = "workflow.job" as const;
 export const WORKFLOW_COMPLETED = "workflow.completed" as const;
 export const WORKFLOW_FAILED = "workflow.failed" as const;
@@ -17,6 +19,8 @@ export type EventName =
   | typeof WORKFLOW_START
   | typeof WORKFLOW_STARTED
   | typeof WORKFLOW_STOP
+  | typeof WORKFLOW_INJECT
+  | typeof WORKFLOW_RETRY
   | typeof WORKFLOW_JOB
   | typeof WORKFLOW_COMPLETED
   | typeof WORKFLOW_FAILED
@@ -46,6 +50,23 @@ export interface WorkflowStartedPayload {
 export interface WorkflowStopPayload {
   workId: string;
   camundaId: string;
+}
+
+// operator intervention: inject variables onto a running instance. scopeKey defaults to the instance root
+// (camundaId); local=false merges so child scopes see them. bus-pure — the host authorizes, the engine merges.
+export interface WorkflowInjectPayload {
+  camundaId: string;
+  variables: Record<string, unknown>;
+  scopeKey?: string;
+  local?: boolean;
+}
+
+// operator intervention: retry a failed step by its jobKey (bump retries; resolve its incident if one exists).
+// inert until the worker actually fails jobs — today jobs are forwarded/held, so no incident is ever raised.
+export interface WorkflowRetryPayload {
+  jobKey: string;
+  incidentKey?: string;
+  retries?: number;
 }
 
 export interface WorkflowJobPayload {
@@ -79,6 +100,8 @@ export interface EventPayloads {
   [WORKFLOW_START]: WorkflowStartPayload;
   [WORKFLOW_STARTED]: WorkflowStartedPayload;
   [WORKFLOW_STOP]: WorkflowStopPayload;
+  [WORKFLOW_INJECT]: WorkflowInjectPayload;
+  [WORKFLOW_RETRY]: WorkflowRetryPayload;
   [WORKFLOW_JOB]: WorkflowJobPayload;
   [WORKFLOW_COMPLETED]: WorkflowCompletedPayload;
   [WORKFLOW_FAILED]: WorkflowFailedPayload;

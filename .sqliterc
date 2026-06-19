@@ -1,0 +1,7 @@
+-- Repo-local sqlite3 defaults. Not auto-loaded (sqlite3 only reads ~/.sqliterc);
+-- scripts/db.sh passes this via `sqlite3 -init`, so it applies to repo DBs only.
+.mode box
+.headers on
+.timer on
+.nullvalue NULL
+.echo off

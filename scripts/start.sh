@@ -63,6 +63,9 @@ npm run build --prefix "$ROOT" \
   -w @agent-local/agent \
   -w @agent-local/host
 
+echo "[start] initializing databases (host.sqlite, agent.sqlite)..."
+npm run db:init --prefix "$ROOT"
+
 echo "[start] launching host on :$HOST_PORT..."
 PORT="$HOST_PORT" npm start --prefix "$ROOT" -w @agent-local/host >"$RUN_DIR/host.log" 2>&1 &
 HOST_PID=$!

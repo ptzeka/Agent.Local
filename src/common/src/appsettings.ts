@@ -8,8 +8,18 @@ export interface AgentClientSettings {
   baseUrl: string;
 }
 
+// where a service's SQLite database lives. SQLite has no network conn string, so this is a file path;
+// the *_DB_FILE env var still wins as an ops override. local dev keeps the path inline here; in prod the
+// value is resolved from a secret store (named via the feature's `secrets` map), never committed.
+export interface DbSettings {
+  file: string;
+}
+
 export interface WorkflowSettings {
   taskType?: string;
+  // allowlist of bpmnProcessIds the host may start; empty/omitted = unrestricted. Zeebe has no native
+  // enable/disable, so enablement is gated here at start — disabled definitions stay deployed but dormant.
+  enabledProcessIds?: string[];
   secrets?: Record<string, string>;
 }
 
@@ -24,6 +34,8 @@ export interface WebSettings {
 
 export interface HostSettings {
   port: number;
+  // host.sqlite location for the M3-H job repository (HOST_DB_FILE env overrides; see DbSettings)
+  db?: DbSettings;
   iam?: { issuerUrl: string; audience: string };
   // symmetric secret the host derives the session-cookie encryption key from (see sessionKey). local-only
   // for now (will move to a secret store); the host both seals and opens the ticket, so it never leaves it.

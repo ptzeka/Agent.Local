@@ -1,6 +1,8 @@
 import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.js";
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 import { Container, type Token } from "@agent-local/common/container";
+import { openDatabase, ensureSchema, type DatabaseHandle } from "@agent-local/common/db";
+import { AGENT_SCHEMA } from "../../src/agent/db-schema.js";
 import {
   ConfigurationToken,
   ProvidersToken,
@@ -17,6 +19,15 @@ import {
   InboxToken,
   SessionManagerToken,
 } from "../../src/agent/runtime/tokens.js";
+
+// an in-memory agent.sqlite with the real schema ensured: the DB-backed stores (session/conversation/metrics)
+// need a schema'd handle, so tests that exercise them share one. Pass it as the `db` override when a test also
+// builds a store directly, so both sides read the same connection
+export function makeTestDb(): DatabaseHandle {
+  const db = openDatabase(":memory:");
+  ensureSchema(db, AGENT_SCHEMA);
+  return db;
+}
 
 // maps the ergonomic override keys tests use (session, store, ...) to the tokens those services live under,
 // so seeding a service in a test stays a one-liner: makeContext({ session })
@@ -62,6 +73,7 @@ export function makeContext(overrides: Record<string, unknown> = {}): RuntimeCon
 
   return {
     registry,
+    db: (overrides.db as DatabaseHandle) ?? makeTestDb(),
     sessionsDir: (overrides.sessionsDir as string) ?? "/tmp/agent-mw-test-sessions",
     workspaceRoot: (overrides.workspaceRoot as string) ?? "/tmp/agent-mw-test-workspace",
     sandboxRoot: (overrides.sandboxRoot as string) ?? "/tmp/agent-mw-test-sandbox",

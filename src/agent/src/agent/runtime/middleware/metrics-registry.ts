@@ -14,7 +14,7 @@ export class MetricsRegistryMiddleware implements IMiddleware {
       new MetricsRegistry({
         sessionId: session.sessionId,
         parentSessionId: session.parentSessionId,
-        store: new MetricsStore(),
+        store: new MetricsStore(ctx.db),
       })
     );
     await next();

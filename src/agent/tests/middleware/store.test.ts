@@ -1,27 +1,14 @@
-import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, jest, test } from "@jest/globals";
 
 import { StoreMiddleware } from "../../src/agent/runtime/middleware/store.js";
 import { StoreToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { makeContext } from "./context.js";
 
-// opens a real SessionStore rooted at ctx.sessionsDir and hands it to the rest of the pipeline
+// opens a real SessionStore on ctx.db and hands it to the rest of the pipeline
 describe("StoreMiddleware", () => {
-  let dir: string;
-
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "store-mw-"));
-  });
-
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  test("seeds ctx.store with a store rooted at ctx.sessionsDir and advances", async () => {
-    const ctx = makeContext({ sessionsDir: path.join(dir, "sessions") });
+  test("seeds ctx.store with a store on ctx.db and advances", async () => {
+    const ctx = makeContext();
     const next = jest.fn(async () => {});
 
     await new StoreMiddleware().initialize(ctx, next);
@@ -30,13 +17,13 @@ describe("StoreMiddleware", () => {
     expect(store).toBeDefined();
     expect(next).toHaveBeenCalledTimes(1);
 
-    // Round-trip through the configured directory proves it's a real, usable store.
+    // Round-trip through the DB proves it's a real, usable store.
     await store!.save(createSession({ sessionId: "s1", workspaceId: "w1", conversationId: "c1" }));
     expect((await store!.load("s1"))?.sessionId).toBe("s1");
   });
 
   test("the seeded store is empty — unknown ids load as null, not stale data", async () => {
-    const ctx = makeContext({ sessionsDir: path.join(dir, "sessions") });
+    const ctx = makeContext();
 
     await new StoreMiddleware().initialize(ctx, jest.fn(async () => {}));
 

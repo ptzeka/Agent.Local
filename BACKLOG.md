@@ -546,13 +546,37 @@ filter — no code path can hydrate another user's session and forget to check.
       is honest even on disk.
 
 ### M3-2 · SQLite implementation — `~2d` · P0
+> **Scope (2026-06-19):** one `better-sqlite3` file per process. This story is
+> the **agent DB** (`agent.sqlite`, owned by the agent process); the host jobs
+> store is its own DB — see M3-H. Memo stays out: it is the M3-6/M3-7
+> vectorstore track, not a relational table.
+> **dbup foundation landed (2026-06-19):** the idempotent schema-ensure engine
+> (`common/src/db.ts`, `@agent-local/common/db`: `openDatabase` + `ensureSchema`
+> — table/index create-if-missing, recreate-on-drift, lookup hydration from
+> template) and the agent schema spec (`agent/src/agent/db-schema.ts`:
+> sessions/conversations/messages/metrics + `session_status` lookup) are in.
+> Run via an **explicit `db init` command** (`npm run db:init`, per-package
+> `db:init` / `db:init:dev`), invoked once by `start.sh` after the build — NOT
+> on every process boot, so a serving process never races schema work.
+> **Remaining:** swap the repositories onto the tables + port `summaries()` to SQL.
+> **Build caveat:** `better-sqlite3` has no prebuilt for Node 25, so it compiles
+> from source. If the system `python3` (Homebrew 3.14) has a broken `pyexpat`,
+> the node-gyp build fails — install with `npm_config_python=/usr/bin/python3
+> npm install`.
 - [ ] `better-sqlite3`; tables: `sessions(user_sub, session_id, status,
       payload, created_at, updated_at, PRIMARY KEY(user_sub, session_id))`,
       `contexts`, `audit`. WAL mode.
+- [ ] Also cover the other agent file stores in the same DB:
+      `metrics(session_id, ...)` (current-state row per session, replacing the
+      JSONL fold in `runtime/metrics/metrics-store.ts`) and
+      `conversations(conversation_id, created_at, deleted_at)` +
+      `messages(conversation_id, seq, payload)` (replacing
+      `conversation/conversation-store.ts`; soft-delete via `deleted_at`,
+      summarize/compact = delete-and-reinsert in one transaction).
 - [ ] Swap in via `StoreMiddleware` (config: `AGENT_STORE=file|sqlite`).
 - [ ] Port `summaries()` to a SQL query (kills the load-every-file scan).
-- [ ] Migration script: import existing `sessions/*.json` under an
-      `anonymous` (or chosen) userSub.
+- [ ] ~~Migration script~~ — **dropped (2026-06-19):** existing on-disk data is
+      throwaway local state; no backfill. New schema starts empty.
 
 ### M3-3 · Session leases — `~1d` · P0 (prereq for service mode)
 - [ ] `leases(user_sub, session_id, owner_id, heartbeat_at)`; acquire on
@@ -574,6 +598,30 @@ filter — no code path can hydrate another user's session and forget to check.
 - [ ] `AGENT_SESSION_TTL_DAYS`; cleanup pass on boot (and later a timer in
       service mode) deleting expired sessions + their audit rows; never
       delete sessions with active leases.
+
+### M3-H · Host jobs store → SQLite — `~1d` · P1
+> **Added (2026-06-19):** the host DB (`host.sqlite`, owned by the host
+> process) — the second of the two SQLite files. Mirrors M3-1/M3-2 in the host
+> package; same user-keyed rule (`user_id` is part of the key, not a filter).
+> **dbup foundation landed (2026-06-19):** schema spec
+> (`host/src/jobs/db-schema.ts`: `jobs` + `job_status` lookup/FK) applied by the
+> shared engine via the `db init` command (`npm run db:init`, called by
+> `start.sh`). **Remaining:** the `JobRepository` swap.
+- [ ] `JobRepository` interface: `add(jobId, userId, workflowId)`,
+      `get(jobId)`, `search({userId?, status?})`, `update(jobId, patch)` —
+      same surface the host already calls on `JobRegistry` so callers don't
+      change. Keep the current `JobRegistry` as `FileJobRepository` (dev/CLI).
+- [ ] `better-sqlite3`; table `jobs(user_id, job_id, workflow_id, status,
+      step, session_id, camunda_id, reason, updated_at,
+      PRIMARY KEY(user_id, job_id))`, index on `(user_id, status)`. WAL mode.
+      Current-state row per job (no event log — append history was only there
+      for torn-write safety, which transactions remove).
+- [ ] Swap in via config toggle (`HOST_STORE=file|sqlite`), mirroring
+      `AGENT_STORE`. No migration — existing `jobs.jsonl` is throwaway.
+
+**Done when:** host lists/searches works through `JobRepository`; with
+`HOST_STORE=sqlite` a user's `search` returns only their own jobs via the
+indexed `(user_id, status)` lookup, not a full-file fold.
 
 ### M3-6 · codeindex → generic vector engine — `~2d` · P2
 Code knowledge and agent memory are the SAME primitive: an embedded record
@@ -655,6 +703,16 @@ server reads both `data/commits/` and `data/memories/` through one engine.
 > synthetic tools call `codemcp.remember` / `recall` with a collection id
 > derived from the principal/session — tracked under the M3 identity work, not
 > built here.
+
+> **SQLite memo backend — deferred (2026-06-19):** considered a 3rd DB
+> (`memo.sqlite`) as a `SqliteVectorStore implements IVectorStore` (a third
+> backend alongside `file`/`pg`, serving codeindex + memo via the shared
+> engine). Deferred until the agent (M3-2) and host (M3-H) SQLite DBs are built
+> and the `better-sqlite3` wrapper is proven. When revisited: without
+> `sqlite-vec` it is a consolidation win only (same brute-force cosine as
+> `FileVectorStore`, just durable/single-file); `sqlite-vec` adds real ANN at
+> the cost of a native extension — but `pg` already covers production ANN, so
+> SQLite would be the "local but real" middle tier.
 
 #### Grooming caveat — split into 5 packages (supersedes the M3-6/M3-7 shape above)
 
@@ -1966,6 +2024,103 @@ access token as a bearer the agent validates via `/.well-known/jwks.json` (verif
 `/session/create` → 201); cookie + JWT both expire at 2h. Open bullets above gate
 the non-local hardening.
 
+### M7-9 · `src/temporal` — Temporal as an alternative workflow engine behind the same mount seam — `~2.5d` · P2
+Prove the M7 thesis ("**the bus is the seam — engines talk only through it**") by
+adding a SECOND workflow engine that the host can mount **instead of** Camunda,
+with zero change to the agent or the bus contract. Camunda is BPMN-first
+(broker + deployed `.bpmn` + job workers polling a task type); Temporal is
+code-first (Temporal Server + TypeScript workflows/activities via
+`@temporalio/worker`/`@temporalio/client`). The two are interchangeable precisely
+because the host only ever sees a `mount(app, ctx)` that publishes/subscribes the
+engine-neutral bus vocabulary — `mount.ts` is the glue, not a Camunda detail.
+- [x] New workspace `@agent-local/temporal` (`src/temporal`) exposing the **same**
+      `mount(app, ctx: MountContext): TemporalClient` contract as `@agent-local/workflow`
+      (`src/workflow/src/mount.ts`) — same `{ bus, logger, signal, settings }` in,
+      same control surface (`POST /workflow/process`, `GET /workflow/process/:key`,
+      `GET /workflow/healthz`). Registered in the root workspaces array. — **landed
+      2026-06-19** (scaffold): `mount.ts`/`temporal-client.ts`/`config.ts`/`index.ts`/
+      `main.ts` mirror the workflow package; `MountContext` kept local for now (lifting
+      the shared `EngineClient`/`MountContext` to `@agent-local/common` + the host
+      `WORKFLOW_ENGINE=camunda|temporal` switch are the deferred "add workflow later").
+- [ ] Speak the identical bus events — subscribe `workflow.start` / `workflow.stop`
+      / `workflow.inject` / `workflow.retry` / `agent.result`; publish
+      `workflow.started` / `workflow.failed` / `workflow.job`. The agent and mesh
+      stay oblivious to which engine is mounted (the M7-3 invariant: Camunda/Temporal
+      always initiates, the agent only answers jobs). This is the whole point — the
+      payload shapes don't change, only the engine behind them.
+- [ ] Concept mapping (isolate Temporal-specifics in a `TemporalClient` mirroring
+      `ZeebeClient`, so `mount.ts` stays engine-shaped, not SDK-shaped): BPMN process
+      → a TS **Workflow**; the `agent-execute` service task → an **Activity** that
+      fire-and-forgets the dispatch (publishes `workflow.job`) while the Workflow
+      `await`s; `processInstanceKey` → `workflowId`/`runId` as the execution id;
+      `cancelProcess` → `WorkflowHandle.cancel()` (terminate = forceful);
+      `setVariables` (inject) → a Temporal **Signal**; `retryJob` → Temporal's
+      built-in activity retry policy / `resetWorkflow`; single-instance state read
+      (`getInstance`) → `WorkflowHandle.describe()`; in-flight state → `query()`.
+      **No list method on the client** — listing is a host concern (next bullet).
+- [ ] **Agent reports, workflow decides — NOT "agent completes a job"** *(decision
+      2026-06-19)*. The agent never decides doneness; it emits task results and the
+      **Workflow code** figures out if the work is done and what's next. So
+      `agent.result` is a **Signal** carrying the result (`reportResult(workId, result)`
+      → `handle.signal("agentResult", result)`), NOT async activity-completion: the
+      Workflow `await`s the signal, inspects the result, and loops (dispatch again) /
+      branches / returns from its own logic. This also keeps the seam user-scopable —
+      a signal is keyed by `workId` (host-owned, user-mapped), whereas an opaque
+      Temporal task token is un-authorizable.
+- [ ] **TemporalClient is stateless + user-agnostic; ownership lives at the host**
+      *(decision 2026-06-19)*. The client is a thin engine adapter keyed only by
+      `workflowId`/`runId` — no `userId`, no Temporal search attributes, no namespace
+      setup. Every call it receives is **already authorized** by the host
+      (`Orchestrator`'s existing `record.userId !== userId` gate). Drop the local
+      `instances` Map the `ZeebeClient` keeps (Temporal `describe()` is authoritative
+      for one instance; nothing replaces the Map engine-side).
+- [ ] **List active tasks by user = host/registry, not the engine** *(decision
+      2026-06-19)*. "Get the user's active works" is served from the host
+      `JobRegistry` (already user-keyed: `jobs.search({ userId, status: "running" })`),
+      since it persists `workId → userId` + folded status. The engine is consulted
+      only for authoritative live status of a single already-authorized work via
+      `getInstance(workId)`. (Temporal visibility `list()` with a `userId` search
+      attribute stays a possible later cross-check, not the primary path — avoids
+      depending on visibility indexing being registered.)
+- [ ] Proposed `TemporalClient` surface: `start(type, args, { workflowId })`,
+      `cancel(workflowId)` / `terminate(workflowId, reason)`, `getInstance(workflowId)`,
+      `signal(workflowId, name, payload)`, `query(workflowId, name, args?)`,
+      `reportResult(workflowId, result)`, `connected`, `start()`/`stop()` — no
+      list, no userId.
+- [ ] **Prove first, rename later — don't gate the PoC on the leak.** `camundaId`
+      and the `workflow.*` / `agent.job` field names are Camunda-shaped today (M7-6's
+      host map keys by `camundaId → workId`). For this proof, just **reuse the
+      existing id field** — Temporal populates `camundaId` (and `job`/`jobKey`,
+      whatever the bus already carries) with its `workflowId`/`runId`; the host
+      correlation map is untouched. Getting two engines running over the unchanged
+      contract is the point. The engine-neutral rename (`camundaId → executionId`
+      across bus + host map) becomes a justified, mechanical follow-up *once* the
+      second engine has demonstrated the seam — not a prerequisite for it.
+- [ ] Self-managed Temporal Server alongside the Zeebe broker pattern: a
+      `docker-compose` service (Temporal + its datastore, UI optional/commented like
+      Operate), endpoint + namespace + auth from env via an engine-agnostic
+      `loadConfig` (reuse `src/workflow/src/config.ts`'s env-only, no-secrets-inline
+      rule; Temporal Cloud = same client, different endpoint/mTLS).
+- [ ] Resilience parity with M7-1: reconnect-with-backoff, graceful `stop()` on
+      `ctx.signal` that never throws, server-down-at-boot does not crash, the same
+      `/workflow/healthz` contract (folded into the host composite `/healthz`).
+- [x] Tests against an **injected fake** Temporal core (mirror M7-1's fake gRPC —
+      no server required): startProcess keys by our workId; getInstance reads
+      `describe()`; reportResult signals `agentResult` and does NOT publish
+      `workflow.completed` (the workflow decides done/next); setVariables → `inject`
+      signal; cancel routes to the handle; server-down-at-boot does not crash;
+      allowlist refusal. — **landed 2026-06-19**: 7 passing tests in
+      `src/temporal/src/tests/temporal-client.test.ts`; `tsc --noEmit` clean. Defer
+      the live `TestWorkflowEnvironment` E2E (real server) like the Camunda one.
+
+**Done when:** with `WORKFLOW_ENGINE=temporal` the host mounts `@agent-local/temporal`
+and the SAME `Camunda job → agent execute → result → job complete → process advances`
+cycle (here: `Temporal workflow → Activity dispatch → agent reports result via signal
+→ the Workflow decides done/next → workflow advances`) runs end-to-end over the
+unchanged Eventing bus, with no edit to `@agent-local/agent` or the bus event shapes —
+demonstrating the mount seam is engine-agnostic; and the user's active works are
+listable from the host `JobRegistry` (user-keyed), not from the engine.
+
 ---
 
 ## M8 — Frontend epic (React console + API)
@@ -2178,7 +2333,8 @@ M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, 
 MR-3 → MR-4·0 → MR-4 → MR-5 → MR-6                     (finish the unified runtime)
 M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-2 closed by MR-4)
 M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6 → M2-7 → M2-8  (identity/policy — after MR)
-M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (store)
+M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (agent store)
+M3-H                                                   (host jobs store ∥ — independent)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)
 M7-1 ∥ M7-2 → M7-3                                     (camunda × agent mesh; after M4-1/M4-2)
 M8-1 → M8-2 → M8-3                                     (react console + api; after M7-1/M7-3)

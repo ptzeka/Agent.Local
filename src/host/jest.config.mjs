@@ -2,7 +2,9 @@
 export default {
   preset: "ts-jest",
   testEnvironment: "node",
-  roots: ["<rootDir>/src/tests"],
+  // no test files yet; scan src so they're found wherever they land, and don't hard-fail the run until then
+  roots: ["<rootDir>/src"],
+  passWithNoTests: true,
   moduleNameMapper: {
     // self-reference the package to its own TS source so tests need no prebuild
     "^@agent-local/host$": "<rootDir>/src/index.ts",

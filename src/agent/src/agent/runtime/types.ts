@@ -4,6 +4,7 @@ import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { Session } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { Eventing } from "@agent-local/common/eventing";
+import type { DatabaseHandle } from "@agent-local/common/db";
 import { ConfigurationRegistry } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
@@ -30,6 +31,8 @@ export interface AgentRuntimeDeps {
   configPath: string;
   orchestratorRole: "orchestrator" | "executor";
   sessionsDir: string;
+  // agent.sqlite handle, opened once at process startup and shared down the runtime tree (sub-runtimes included)
+  db: DatabaseHandle;
   workspaceRoot: string;
   sandboxRoot: string;
   mcpConfigPath: string;
@@ -48,6 +51,7 @@ export interface RuntimeContext {
   registry: Container;
   readonly configPath: string;
   readonly sessionsDir: string;
+  readonly db: DatabaseHandle;
   readonly workspaceRoot: string;
   readonly sandboxRoot: string;
   readonly mcpConfigPath: string;

@@ -43,6 +43,7 @@ import {
   WorkspacesToken,
 } from "./tokens.js";
 import type { Container } from "@agent-local/common/container";
+import type { DatabaseHandle } from "@agent-local/common/db";
 
 export interface ResetResult {
   projectContext: string | null;
@@ -112,6 +113,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     const ctx = {
       configPath: this.deps.configPath,
       sessionsDir: this.deps.sessionsDir,
+      db: this.deps.db,
       workspaceRoot: this.deps.workspaceRoot,
       sandboxRoot: this.deps.sandboxRoot,
       mcpConfigPath: this.deps.mcpConfigPath,
@@ -469,8 +471,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // --------------------------------------------------------------------------
 
   // static so the picker can call it before any runtime is built (before a session is chosen)
-  static listSavedSessions(sessionsDir: string): Promise<SessionSummary[]> {
-    return SessionStore.create(sessionsDir).summaries();
+  static listSavedSessions(db: DatabaseHandle): Promise<SessionSummary[]> {
+    return SessionStore.create(db).summaries();
   }
 
   // --------------------------------------------------------------------------

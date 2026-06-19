@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 
 import { ContextLoader } from "../../src/agent/context/context-loader.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
@@ -13,7 +10,8 @@ import { SessionToken } from "../../src/agent/runtime/tokens.js";
 import { createSession } from "../../src/agent/session/session.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
-import { makeContext } from "./context.js";
+import type { DatabaseHandle } from "@agent-local/common/db";
+import { makeContext, makeTestDb } from "./context.js";
 
 // snapshots the non-conversation context a role sends (system prompt + project direction + tool block),
 // stores it content-addressed, and stamps the hash onto the session under that role. The middleware reads
@@ -61,23 +59,22 @@ function fakeWorkspace(): Workspace {
 }
 
 describe("ContextMiddleware", () => {
-  let root: string;
+  let db: DatabaseHandle;
   let store: SessionStore;
-  let contextsDir: string;
 
-  beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "ctx-mw-"));
-    store = SessionStore.create(path.join(root, "sessions"));
-    contextsDir = path.join(root, "contexts");
+  beforeEach(() => {
+    db = makeTestDb();
+    store = SessionStore.create(db);
   });
 
-  afterEach(async () => {
-    await fs.rm(root, { recursive: true, force: true });
+  afterEach(() => {
+    db.close();
   });
 
   function ctxWith(nativeTools = true, tools: ToolDescriptor[] = [READ_TOOL]) {
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
     return makeContext({
+      db,
       modelsRegistry: fakeModelsRegistry(),
       providerRegistry: fakeProvidersRegistry("gemini-x", nativeTools),
       mcpRegistry: fakeMcpRegistry(tools),
@@ -91,7 +88,7 @@ describe("ContextMiddleware", () => {
     const ctx = ctxWith();
     const next = jest.fn(async () => {});
 
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next);
+    await new ContextMiddleware({ roleName: "orchestrator" }).initialize(ctx, next);
 
     const session = ctx.registry.get(SessionToken);
     expect(session.contextHashes?.["orchestrator"]).toMatch(/^[0-9a-f]{16}$/);
@@ -103,9 +100,9 @@ describe("ContextMiddleware", () => {
   test("writes a content-addressed snapshot reflecting the role's prompt and tools", async () => {
     const ctx = ctxWith(true);
 
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator" }).initialize(ctx, async () => {});
 
-    const loader = new ContextLoader(contextsDir);
+    const loader = ContextLoader.create(db);
     const snapshot = await loader.getContextSnapshot(ctx.registry.get(SessionToken).contextHashes?.["orchestrator"]!);
     expect(snapshot).not.toBeNull();
     expect(snapshot!.role).toBe("orchestrator");
@@ -115,10 +112,10 @@ describe("ContextMiddleware", () => {
 
   test("different roles yield different context hashes (distinct prompt templates)", async () => {
     const orch = ctxWith();
-    await new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(orch, async () => {});
+    await new ContextMiddleware({ roleName: "orchestrator" }).initialize(orch, async () => {});
 
     const exec = ctxWith();
-    await new ContextMiddleware({ roleName: "executor", contextsDir }).initialize(exec, async () => {});
+    await new ContextMiddleware({ roleName: "executor" }).initialize(exec, async () => {});
 
     const orchHash = orch.registry.get(SessionToken).contextHashes?.["orchestrator"];
     const execHash = exec.registry.get(SessionToken).contextHashes?.["executor"];
@@ -132,7 +129,7 @@ describe("ContextMiddleware", () => {
     const next = jest.fn(async () => {});
 
     await expect(
-      new ContextMiddleware({ roleName: "orchestrator", contextsDir }).initialize(ctx, next)
+      new ContextMiddleware({ roleName: "orchestrator" }).initialize(ctx, next)
     ).rejects.toThrow(/no instance registered for "session"/);
     expect(next).not.toHaveBeenCalled();
   });

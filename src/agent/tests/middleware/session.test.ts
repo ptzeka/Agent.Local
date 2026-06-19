@@ -10,7 +10,8 @@ import { SessionToken, WorkspaceToken } from "../../src/agent/runtime/tokens.js"
 import { createSession } from "../../src/agent/session/session.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
-import { makeContext } from "./context.js";
+import type { DatabaseHandle } from "@agent-local/common/db";
+import { makeContext, makeTestDb } from "./context.js";
 
 // minimal tools stub carrying just the sandboxRoot SessionMiddleware reads to create the session's
 // workspace segment dir; rooted in the test's temp dir so the segment is cleaned up in afterEach
@@ -22,16 +23,19 @@ function fakeTools(root: string): McpClient {
 // and heals a crash-interrupted transcript on resume
 describe("SessionMiddleware", () => {
   let root: string;
+  let db: DatabaseHandle;
   let store: SessionStore;
   let workspaces: WorkspaceRegistry;
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), "session-mw-"));
-    store = SessionStore.create(path.join(root, "sessions"));
+    db = makeTestDb();
+    store = SessionStore.create(db);
     workspaces = new WorkspaceRegistry();
   });
 
   afterEach(async () => {
+    db.close();
     await fs.rm(root, { recursive: true, force: true });
   });
 

@@ -7,6 +7,8 @@ export interface WorkflowConfig {
   bpmnDir: string;
   taskType: string;
   workerName: string;
+  // allowlist of bpmnProcessIds permitted to start; empty = unrestricted (see WorkflowSettings)
+  enabledProcessIds: string[];
   reconnectBaseMs: number;
   reconnectMaxMs: number;
 }
@@ -18,6 +20,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env, baseDir: string
     bpmnDir: env.WORKFLOW_BPMN_DIR ?? resolve(baseDir, "bpmn"),
     taskType: env.WORKFLOW_TASK_TYPE ?? AGENT_EXECUTE_TASK_TYPE,
     workerName: env.WORKFLOW_WORKER_NAME ?? "agent-execute-worker",
+    enabledProcessIds: env.WORKFLOW_ENABLED_PROCESS_IDS?.split(",").map((s) => s.trim()).filter(Boolean) ?? [],
     reconnectBaseMs: Number(env.WORKFLOW_RECONNECT_BASE_MS ?? 1000),
     reconnectMaxMs: Number(env.WORKFLOW_RECONNECT_MAX_MS ?? 30000),
   };

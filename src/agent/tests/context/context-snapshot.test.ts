@@ -1,10 +1,9 @@
 import { describe, expect, test, beforeEach, afterEach } from "@jest/globals";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 
 import { ContextLoader } from "../../src/agent/context/context-loader.js";
+import type { DatabaseHandle } from "@agent-local/common/db";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
+import { makeTestDb } from "../middleware/context.js";
 
 // The snapshot captures non-conversation context (system prompt + project direction + tool block) under a
 // content-addressed hash. These cover what ContextMiddleware leans on: deterministic hashing keyed on the
@@ -22,8 +21,8 @@ const PROJECT_CONTEXT = "do the thing";
 const TOOLS = [tool("read_file"), tool("list_dir")];
 
 describe("ContextLoader.buildContext / hashContextSnapshot", () => {
-  // The contexts dir is irrelevant for pure build/hash work — only save/get touch disk.
-  const loader = new ContextLoader(os.tmpdir());
+  // The DB is irrelevant for pure build/hash work — only save/get touch it.
+  const loader = ContextLoader.create(makeTestDb());
 
   test("captures the build inputs verbatim", () => {
     const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
@@ -57,39 +56,42 @@ describe("ContextLoader.buildContext / hashContextSnapshot", () => {
 });
 
 describe("ContextLoader.saveContextSnapshot / getContextSnapshot", () => {
-  let dir: string;
+  let db: DatabaseHandle;
   let loader: ContextLoader;
 
-  beforeEach(async () => {
-    dir = await fs.mkdtemp(path.join(os.tmpdir(), "ctx-snap-"));
-    loader = new ContextLoader(dir);
+  beforeEach(() => {
+    db = makeTestDb();
+    loader = ContextLoader.create(db);
   });
 
-  afterEach(async () => {
-    await fs.rm(dir, { recursive: true, force: true });
+  afterEach(() => {
+    db.close();
   });
 
-  test("saves under <hash>.json and round-trips the exact snapshot", async () => {
+  // reads the row's stamp straight from the table to prove write-once semantics
+  function createdAt(hash: string): number | undefined {
+    return (db.prepare("SELECT created_at FROM contexts WHERE hash = ?").get(hash) as { created_at: number } | undefined)
+      ?.created_at;
+  }
+
+  test("saves under its hash and round-trips the exact snapshot", async () => {
     const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
     const hash = await loader.saveContextSnapshot(snapshot);
 
     expect(hash).toBe(loader.hashContextSnapshot(snapshot));
-    await expect(fs.access(path.join(dir, `${hash}.json`))).resolves.toBeUndefined();
+    expect(createdAt(hash)).toBeGreaterThan(0);
     expect(await loader.getContextSnapshot(hash)).toEqual(snapshot);
   });
 
-  test("is write-once: re-saving the same context does not rewrite the file", async () => {
+  test("is write-once: re-saving the same context leaves the existing row untouched", async () => {
     const snapshot = loader.buildContext(ROLE, SYSTEM_PROMPT, PROJECT_CONTEXT, TOOLS);
     const hash = await loader.saveContextSnapshot(snapshot);
-
-    const target = path.join(dir, `${hash}.json`);
-    const firstMtime = (await fs.stat(target)).mtimeMs;
+    const firstStamp = createdAt(hash);
 
     const hashAgain = await loader.saveContextSnapshot(snapshot);
-    const secondMtime = (await fs.stat(target)).mtimeMs;
 
     expect(hashAgain).toBe(hash);
-    expect(secondMtime).toBe(firstMtime); // untouched
+    expect(createdAt(hash)).toBe(firstStamp); // INSERT OR IGNORE did not overwrite
   });
 
   test("returns null for an unknown hash", async () => {

@@ -16,6 +16,9 @@ export interface ZeebeGrpc {
   }): { close(): Promise<void> };
   completeJob(req: { jobKey: string; variables: Record<string, unknown> }): Promise<unknown>;
   cancelProcessInstance(req: { processInstanceKey: string }): Promise<unknown>;
+  setVariables(req: { elementInstanceKey: string; variables: Record<string, unknown>; local: boolean }): Promise<unknown>;
+  updateJobRetries(req: { jobKey: string; retries: number }): Promise<unknown>;
+  resolveIncident(req: { incidentKey: string }): Promise<unknown>;
   topology(): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -28,6 +31,14 @@ interface ZeebeJob {
   complete(variables?: Record<string, unknown>): Promise<unknown>;
   fail(arg: { errorMessage: string; retries?: number }): Promise<unknown>;
   forward(): unknown;
+}
+
+// a start was refused by the enablement allowlist, not by the broker; lets callers map it to 403 not 503
+export class WorkflowDisabledError extends Error {
+  constructor(public readonly bpmnProcessId: string) {
+    super(`workflow '${bpmnProcessId}' is not enabled`);
+    this.name = "WorkflowDisabledError";
+  }
 }
 
 // what we know about an instance we started; the engine owns true state, this is a thin local reflection
@@ -115,8 +126,14 @@ export class ZeebeClient {
     });
   }
 
+  // empty allowlist = unrestricted; a populated list gates starts to its members only
+  private isEnabled(bpmnProcessId: string): boolean {
+    return this.cfg.enabledProcessIds.length === 0 || this.cfg.enabledProcessIds.includes(bpmnProcessId);
+  }
+
   // start an instance; CAMUNDA owns state, we only record what we started so GET can reflect it
   async startProcess(bpmnProcessId: string, variables: Record<string, unknown> = {}): Promise<InstanceRecord> {
+    if (!this.isEnabled(bpmnProcessId)) throw new WorkflowDisabledError(bpmnProcessId);
     const res = await this.grpc.createProcessInstance({ bpmnProcessId, variables });
     const record: InstanceRecord = {
       processInstanceKey: res.processInstanceKey,
@@ -138,6 +155,19 @@ export class ZeebeClient {
     await this.grpc.cancelProcessInstance({ processInstanceKey });
     const record = this.instances.get(processInstanceKey);
     if (record) record.status = "failed";
+  }
+
+  // operator intervention: inject variables onto a running instance. scopeKey is an element-instance key;
+  // pass the processInstanceKey for instance-wide. local=false merges so child scopes inherit them.
+  async setVariables(scopeKey: string, variables: Record<string, unknown>, local = false): Promise<void> {
+    await this.grpc.setVariables({ elementInstanceKey: scopeKey, variables, local });
+  }
+
+  // operator intervention: retry a failed step — bump the job's retries so the broker re-activates it, then
+  // clear its incident if one was raised. inert while jobs are forwarded/held (no failure -> no incident)
+  async retryJob(jobKey: string, incidentKey?: string, retries = 1): Promise<void> {
+    await this.grpc.updateJobRetries({ jobKey, retries });
+    if (incidentKey) await this.grpc.resolveIncident({ incidentKey });
   }
 
   // out-of-band completion seam: a future agent.result event calls this to refresh Camunda state for a held job

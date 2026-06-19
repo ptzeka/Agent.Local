@@ -11,22 +11,26 @@ import { SessionStore as RealSessionStore } from "../../src/agent/session/sessio
 import type { WorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
 import { WorkspaceRegistry as RealWorkspaceRegistry } from "../../src/agent/registries/workspace-registry.js";
 import type { Principal } from "../../src/agent/identity/types.js";
-import { makeContext } from "./context.js";
+import type { DatabaseHandle } from "@agent-local/common/db";
+import { makeContext, makeTestDb } from "./context.js";
 
 // a sub-session is created fresh with a pre-minted id, inherits the parent's workspace, optionally seeds
 // standing context, stamps the inherited identity, and persists itself for the store/picker
 describe("ChildSessionMiddleware", () => {
   let tempDir: string;
+  let db: DatabaseHandle;
   let store: SessionStore;
   let workspaces: WorkspaceRegistry;
 
   beforeEach(async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "child-session-mw-"));
-    store = RealSessionStore.create(path.join(tempDir, "sessions"));
+    db = makeTestDb();
+    store = RealSessionStore.create(db);
     workspaces = new RealWorkspaceRegistry(path.join(tempDir, "workspaces"));
   });
 
   afterEach(async () => {
+    db.close();
     await fs.rm(tempDir, { recursive: true, force: true });
   });
 
@@ -50,6 +54,7 @@ describe("ChildSessionMiddleware", () => {
     await workspaces.register("ws-1", workspaceRoot);
 
     const ctx = makeContext({
+      db,
       store,
       workspaces,
       workspaceRoot,
@@ -85,10 +90,10 @@ describe("ChildSessionMiddleware", () => {
 
     const standingContext = "Previous work: Fixed authentication bugs";
     const ctx = makeContext({
+      db,
       store,
       workspaces,
       workspaceRoot,
-      sessionsDir: path.join(tempDir, "sessions"),
     });
     const next = jest.fn(async () => {});
 
@@ -111,10 +116,10 @@ describe("ChildSessionMiddleware", () => {
     await workspaces.register("ws-1", workspaceRoot);
 
     const ctx = makeContext({
+      db,
       store,
       workspaces,
       workspaceRoot,
-      sessionsDir: path.join(tempDir, "sessions"),
     });
     const next = jest.fn(async () => {});
 

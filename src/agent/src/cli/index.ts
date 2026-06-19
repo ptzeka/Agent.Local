@@ -5,7 +5,6 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import url from "node:url";
 
 import chalk from "chalk";
 import dotenv from "dotenv";
@@ -14,9 +13,13 @@ import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
 import { Eventing } from "@agent-local/common/eventing";
 import { FileLogger } from "@agent-local/common/filelogger";
 import { ILogger } from "@agent-local/common/ilogger";
+import { openDatabase, type DatabaseHandle } from "@agent-local/common/db";
+import { resolveAgentDbFile } from "../agent/db-schema.js";
+import { loadAgentSettings } from "../server/appsettings.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
+import { findProjectRoot, moduleDir, resolveSandboxRoot, resolveSessionsDir } from "../paths.js";
 import { parseArgs } from "./args.js";
 import { bannerSessionOf, runRepl } from "./repl.js";
 import { formatEvent, formatSubSessionNotification, renderSession } from "./render.js";
@@ -37,6 +40,8 @@ interface Bootstrap {
   sessionsDir: string;
   configPath: string;
   mcpConfigPath: string;
+  // agent.sqlite connection opened once here; schema is owned by `db init`, this only opens it
+  db: DatabaseHandle;
   logger: ILogger;
   // process-level cancellation root every runtime chains under
   rootSignal: AbortSignal;
@@ -75,19 +80,19 @@ async function main(): Promise<void> {
 async function bootstrap(): Promise<Bootstrap> {
   dotenv.config();
 
-  const projectRoot = findProjectRoot();
+  const projectRoot = findProjectRoot(moduleDir(import.meta.url));
 
-  const sandboxRoot = path.resolve(
-    process.env.AGENT_WORKSPACE ?? path.join(projectRoot, "src", "agent", "workspace")
-  );
+  const sandboxRoot = resolveSandboxRoot(projectRoot);
   fs.mkdirSync(sandboxRoot, { recursive: true });
 
-  const sessionsDir = path.resolve(
-    process.env.AGENT_SESSIONS_DIR ?? path.join(projectRoot, "src", "agent", "sessions")
-  );
+  const sessionsDir = resolveSessionsDir(projectRoot);
 
   const mcpConfigPath = path.join(projectRoot, "mcp.json");
   const configPath = path.join(projectRoot, "models.json");
+
+  // open the agent DB connection at startup; `db init` owns the schema, so this only opens (never reconciles).
+  // the file comes from the agent's appsettings (db.file), overridable by AGENT_DB_FILE for ops
+  const db = openDatabase(resolveAgentDbFile(loadAgentSettings().db?.file));
 
   // runtimes are built later per run mode, so the handlers hold a slot the run mode fills via registerRuntime
   const root = new AbortController();
@@ -106,6 +111,12 @@ async function bootstrap(): Promise<Bootstrap> {
     }
     // backstop for anything not parented under the runtime
     root.abort("process-shutdown");
+    // close after the runtime drained, so no in-flight session/transcript flush races the close
+    try {
+      db.close();
+    } catch {
+      // teardown must keep unwinding
+    }
   };
 
   process.on("SIGINT", () => {
@@ -121,6 +132,7 @@ async function bootstrap(): Promise<Bootstrap> {
     sessionsDir,
     mcpConfigPath,
     configPath,
+    db,
     logger,
     rootSignal: root.signal,
     registerRuntime,
@@ -141,12 +153,13 @@ function buildRuntime(
   sessionId?: string,
   streamOutput = false
 ): AgentRuntime {
-  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath, db } = boot;
   const token = process.env.AGENT_API_TOKEN;
   const deps: AgentRuntimeDeps = {
     mcpConfigPath,
     configPath,
     sessionsDir,
+    db,
     workspaceRoot: projectRoot,
     sandboxRoot,
     logger: boot.logger,
@@ -162,9 +175,9 @@ function buildRuntime(
 
 // interactive e.g. user request/response
 async function runInteractive(boot: Bootstrap): Promise<void> {
-  const { projectRoot, sandboxRoot, sessionsDir, configPath } = boot;
+  const { projectRoot, sandboxRoot, configPath } = boot;
 
-  const saved = await AgentRuntime.listSavedSessions(sessionsDir);
+  const saved = await AgentRuntime.listSavedSessions(boot.db);
   const choice = await pickSession(saved);
 
   // no out-of-band status line: the REPL is the sole TTY writer, so a raw write would land in its pinned-prompt region
@@ -244,21 +257,6 @@ async function runHeadless(
   } catch (err) {
     process.stderr.write(chalk.red(`\n[error] runHeadless: ${(err as Error).message}\n`));
     return EXIT_ERROR;
-  }
-}
-
-function findProjectRoot(): string {
-  const here = url.fileURLToPath(new URL(".", import.meta.url));
-  let cursor = path.resolve(here);
-  while (true) {
-    if (fs.existsSync(path.join(cursor, "mcp.json"))) return cursor;
-    const parent = path.dirname(cursor);
-    if (parent === cursor) {
-      throw new Error(
-        `Could not locate mcp.json walking up from ${here}. Make sure the agent is launched from inside the workspace.`
-      );
-    }
-    cursor = parent;
   }
 }
 

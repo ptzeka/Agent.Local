@@ -3,7 +3,7 @@ import { dirname, resolve } from "node:path";
 import type { Express, Request, Response } from "express";
 import type { Eventing, AppSettings } from "@agent-local/common";
 import { loadConfig, AGENT_EXECUTE_TASK_TYPE } from "./config.js";
-import { ZeebeClient } from "./zeebe-client.js";
+import { ZeebeClient, WorkflowDisabledError } from "./zeebe-client.js";
 
 // bpmn ships next to dist/ in the package; anchor the default dir here so it resolves regardless of cwd
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -24,6 +24,7 @@ export const mount = (app: Express, ctx: MountContext): ZeebeClient => {
   // appsettings supplies non-secret engine knobs; ZEEBE_* connection secrets still come from env via loadConfig
   const config = loadConfig(process.env, packageRoot);
   if (ctx.settings?.workflow?.taskType) config.taskType = ctx.settings.workflow.taskType;
+  if (ctx.settings?.workflow?.enabledProcessIds) config.enabledProcessIds = ctx.settings.workflow.enabledProcessIds;
   const client = new ZeebeClient(config, ctx.bus, ctx.logger, ctx.signal);
   void client.start();
 
@@ -50,6 +51,27 @@ export const mount = (app: Express, ctx: MountContext): ZeebeClient => {
     });
   });
 
+  // the host authorizes (owner + workflow:write) then commands a variable injection; the engine merges them onto
+  // the instance so a held job sees them on completion. tolerant — a broker reject is logged, never thrown back.
+  ctx.bus.subscribe("workflow.inject", (event) => {
+    const { camundaId, variables, scopeKey, local } = event.payload as Record<string, unknown>;
+    if (typeof camundaId !== "string") return;
+    const scope = typeof scopeKey === "string" ? scopeKey : camundaId;
+    client.setVariables(scope, (variables ?? {}) as Record<string, unknown>, Boolean(local)).catch((err) => {
+      ctx.logger.warn?.(`[workflow] inject into ${camundaId} failed: ${String(err)}`);
+    });
+  });
+
+  // the host authorizes then commands a step retry by jobKey; tolerant like inject. inert until jobs actually fail
+  ctx.bus.subscribe("workflow.retry", (event) => {
+    const { jobKey, incidentKey, retries } = event.payload as Record<string, unknown>;
+    if (typeof jobKey !== "string") return;
+    const incident = typeof incidentKey === "string" ? incidentKey : undefined;
+    client.retryJob(jobKey, incident, typeof retries === "number" ? retries : 1).catch((err) => {
+      ctx.logger.warn?.(`[workflow] retry of job ${jobKey} failed: ${String(err)}`);
+    });
+  });
+
   // a future agent.result drives out-of-band completion; Camunda state refreshes here, agent is never called from this side
   ctx.bus.subscribe("agent.result", (event) => {
     const jobKey = event.payload.jobKey;
@@ -70,7 +92,11 @@ export const mount = (app: Express, ctx: MountContext): ZeebeClient => {
     client
       .startProcess(bpmnProcessId, variables)
       .then((record) => res.status(201).json(record))
-      .catch((err) => res.status(503).json({ error: String(err) }));
+      .catch((err) => {
+        // a disabled workflow is a client-side refusal (403), not a broker outage (503)
+        const status = err instanceof WorkflowDisabledError ? 403 : 503;
+        res.status(status).json({ error: String(err) });
+      });
   });
 
   app.get("/workflow/process/:key", (req: Request, res: Response) => {

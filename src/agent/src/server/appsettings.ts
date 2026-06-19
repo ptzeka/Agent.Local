@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { DbSettings } from "@agent-local/common";
 
 // the agent service owns its own runtime config (no shared/global appsettings); the file sits beside this
 // loader under src/server and is read by fs so it stays editable without a rebuild, in both tsx and dist runs.
@@ -24,6 +25,8 @@ export interface AgentServerSettings {
   port: number;
   workspace: string;
   sessionsDir: string;
+  // agent.sqlite location for sessions/conversations/metrics (AGENT_DB_FILE env overrides; see DbSettings)
+  db?: DbSettings;
   host: { receiveUrl: string };
   authentication: AgentAuthSettings;
   secrets?: Record<string, string>;

@@ -1,11 +1,10 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import type { DatabaseHandle } from "@agent-local/common/db";
 
 import { ConversationStore } from "../conversation/conversation-store.js";
 import type { ChatMessage } from "../providers/provider.js";
-import type { Session } from "./session.js";
+import type { Session, SessionStatus } from "./session.js";
 
-// the small shape a picker needs without loading and parsing every session file itself
+// the small shape a picker needs without loading and parsing every session itself
 export interface SessionSummary {
   sessionId: string;
   // drives most-recent-first ordering
@@ -18,51 +17,58 @@ export interface SessionSummary {
 // caps preview length so a long opening message can't wreck the layout
 const PREVIEW_MAX_LENGTH = 60;
 
-// one JSON file per session: zero new deps and trivially inspectable; writes go temp+rename so a crash can't corrupt
-// durability is turn-boundary, save() runs after each completed turn
+// the runtime's SessionStatus vocabulary projected onto the session_status FK domain (AGENT_SCHEMA). The full
+// Session is the source of truth in `payload`; the status column is a denormalized, queryable projection only,
+// so it must land inside the FK domain rather than carry the runtime spelling verbatim
+const STATUS_TO_DOMAIN: Record<SessionStatus, string> = {
+  idle: "new",
+  running: "running",
+  "awaiting-input": "awaiting_input",
+  done: "satisfied",
+  error: "error",
+};
+
+// session run-state on agent.sqlite: one `sessions` row, the whole Session object in `payload` JSON (M3 design
+// rule), with status/dates lifted to columns for queries. The DB handle is opened once at startup and injected.
 export class SessionStore {
   // sessions carry only the conversationId link, so summaries() follows it through this sibling store
   private readonly conversations: ConversationStore;
 
-  private constructor(private readonly directory: string) {
-    this.conversations = ConversationStore.create(directory);
+  private constructor(private readonly db: DatabaseHandle) {
+    this.conversations = ConversationStore.create(db);
   }
 
-  public static create(directory: string): SessionStore {
-    return new SessionStore(path.resolve(directory));
+  public static create(db: DatabaseHandle): SessionStore {
+    return new SessionStore(db);
   }
 
   public async save(session: Session): Promise<void> {
-    await fs.mkdir(this.directory, { recursive: true });
-    const target = this.fileFor(session.sessionId);
-    const tmp = `${target}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(session, null, 2), "utf8");
-    await fs.rename(tmp, target);
+    // anonymous sessions have no Principal yet; "anonymous" keeps the (user_sub, session_id) PK satisfied
+    const userSub = session.user?.sub ?? "anonymous";
+    const status = STATUS_TO_DOMAIN[session.status] ?? "new";
+    this.db
+      .prepare(
+        "INSERT INTO sessions (user_sub, session_id, status, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT (user_sub, session_id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at",
+      )
+      .run(userSub, session.sessionId, status, JSON.stringify(session), session.createdAt, session.updatedAt);
   }
 
+  // keyed by session_id alone: the store API carries no user_sub yet, so cross-user scoping waits for the
+  // identity-aware repository. session ids are uuids, so a same-id collision across users is not a real case
   public async load(sessionId: string): Promise<Session | null> {
-    try {
-      const raw = await fs.readFile(this.fileFor(sessionId), "utf8");
-      return JSON.parse(raw) as Session;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
+    const row = this.db
+      .prepare("SELECT payload FROM sessions WHERE session_id = ?")
+      .get(sessionId) as { payload: string } | undefined;
+    return row ? (JSON.parse(row.payload) as Session) : null;
   }
 
   public async list(): Promise<string[]> {
-    try {
-      const entries = await fs.readdir(this.directory);
-      return entries
-        .filter((entry) => entry.endsWith(".json"))
-        .map((entry) => entry.slice(0, -".json".length));
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw err;
-    }
+    const rows = this.db.prepare("SELECT session_id FROM sessions").all() as { session_id: string }[];
+    return rows.map((row) => row.session_id);
   }
 
-  // corrupt files are skipped, not fatal; sub-sessions are omitted since they aren't standalone-resumable
+  // corrupt rows are skipped, not fatal; sub-sessions are omitted since they aren't standalone-resumable
   public async summaries(): Promise<SessionSummary[]> {
     const ids = await this.list();
     const summaries: SessionSummary[] = [];
@@ -81,12 +87,6 @@ export class SessionStore {
       });
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
-  }
-
-  // sanitises the id so a hostile or malformed value can't escape the store via path traversal
-  private fileFor(sessionId: string): string {
-    const safe = sessionId.replace(/[^a-zA-Z0-9_.-]/g, "_");
-    return path.join(this.directory, `${safe}.json`);
   }
 }
 

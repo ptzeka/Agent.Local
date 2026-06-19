@@ -1,5 +1,7 @@
 import express from "express";
 import { Eventing, sessionKey, createLocalKeyResolver, type ILogger } from "@agent-local/common";
+import { openDatabase } from "@agent-local/common/db";
+import { resolveHostDbFile } from "./jobs/db-schema.js";
 import { mount as mountWorkflow } from "@agent-local/workflow";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
@@ -41,8 +43,11 @@ async function main(): Promise<void> {
   // the key that seals/opens the session cookie ticket; local-only secret for now (see appsettings host.session)
   if (!settings.host.session?.secret) logger.warn?.("[host] no host.session.secret — session cookie uses an insecure dev key");
   const cookieKey = sessionKey(settings.host.session?.secret ?? "agent-local-insecure-dev-session-secret");
+  // open the host DB connection at startup; `db init` owns the schema, this only opens it for injection.
+  // the file comes from appsettings (host.db.file), overridable by HOST_DB_FILE for ops
+  const db = openDatabase(resolveHostDbFile(settings.host.db?.file));
   // resolveUser lets the web SSR hydrate identity from the session this process decrypts (sessionMiddleware)
-  const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs, resolveUser: resolveUserFromRequest };
+  const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs, db, resolveUser: resolveUserFromRequest };
 
   app.use(express.json());
   // liveness: the host process is up and serving. cheap, dependency-free — orchestrators restart on its failure.
@@ -89,7 +94,14 @@ async function main(): Promise<void> {
 
   const shutdown = (): void => {
     root.abort("process-shutdown");
-    server.close(() => process.exit(0));
+    server.close(() => {
+      try {
+        db.close();
+      } catch {
+        // teardown must keep unwinding
+      }
+      process.exit(0);
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

@@ -1,5 +1,7 @@
 import express from "express";
 import { Eventing, type ILogger } from "@agent-local/common";
+import { openDatabase } from "@agent-local/common/db";
+import { resolveAgentDbFile } from "../agent/db-schema.js";
 import { loadAgentSettings } from "./appsettings.js";
 import { createReceiveApi } from "./comms/receiver.js";
 import { createSessionApi } from "./session-api.js";
@@ -27,6 +29,10 @@ async function main(): Promise<void> {
   const root = new AbortController();
   const bus = new Eventing();
   const app = express();
+  // open the agent DB connection once for the process; `db init` owns the schema, this only opens it.
+  // every per-request runtime shares this one handle (one writer process per file). file from appsettings
+  // (db.file), overridable by AGENT_DB_FILE for ops
+  const db = openDatabase(resolveAgentDbFile(settings.db?.file));
   // the agent owns the sessions it mints; lives across requests for the process, so it is built once here
   const sessions = new SessionRegistry();
 
@@ -57,7 +63,7 @@ async function main(): Promise<void> {
   // session lifecycle mounts BEFORE the runtime middleware: minting/closing a session needs no runtime, and
   // routing it through runtime_context would build a per-request runtime (and spurious session state) for it
   app.use(createSessionApi(sessions));
-  app.use(runtimeContextMiddleware({ signal: root.signal }));
+  app.use(runtimeContextMiddleware({ signal: root.signal, db }));
   app.use(createReceiveApi());
 
   const port = Number(process.env.AGENT_PORT) || settings.port;
@@ -67,7 +73,14 @@ async function main(): Promise<void> {
   // MCP clients self-dispose and in-flight turns flush via their finally — no per-runtime teardown to await
   const shutdown = (): void => {
     root.abort("process-shutdown");
-    server.close(() => process.exit(0));
+    server.close(() => {
+      try {
+        db.close();
+      } catch {
+        // teardown must keep unwinding
+      }
+      process.exit(0);
+    });
   };
   process.on("SIGINT", shutdown);
   process.on("SIGTERM", shutdown);

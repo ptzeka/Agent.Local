@@ -16,7 +16,7 @@ const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversati
 function seedMetrics(ctx: RuntimeContext): void {
   ctx.registry.set(
     MetricsRegistryToken,
-    new MetricsRegistry({ sessionId: session.sessionId, store: new MetricsStore() })
+    new MetricsRegistry({ sessionId: session.sessionId, store: new MetricsStore(ctx.db) })
   );
 }
 

@@ -1,4 +1,3 @@
-import path from "node:path";
 import { ContextLoader } from "../../context/context-loader.js";
 import { fillToolsList } from "../../context/system-prompt.js";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
@@ -15,8 +14,6 @@ import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
   roleName: string;
-  // defaults to a `contexts` folder beside the sessions dir
-  contextsDir?: string;
   // false for a coordinator-less sub-session, so its snapshot (and hash) faithfully omits sub-session tools
   includeSubSessions?: boolean;
 }
@@ -31,10 +28,9 @@ export class ContextMiddleware implements IMiddleware {
     // get() throws if the session/workspace steps have not run; this step stamps the session and reads the workspace
     const session = ctx.registry.get(SessionToken);
     ctx.registry.get(WorkspaceToken);
-    // default beside the sessions dir so …/sessions and …/contexts sit together
-    const contextsDir = this.params.contextsDir ?? path.join(path.dirname(ctx.sessionsDir), "contexts");
+    // snapshots live in the contexts table on ctx.db (the shared startup handle)
     if (!ctx.registry.has(ContextLoaderToken)) {
-      ctx.registry.set(ContextLoaderToken, new ContextLoader(contextsDir));
+      ctx.registry.set(ContextLoaderToken, ContextLoader.create(ctx.db));
     }
     const role = this.params.roleName;
 

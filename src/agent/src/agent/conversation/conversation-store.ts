@@ -1,10 +1,9 @@
-import fs from "node:fs/promises";
-import path from "node:path";
+import type { DatabaseHandle } from "@agent-local/common/db";
 
 import type { ChatMessage } from "../providers/provider.js";
 
 // deletion is soft: deletedAt hides the conversation from normal reads while the
-// JSONL stays as the audit copy until a future retention sweep hard-deletes it
+// messages rows stay as the audit copy until a future retention sweep hard-deletes them
 export interface ConversationMeta {
   conversationId: string;
   createdAt: number;
@@ -12,65 +11,59 @@ export interface ConversationMeta {
   deletedAt: number | null;
 }
 
-// one JSONL file per conversation: append is the hot path (one appended line, no rewrite)
-// rewrites happen only on summarize/compact/reset, via temp + rename so a torn write can't corrupt
+// transcript persistence on agent.sqlite: one `conversations` row per transcript, one `messages` row per
+// line ordered by seq. Replaces the per-file JSONL folder layout; the DB handle is opened once at process
+// startup and injected, so the store owns no connection of its own.
 export class ConversationStore {
-  private constructor(private readonly directory: string) {}
+  private constructor(private readonly db: DatabaseHandle) {}
 
-  // own subfolder so session pickers globbing `*.json` never pick up transcripts
-  public static create(sessionsDir: string): ConversationStore {
-    return new ConversationStore(path.resolve(sessionsDir, "conversations"));
+  public static create(db: DatabaseHandle): ConversationStore {
+    return new ConversationStore(db);
   }
 
+  // appends to the tail: seq continues past the current max so a concurrent reader never sees a gap.
+  // ensures the parent row first so the FK holds even if append races ahead of ensureMeta
   public async append(conversationId: string, messages: readonly ChatMessage[]): Promise<void> {
     if (messages.length === 0) return;
-    await fs.mkdir(this.directory, { recursive: true });
-    const lines = messages.map((message) => JSON.stringify(message)).join("\n") + "\n";
-    await fs.appendFile(this.fileFor(conversationId), lines, "utf8");
+    const insert = this.db.prepare(
+      "INSERT INTO messages (conversation_id, seq, payload) VALUES (?, ?, ?)",
+    );
+    const tx = this.db.transaction((rows: readonly ChatMessage[]) => {
+      this.ensureRow(conversationId);
+      let seq = this.nextSeq(conversationId);
+      for (const message of rows) insert.run(conversationId, seq++, JSON.stringify(message));
+    });
+    tx(messages);
   }
 
-  // null for missing or soft-deleted: deleted transcripts stay readable only via the file directly
-  // torn lines are skipped, not fatal, so the transcript up to a crash tear still loads
+  // null for missing or soft-deleted: a deleted transcript stays readable only by querying past the deletedAt guard
   public async load(conversationId: string): Promise<ChatMessage[] | null> {
     const meta = await this.readMeta(conversationId);
-    if (meta?.deletedAt) return null;
-
-    let raw: string;
-    try {
-      raw = await fs.readFile(this.fileFor(conversationId), "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
-
-    const messages: ChatMessage[] = [];
-    for (const line of raw.split(/\r?\n/)) {
-      if (line.trim().length === 0) continue;
-      try {
-        messages.push(JSON.parse(line) as ChatMessage);
-      } catch {
-        // torn last line from a crash mid-append: skip rather than fail the whole load
-      }
-    }
-    return messages;
+    if (!meta || meta.deletedAt) return null;
+    const rows = this.db
+      .prepare("SELECT payload FROM messages WHERE conversation_id = ? ORDER BY seq")
+      .all(conversationId) as { payload: string }[];
+    return rows.map((row) => JSON.parse(row.payload) as ChatMessage);
   }
 
-  // backup renames the outgoing transcript aside (O(1)) because summarization is lossy
-  // and the pre-summary generation must survive for audit/undo; trim passes false (healing, not history)
+  // summarization/reset rewrites the whole transcript in one transaction (delete + re-seed from 0).
+  // backup is a no-op: the relational layout keeps no generation copy (the JSONL .bak rename is gone);
+  // a retention/audit table is a later add if undo is needed
   public async rewrite(
     conversationId: string,
     messages: readonly ChatMessage[],
-    options: { backup?: boolean } = {}
+    _options: { backup?: boolean } = {},
   ): Promise<void> {
-    await fs.mkdir(this.directory, { recursive: true });
-    const target = this.fileFor(conversationId);
-    if (options.backup) {
-      await this.renameIfExists(target, this.backupFileFor(conversationId, "bak"));
-    }
-    const tmp = `${target}.tmp`;
-    const body = messages.map((message) => JSON.stringify(message)).join("\n");
-    await fs.writeFile(tmp, body.length > 0 ? body + "\n" : "", "utf8");
-    await fs.rename(tmp, target);
+    const insert = this.db.prepare(
+      "INSERT INTO messages (conversation_id, seq, payload) VALUES (?, ?, ?)",
+    );
+    const tx = this.db.transaction((rows: readonly ChatMessage[]) => {
+      this.ensureRow(conversationId);
+      this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(conversationId);
+      let seq = 0;
+      for (const message of rows) insert.run(conversationId, seq++, JSON.stringify(message));
+    });
+    tx(messages);
   }
 
   // --------------------------------------------------------------------------
@@ -78,39 +71,25 @@ export class ConversationStore {
   // --------------------------------------------------------------------------
 
   public async readMeta(conversationId: string): Promise<ConversationMeta | null> {
-    try {
-      const raw = await fs.readFile(this.metaFileFor(conversationId), "utf8");
-      return JSON.parse(raw) as ConversationMeta;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
-      throw err;
-    }
+    const row = this.db
+      .prepare("SELECT conversation_id, created_at, deleted_at FROM conversations WHERE conversation_id = ?")
+      .get(conversationId) as { conversation_id: string; created_at: number; deleted_at: number | null } | undefined;
+    if (!row) return null;
+    return { conversationId: row.conversation_id, createdAt: row.created_at, deletedAt: row.deleted_at };
   }
 
   public async ensureMeta(conversationId: string): Promise<ConversationMeta> {
-    const existing = await this.readMeta(conversationId);
-    if (existing) return existing;
-    const meta: ConversationMeta = {
-      conversationId,
-      createdAt: Date.now(),
-      deletedAt: null,
-    };
-    await this.writeMeta(meta);
-    return meta;
+    this.ensureRow(conversationId);
+    return (await this.readMeta(conversationId))!;
   }
 
-  // idempotent: a repeat call keeps the original timestamp and finds no live file to move
+  // idempotent: a repeat call keeps the original deletedAt (the guard skips an already-set row)
   public async markDeleted(conversationId: string): Promise<ConversationMeta> {
-    const meta = await this.ensureMeta(conversationId);
-    if (meta.deletedAt === null) {
-      meta.deletedAt = Date.now();
-      await this.writeMeta(meta);
-    }
-    await this.renameIfExists(
-      this.fileFor(conversationId),
-      this.backupFileFor(conversationId, "deleted")
-    );
-    return meta;
+    this.ensureRow(conversationId);
+    this.db
+      .prepare("UPDATE conversations SET deleted_at = ? WHERE conversation_id = ? AND deleted_at IS NULL")
+      .run(Date.now(), conversationId);
+    return (await this.readMeta(conversationId))!;
   }
 
   public async isDeleted(conversationId: string): Promise<boolean> {
@@ -118,38 +97,17 @@ export class ConversationStore {
     return meta?.deletedAt != null;
   }
 
-  private async writeMeta(meta: ConversationMeta): Promise<void> {
-    await fs.mkdir(this.directory, { recursive: true });
-    const target = this.metaFileFor(meta.conversationId);
-    const tmp = `${target}.tmp`;
-    await fs.writeFile(tmp, JSON.stringify(meta, null, 2), "utf8");
-    await fs.rename(tmp, target);
+  // INSERT OR IGNORE so the create date is stamped exactly once, the first time a conversation comes alive
+  private ensureRow(conversationId: string): void {
+    this.db
+      .prepare("INSERT OR IGNORE INTO conversations (conversation_id, created_at, deleted_at) VALUES (?, ?, NULL)")
+      .run(conversationId, Date.now());
   }
 
-  // sanitises the id so a hostile or malformed value can't escape the store via path traversal
-  private fileFor(conversationId: string): string {
-    return path.join(this.directory, `${sanitize(conversationId)}.jsonl`);
+  private nextSeq(conversationId: string): number {
+    const row = this.db
+      .prepare("SELECT COALESCE(MAX(seq), -1) AS max FROM messages WHERE conversation_id = ?")
+      .get(conversationId) as { max: number };
+    return row.max + 1;
   }
-
-  private metaFileFor(conversationId: string): string {
-    return path.join(this.directory, `${sanitize(conversationId)}.meta.json`);
-  }
-
-  // fixed names by design: a new backup overwrites the prior one, keeping only the latest generation
-  private backupFileFor(conversationId: string, kind: "bak" | "deleted"): string {
-    return path.join(this.directory, `${sanitize(conversationId)}.${kind}.json`);
-  }
-
-  private async renameIfExists(from: string, to: string): Promise<void> {
-    try {
-      await fs.rename(from, to);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw err;
-    }
-  }
-}
-
-function sanitize(conversationId: string): string {
-  return conversationId.replace(/[^a-zA-Z0-9_.-]/g, "_");
 }

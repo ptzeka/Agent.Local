@@ -19,13 +19,12 @@ its env endpoint. **Camunda always initiates** (see the workflow README).
 | `Dockerfile` | `FROM camunda/zeebe` (version via `CAMUNDA_VERSION` build arg) + our layer |
 | `dockerfiles/startup.sh` | entrypoint wrapper: applies dev defaults, execs the broker |
 | `dockerfiles/application.yaml` | baked-in broker config (no secrets/endpoints) |
-| `dockerfiles/bpmn/` | process definitions baked into the image at `/usr/local/zeebe/bpmn/` |
 | `docker-compose.yml` | runs the **built** image locally |
 
-> **BPMN source of truth stays `src/workflow/bpmn/`** — that's what the client
-> deploys over gRPC at boot. `dockerfiles/bpmn/` is a staged copy (Docker can only
-> COPY from within this workspace's build context) for a self-contained image and
-> a future startup/bucket-pull deploy. Keep the two in sync when a diagram changes.
+> **BPMN is not baked into the broker image.** Process definitions live with the
+> client in `src/workflow/bpmn/`; the co-hosted `@agent-local/workflow` worker
+> deploys every `*.bpmn` in that folder over gRPC at boot (`deployAll`). The broker
+> image stays a pure runtime — no process state, no auto-deploy folder.
 
 ## Build & run locally
 

@@ -1,4 +1,5 @@
 import { type Eventing, type ILogger as Logger, type AppSettings } from "@agent-local/common";
+import { type DatabaseHandle } from "@agent-local/common/db";
 import { type ResolveUser } from "@agent-local/web";
 import { type JobRegistry } from "./jobs/job-registry.js";
 
@@ -12,6 +13,8 @@ export type MountContext = {
   signal: AbortSignal;
   settings: AppSettings;
   jobs: JobRegistry;
+  // host.sqlite handle, opened once at startup and injected; the job repository reads/writes it once M3-H lands
+  db?: DatabaseHandle;
   // host-provided session resolver passed through to the web mount (decrypts the cookie ticket -> identity)
   resolveUser?: ResolveUser;
 };

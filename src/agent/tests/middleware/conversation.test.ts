@@ -1,7 +1,4 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
-import fs from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 
 import { Conversation } from "../../src/agent/conversation/conversation.js";
 import { ConversationStore } from "../../src/agent/conversation/conversation-store.js";
@@ -9,21 +6,22 @@ import { ConversationMiddleware } from "../../src/agent/runtime/middleware/conve
 import { ConversationToken } from "../../src/agent/runtime/tokens.js";
 import { SessionStore } from "../../src/agent/session/session-store.js";
 import { createSession, type Session } from "../../src/agent/session/session.js";
-import { makeContext } from "./context.js";
+import type { DatabaseHandle } from "@agent-local/common/db";
+import { makeContext, makeTestDb } from "./context.js";
 
-// the transcript lives in a rolling JSONL file linked from the session by conversationId. Covers the store
-// round-trip, the append/flush watermark, structural rewrites, and the middleware's resume heal + backfill
+// the transcript lives in conversations/messages rows linked from the session by conversationId. Covers the
+// store round-trip, the append/flush watermark, structural rewrites, and the middleware's resume heal + backfill
 describe("Conversation", () => {
-  let root: string;
+  let db: DatabaseHandle;
   let store: ConversationStore;
 
-  beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "conversation-"));
-    store = ConversationStore.create(root);
+  beforeEach(() => {
+    db = makeTestDb();
+    store = ConversationStore.create(db);
   });
 
-  afterEach(async () => {
-    await fs.rm(root, { recursive: true, force: true });
+  afterEach(() => {
+    db.close();
   });
 
   test("flush appends only the unpersisted tail; reopening loads the full transcript", async () => {
@@ -45,7 +43,7 @@ describe("Conversation", () => {
     ]);
   });
 
-  test("replaceAll rewrites the transcript and keeps the old generation as <id>.bak.json", async () => {
+  test("replaceAll rewrites the transcript to the new generation", async () => {
     const conversation = await Conversation.open(store, "c-2");
     conversation.append({ role: "user", content: "a" }, { role: "assistant", content: "b" });
     await conversation.flush();
@@ -54,17 +52,9 @@ describe("Conversation", () => {
 
     const reopened = await Conversation.open(store, "c-2");
     expect(reopened.getMessages()).toEqual([{ role: "system", content: "summary" }]);
-
-    // The pre-summary transcript survived as the backup file.
-    const backup = await fs.readFile(
-      path.join(root, "conversations", "c-2.bak.json"),
-      "utf8"
-    );
-    expect(backup).toContain('"a"');
-    expect(backup).toContain('"b"');
   });
 
-  test("markDeleted stamps deletedAt, hides the transcript from load, and renames it for audit", async () => {
+  test("markDeleted stamps deletedAt and hides the transcript from load", async () => {
     const conversation = await Conversation.open(store, "c-4");
     conversation.append({ role: "user", content: "sensitive" });
     await conversation.flush();
@@ -76,13 +66,9 @@ describe("Conversation", () => {
     const meta = await store.readMeta("c-4");
     expect(meta?.createdAt).toBeGreaterThan(0);
     expect(meta?.deletedAt).toBeGreaterThanOrEqual(meta!.createdAt);
-
-    // …but the audit copy is still on disk under the deleted name.
-    const audit = await fs.readFile(
-      path.join(root, "conversations", "c-4.deleted.json"),
-      "utf8"
-    );
-    expect(audit).toContain("sensitive");
+    // …and the soft-delete is idempotent — a repeat keeps the original deletedAt
+    const again = await store.markDeleted("c-4");
+    expect(again.deletedAt).toBe(meta!.deletedAt);
   });
 
   test("trimDanglingToolCalls drops an unanswered tool_use tail and persists the trim", async () => {
@@ -103,23 +89,21 @@ describe("Conversation", () => {
 });
 
 describe("ConversationMiddleware", () => {
-  let root: string;
-  let sessionsDir: string;
+  let db: DatabaseHandle;
   let sessionStore: SessionStore;
 
-  beforeEach(async () => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "conversation-mw-"));
-    sessionsDir = path.join(root, "sessions");
-    sessionStore = SessionStore.create(sessionsDir);
+  beforeEach(() => {
+    db = makeTestDb();
+    sessionStore = SessionStore.create(db);
   });
 
-  afterEach(async () => {
-    await fs.rm(root, { recursive: true, force: true });
+  afterEach(() => {
+    db.close();
   });
 
   test("opens the conversation linked from the session and sets ctx.conversation", async () => {
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
-    const ctx = makeContext({ sessionsDir, store: sessionStore, session });
+    const ctx = makeContext({ db, store: sessionStore, session });
     const next = jest.fn(async () => {});
 
     await new ConversationMiddleware().initialize(ctx, next);
@@ -131,11 +115,11 @@ describe("ConversationMiddleware", () => {
 
   test("backfills a conversationId on a pre-split session and persists the link", async () => {
     const session = createSession({ sessionId: "s2", workspaceId: "ws-1", conversationId: "c2" });
-    // Simulate a session persisted before the split: no conversationId on disk.
+    // Simulate a session persisted before the split: no conversationId stored.
     (session as Partial<Session>).conversationId = undefined;
     await sessionStore.save(session);
 
-    const ctx = makeContext({ sessionsDir, store: sessionStore, session });
+    const ctx = makeContext({ db, store: sessionStore, session });
     await new ConversationMiddleware().initialize(ctx, jest.fn(async () => {}));
 
     expect(session.conversationId).toBeDefined();
@@ -143,12 +127,12 @@ describe("ConversationMiddleware", () => {
   });
 
   test("relinks to a fresh conversation when the session points at a soft-deleted one", async () => {
-    const conversationStore = ConversationStore.create(sessionsDir);
+    const conversationStore = ConversationStore.create(db);
     await conversationStore.append("c3", [{ role: "user", content: "old" }]);
     await conversationStore.markDeleted("c3");
 
     const session = createSession({ sessionId: "s3", workspaceId: "ws-1", conversationId: "c3" });
-    const ctx = makeContext({ sessionsDir, store: sessionStore, session });
+    const ctx = makeContext({ db, store: sessionStore, session });
     await new ConversationMiddleware().initialize(ctx, jest.fn(async () => {}));
 
     // The deleted conversation must never be resurrected — new id, empty transcript.
@@ -158,7 +142,7 @@ describe("ConversationMiddleware", () => {
   });
 
   test("throws without a session step earlier in the pipeline", async () => {
-    const ctx = makeContext({ sessionsDir, store: sessionStore });
+    const ctx = makeContext({ db, store: sessionStore });
     await expect(
       new ConversationMiddleware().initialize(ctx, jest.fn(async () => {}))
     ).rejects.toThrow(/no instance registered for "session"/);

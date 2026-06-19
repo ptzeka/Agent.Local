@@ -4,6 +4,8 @@ import {
   WORKFLOW_START,
   WORKFLOW_STARTED,
   WORKFLOW_STOP,
+  WORKFLOW_INJECT,
+  WORKFLOW_RETRY,
   WORKFLOW_COMPLETED,
   WORKFLOW_FAILED,
   type WorkflowStartedPayload,
@@ -64,6 +66,35 @@ export class Orchestrator {
     if (record.camundaId) this.bus.publish(WORKFLOW_STOP, { workId, camundaId: record.camundaId });
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
     return this.jobs.update(workId, { status: "stopped", reason });
+  }
+
+  // operator intervention: inject variables onto a work the caller owns (camunda must be live). returns the work
+  // record so the route can 404 a non-owner, false when the instance has not started. bus-pure like stop.
+  async inject(
+    workId: string,
+    userId: string,
+    variables: Record<string, unknown>,
+    opts: { scopeKey?: string; local?: boolean } = {},
+  ): Promise<JobRecord | null | false> {
+    const record = await this.jobs.get(workId);
+    if (!record || record.userId !== userId) return null;
+    if (!record.camundaId) return false;
+    this.bus.publish(WORKFLOW_INJECT, { camundaId: record.camundaId, variables, ...opts });
+    return record;
+  }
+
+  // operator intervention: retry a failed step of a work the caller owns, keyed by the jobKey the caller supplies
+  // (from the failed-work detail). ownership is by workId; the engine does the broker retry. bus-pure like stop.
+  async retryStep(
+    workId: string,
+    userId: string,
+    jobKey: string,
+    opts: { incidentKey?: string; retries?: number } = {},
+  ): Promise<JobRecord | null> {
+    const record = await this.jobs.get(workId);
+    if (!record || record.userId !== userId) return null;
+    this.bus.publish(WORKFLOW_RETRY, { jobKey, ...opts });
+    return record;
   }
 
   // terminal fold: resolve the work unit by its camundaId, close its session, and record the final status

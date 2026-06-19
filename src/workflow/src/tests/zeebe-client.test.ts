@@ -1,6 +1,8 @@
 import { describe, it, expect } from "@jest/globals";
-import { Eventing, type EventMessage } from "@agent-local/common";
-import { ZeebeClient, type ZeebeGrpc } from "../zeebe-client.js";
+// import from the eventing subpath, not the index: the index barrel transitively pulls jwt -> jose (ESM-only),
+// which ts-jest's commonjs transform cannot load. eventing.ts has no such dependency.
+import { Eventing, type EventMessage } from "@agent-local/common/eventing";
+import { ZeebeClient, WorkflowDisabledError, type ZeebeGrpc } from "../zeebe-client.js";
 import { loadConfig } from "../config.js";
 
 const noopLogger = { error() {}, warn() {}, info() {}, debug() {} };
@@ -26,6 +28,9 @@ function fakeGrpc(): { grpc: ZeebeGrpc; activate: (job: any) => Promise<unknown>
     async cancelProcessInstance(req) {
       cancelled.push(req);
     },
+    async setVariables() {},
+    async updateJobRetries() {},
+    async resolveIncident() {},
     async close() {},
   };
   return { grpc, activate: (job) => handler(job), completed, cancelled };
@@ -94,5 +99,15 @@ describe("ZeebeClient", () => {
     const rec = await client.startProcess("agent-execute-process", {});
     expect(rec.processInstanceKey).toBe("PI-1");
     expect(client.getInstance("PI-1")?.status).toBe("active");
+  });
+
+  it("startProcess refuses a bpmnProcessId outside a populated allowlist", async () => {
+    const bus = new Eventing();
+    const { grpc } = fakeGrpc();
+    const cfg = { ...loadConfig(), enabledProcessIds: ["only-this"] };
+    const client = new ZeebeClient(cfg, bus, noopLogger, new AbortController().signal, grpc);
+    await expect(client.startProcess("agent-execute-process", {})).rejects.toBeInstanceOf(WorkflowDisabledError);
+    const allowed = await client.startProcess("only-this", {});
+    expect(allowed.processInstanceKey).toBe("PI-1");
   });
 });

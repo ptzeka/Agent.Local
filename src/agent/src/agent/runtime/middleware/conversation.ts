@@ -17,7 +17,7 @@ export class ConversationMiddleware implements IMiddleware {
 
   async initialize(ctx: RuntimeContext, next: () => Promise<void>): Promise<void> {
     const session = ctx.registry.get(SessionToken);
-    const store = ConversationStore.create(ctx.sessionsDir);
+    const store = ConversationStore.create(ctx.db);
 
     // mint a fresh link for a missing or soft-deleted id; reusing a deleted one would resurrect the audit copy
     if (!session.conversationId || (await store.isDeleted(session.conversationId))) {

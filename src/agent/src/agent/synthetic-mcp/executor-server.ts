@@ -154,6 +154,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
         configPath: this.ctx.configPath,
         orchestratorRole: EXECUTOR_ROLE,
         sessionsDir: this.ctx.sessionsDir,
+        db: this.ctx.db,
         workspaceRoot: this.ctx.workspaceRoot,
         sandboxRoot: this.ctx.sandboxRoot,
         mcpConfigPath: this.ctx.mcpConfigPath,

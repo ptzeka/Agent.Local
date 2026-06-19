@@ -1,17 +1,31 @@
-import { createHash } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { type IdentityClaims } from "@agent-local/common";
 
-// LOCAL DEV ONLY credential store: md5 is deliberately weak and the operators are hardcoded below. This
-// exists so the JWT issuer has something to authenticate against before real IAM lands — never ship it.
+// LOCAL DEV ONLY credential store: the operators are hardcoded below so the JWT issuer
+// has something to authenticate against before real IAM lands — never ship the accounts.
 export type UserIdentity = Omit<IdentityClaims, "sub"> & { userId: string };
 
 interface UserEntry extends UserIdentity {
   passwordHash: string;
 }
 
-// md5 of the password; the registry stores hashes, never the plaintext, even for these dev accounts
-function md5(value: string): string {
-  return createHash("md5").update(value, "utf8").digest("hex");
+// OWASP-recommended scrypt cost: N=2^17 is the current minimum; maxmem must clear 128*N*r bytes
+const SCRYPT = { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 } as const;
+
+// scrypt with a per-entry random salt (OWASP-recommended for at-rest passwords); the registry
+// stores only "salt:hash" hex, never the plaintext, even for these dev accounts
+function hashPassword(value: string): string {
+  const salt = randomBytes(16);
+  return `${salt.toString("hex")}:${scryptSync(value, salt, 64, SCRYPT).toString("hex")}`;
+}
+
+function verifyPassword(value: string, stored: string): boolean {
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) return false;
+  const expected = Buffer.from(hashHex, "hex");
+  const derived = scryptSync(value, Buffer.from(saltHex, "hex"), expected.length, SCRYPT);
+  // timing-safe equal guards the verify path against comparison-timing leaks
+  return derived.length === expected.length && timingSafeEqual(derived, expected);
 }
 
 // hardcoded operators — add more lines here; e.g. user/test below logs in as username "user", password "test"
@@ -23,7 +37,7 @@ const USERS: UserEntry[] = [
     lastName: "Operator",
     // the human operator drives the workflow UI/APIs; agent:trigger/host:callback are service scopes, not theirs
     permissions: ["workflow:read", "workflow:write", "auth.accesstoken"],
-    passwordHash: md5("Password1"),
+    passwordHash: hashPassword("Password1"),
   },
   // the agent's client-credentials identity: it fetches a token from /api/auth/token and presents host:callback on /receive
   {
@@ -32,7 +46,7 @@ const USERS: UserEntry[] = [
     firstName: "Agent",
     lastName: "Client",
     permissions: ["host:callback"],
-    passwordHash: md5("AgentClient1"),
+    passwordHash: hashPassword("AgentClient1"),
   },
   // the host's OWN dispatch identity: it fetches a token from /api/auth/token and presents agent:trigger to the agent
   {
@@ -41,7 +55,7 @@ const USERS: UserEntry[] = [
     firstName: "Host",
     lastName: "Dispatch",
     permissions: ["agent:trigger"],
-    passwordHash: md5("HostDispatch1"),
+    passwordHash: hashPassword("HostDispatch1"),
   },
 ];
 
@@ -50,7 +64,7 @@ export class UserRegistry {
   public verify(username: string, password: string): UserIdentity | null {
     const entry = USERS.find((u) => u.userName === username);
     if (!entry) return null;
-    if (entry.passwordHash !== md5(password)) return null;
+    if (!verifyPassword(password, entry.passwordHash)) return null;
     const { passwordHash: _hash, ...identity } = entry;
     return identity;
   }
