@@ -5,13 +5,13 @@ import type { AgentActivities } from "./activities.js";
 // the workflow type string == this function's name; the host starts it via TemporalClient.startProcess(type, ...)
 export const USER_TABLE_TEST_WORKFLOW_TYPE = "userTableTestWorkflow";
 
-// start args = the variables the host seeds at trigger (workId/workspaceId/sessionId) plus the start command's
-// own variables (here userId) — step 1 "gathers" these into the workflow state that later steps read.
+// start args = the work-unit ids the host seeds at trigger; step 1 "gathers" them into the workflow state.
+// the OWNER is the host's principal (JobRegistry keyed by userId), NOT an engine variable — the engine stays
+// user-agnostic (M7-9), so no userId/identity rides into the workflow here.
 export interface UserTableTestArgs {
   workId: string;
   workspaceId: string;
   sessionId: string;
-  userId?: string;
 }
 
 // the agent answers each dispatched step with this signal — TemporalClient.reportResult sends name "agentResult"
@@ -28,7 +28,7 @@ const { dispatchAgentTask } = proxyActivities<AgentActivities>({
 // back via the agentResult signal and the WORKFLOW decides when it is done (returns the terminal message).
 export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<string> {
   // the workflow IS the session: state gathered at initialize and carried across steps with no external store
-  const session: Record<string, unknown> = { workId: args.workId, sessionId: args.sessionId };
+  const session: Record<string, unknown> = {};
 
   // each agentResult signal appends here; a step waits for its own answer to land before advancing
   const results: unknown[] = [];
@@ -44,18 +44,18 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
   };
 
   // step 1 — initialize: gather the start command's variables into the session (no agent turn)
-  session.userId = args.userId ?? "55";
+  session.workId = args.workId;
+  session.workspaceId = args.workspaceId;
+  session.sessionId = args.sessionId;
 
   // step 2 — ask the agent to create the users sheet
   await runStep(`Create an Excel sheet named "users" with two columns: userId, userName.`);
 
-  // step 3 — ask the agent to add a record
-  await runStep(`Append a row to the "users" sheet with userId=${String(session.userId)}, userName=foxmulder.`);
+  // step 3 — ask the agent to add a record (userId/userName are domain TEST DATA, not the principal owner)
+  await runStep(`Append a row to the "users" sheet with userId=55, userName=foxmulder.`);
 
   // step 4 — ask the agent to assert the row is present
-  await runStep(
-    `Verify the "users" sheet has a row where userId=${String(session.userId)} and userName=foxmulder; fail if it is missing.`,
-  );
+  await runStep(`Verify the "users" sheet has a row where userId=55 and userName=foxmulder; fail if it is missing.`);
 
   // step 5 — complete the work unit with the terminal message
   return "user table created";

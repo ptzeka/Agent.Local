@@ -2096,6 +2096,39 @@ engine-neutral bus vocabulary — `mount.ts` is the glue, not a Camunda detail.
       contract is the point. The engine-neutral rename (`camundaId → executionId`
       across bus + host map) becomes a justified, mechanical follow-up *once* the
       second engine has demonstrated the seam — not a prerequisite for it.
+- [ ] **Engine auth = the host's OWN service identity, validated against the host JWKS —
+      NOT the frontend user's token** *(decision 2026-06-19)*. Temporal is a one-way gRPC
+      *pull*: the worker dials the server (`:7233`) and long-polls; there is **no inbound
+      surface** to expose and nothing Temporal calls back into (the "function outside the
+      runtime" is an **Activity**, run in our worker, not a webhook). The only auth is the
+      host→Temporal hop, and it is **service-to-service**:
+      - The host mints a **fresh, short-lived service token under its own service user**
+        (mirror `HttpJobSender.fetchToken`'s client-credentials → mint-per-call → discard),
+        sets it as gRPC metadata, refreshes before expiry (~1h) on the reconnect loop.
+      - Temporal validates it with its **built-in JWT authorizer** pointed at the host's
+        existing `/.well-known/jwks.json` (`global.authorization.jwtKeyProvider.keySourceURIs`)
+        — RS256 matches the host key ring, so **zero custom Go plugin** if the service token
+        carries a Temporal-shaped `permissions` claim (`["default:write"]`, or
+        `temporal-system:admin` for control-plane). A custom `ClaimMapper` is the fallback
+        only if we want to keep the host's own claim vocabulary (costs a custom server build).
+      - **Two token planes never mix:** `workflow:read/write` etc. are **frontend rights** on
+        the *caller's* user token (web console / works API gate) and never reach the engine;
+        the Temporal `permissions` claim rides only the host's service token. Don't rename the
+        frontend scopes to Temporal's format — the agent + works hops depend on them.
+      - **mTLS is a prod/Cloud concern, not local.** Local = plaintext (mirror Zeebe dev:
+        `CAMUNDA_SECURE_CONNECTION=false`). Self-hosted prod = private-CA client cert (Let's
+        Encrypt issues only `serverAuth`, never the client cert). On GCP, a self-hosted server
+        can instead consume the Cloud Run SA's Google OIDC token via a ClaimMapper. **Temporal
+        Cloud** takes mTLS cert / API key only — it won't trust our JWKS (IAM just guards the
+        stored secret). All transport/auth comes from env, no secrets inline.
+- [x] **First code-first Workflow + test landed — 2026-06-19.** `src/temporal/src/workflows/`:
+      `user-table-test.ts` (initialize → create users sheet → add userId=55/foxmulder →
+      assert row → return *"user table created"*; agent answers each step via the `agentResult`
+      signal, the Workflow decides done/next) + `activities.ts` (`createAgentActivities(bus)`
+      binds the host bus into the dispatch Activity so the Workflow stays pure). Proven by a
+      `@temporalio/testing` time-skipping test with the dispatch mocked (9 passing, `tsc`
+      clean). `userId=55` is domain **test data**, not the principal owner. Still deferred:
+      `worker.ts`, the real `TemporalCore`/SDK adapter, and running it against a live server.
 - [ ] Self-managed Temporal Server alongside the Zeebe broker pattern: a
       `docker-compose` service (Temporal + its datastore, UI optional/commented like
       Operate), endpoint + namespace + auth from env via an engine-agnostic
@@ -2120,6 +2153,105 @@ cycle (here: `Temporal workflow → Activity dispatch → agent reports result v
 unchanged Eventing bus, with no edit to `@agent-local/agent` or the bus event shapes —
 demonstrating the mount seam is engine-agnostic; and the user's active works are
 listable from the host `JobRegistry` (user-keyed), not from the engine.
+
+### M7-10 · `src/temporalhost` — self-managed Temporal Server runtime (mirror `camundahost`) — `~1d` · P2
+Extracts the deferred "Self-managed Temporal Server" bullet of M7-9 into its own
+**deploy-only** workspace, exactly as `@agent-local/camundahost` is the Zeebe
+broker runtime behind `@agent-local/workflow`'s client. The existing
+`@agent-local/temporal` client stays the *client*; this is only the *server* it
+points at via `TEMPORAL_ADDRESS`. **No Node/agent code** — docker-compose + config.
+- [x] New workspace `@agent-local/temporalhost` (`src/temporalhost`), registered in
+      the root `workspaces` array next to `camundahost`. Deploy-only, **same layout as
+      camundahost**: `Dockerfile`, `dockerfiles/startup.sh`, a local **`config/`**
+      folder (baked-in server config), `docker-compose.yml`, docker `scripts`
+      (`docker:build` with a version `--build-arg`, `docker:up`/`docker:down`/`docker:logs`),
+      no `src/`, no Node/agent code. — **landed 2026-06-19** (scaffold, unbuilt).
+- [x] **Custom image** `FROM` a pinned `temporalio/auto-setup:${TEMPORAL_VERSION}`
+      base (build arg), then `COPY config/dynamicconfig/agent-local.yaml` +
+      `dockerfiles/startup.sh` in **after the fact** from the local `config/` folder,
+      exactly as camundahost copies `application.yaml`. The `startup.sh` wrapper applies
+      env-overridable dev defaults (`DEFAULT_NAMESPACE=default`, `BIND_ON_IP=0.0.0.0`,
+      postgres datastore, `DYNAMIC_CONFIG_FILE_PATH`) then `exec`s the base auto-setup
+      entrypoint (schema init + default namespace + server). gRPC `:7233`. — **landed
+      2026-06-19**. (Override the full `config_template.yaml` only if a dev needs more
+      than dynamic config — auto-setup ships a working template by default.)
+- [x] `docker-compose.yml` runs the **built** image plus its datastore: a Postgres
+      service (the schema-init auto-setup performs at boot, gated on a `pg_isready`
+      healthcheck), and `temporalio/ui` for the Web console **commented/optional** like
+      camundahost's Operate block. `default` namespace registered by auto-setup on first
+      boot. Temporal Cloud = same client, different endpoint/mTLS — this host is then
+      unused. — **landed 2026-06-19**.
+- [x] **No workflow definitions in the server image** (the camunda BPMN divergence):
+      Temporal is code-first, so the server holds no process state. The worker that
+      registers `workflows/` + activities is the deferred bit of the **client**
+      (`@agent-local/temporal`), NOT this host — the runtime stays a pure server, the
+      same way the broker image stays a pure runtime with no BPMN baked in.
+- [x] Endpoints/secrets env-only (M7-1 rule): compose carries only non-secret dev
+      defaults; namespace/address/datastore arrive from env so the same image runs
+      unchanged against a remote datastore.
+- [x] Healthcheck on the gRPC frontend (`:7233`) folded into compose (`tctl cluster
+      health`), mirroring camundahost's `:9600` TCP check.
+- [x] **Local-authority auth wiring (the M7-9 decision made concrete) — 2026-06-19.**
+      Temporal trusts `src/host` as the authority via its built-in JWT key provider +
+      default claim mapper + default authorizer (**zero Go plugin**): `config/base_template.yaml`
+      carries only `global.authorization` and is merged AHEAD of the auto-setup-rendered
+      `docker.yaml` (Temporal loads `base.yaml` first, field-by-field merge) — so we add auth
+      without forking the ~200-line upstream `config_template.yaml`. `startup.sh` renders it with
+      `dockerize` so the JWKS endpoint stays env-driven (`TEMPORAL_JWKS_URI` →
+      `http://host.docker.internal:3011/.well-known/jwks.json`, `TEMPORAL_PERMISSIONS_CLAIM=permissions`).
+      Off by default (`TEMPORAL_AUTH_ENABLED=false`) so `docker:up` is green standalone; compose
+      ships the env + `extra_hosts: host.docker.internal:host-gateway` (Linux parity) ready to flip.
+      With auth on, the default authorizer denies auto-setup's un-tokened `tctl namespace register`,
+      so `startup.sh` auto-sets `SKIP_DEFAULT_NAMESPACE_CREATION` — `default` is registered once with
+      an admin-claim (`temporal-system:admin`) host token (README). Honors M7-9's two-token-planes
+      rule: the host mints its OWN service token with a Temporal-shaped `permissions` claim
+      (`<namespace>:<role>`, e.g. `default:write`); the frontend `workflow:read/write` scopes never
+      reach the engine. Client token-sending stays the deferred `@agent-local/temporal` worker bit.
+- [ ] Wire the live E2E that M7-9 deferred: with `temporalhost` up and
+      `TEMPORAL_ADDRESS=localhost:7233`, the `@agent-local/temporal` worker (once
+      built) runs `user-table-test` against the real server — the live-server parity
+      item that mirrors M7-1's live-broker E2E.
+
+**Done when:** `npm run docker:up -w @agent-local/temporalhost` brings up a Temporal
+Server reachable on gRPC `:7233` with the Web UI on `:8233` and the `default`
+namespace present; `@agent-local/temporal` connects via env with no code change;
+secrets/endpoints stay env-only; no workflow definitions live in the server image.
+
+### M7-11 · `temporalhost` productionalization — external Postgres + split schema migration — `~1.5d` · P3
+Promotes M7-10 from the self-contained local stack (bundled, **ephemeral** Postgres,
+boot-time auto-setup) to a deploy-shaped server backed by a **managed/external
+Postgres**. The image does NOT change — datastore endpoint/creds are already env-only
+(M7-10) — so this is operational wiring, not new bake. The local `docker:up` path
+stays exactly as-is and untouched: this story is the prod overlay only.
+- [ ] **Datastore is external, not in the stack.** Drop the bundled `postgresql`
+      compose service in the prod overlay; point the server at a managed Postgres via
+      the existing env (`POSTGRES_SEEDS`/`DB_PORT`/`POSTGRES_USER`/`POSTGRES_PWD`, TLS
+      knobs). Local compose keeps the bundled DB for dev.
+- [ ] **Provision role + databases out-of-band** (the managed-DB login is usually NOT
+      a superuser, so auto-setup's `CREATE DATABASE` can't be relied on): pre-create the
+      `temporal` role + the two databases (`temporal`, `temporal_visibility`) and grant
+      the role on them. Capture as a one-time provisioning snippet, not a `startup.sh`
+      step — the image stays a pure runtime.
+- [ ] **Schema migration as a separate one-shot job, NOT on every boot.** Stop relying
+      on `autosetup` to migrate a shared DB on each server start; run `temporal-sql-tool
+      setup-schema`/`update-schema` against the two DBs as a dedicated migrate job (CI
+      step or init container) that runs once per version bump. The server then boots with
+      a non-`autosetup` `CMD` (schema already present), removing the boot-time DDL race
+      when multiple replicas start.
+- [ ] **Namespace bootstrap is explicit** (no auto-register): register `default` (and
+      any others) once with an admin-claim host token, consistent with the auth-on path
+      M7-10 already documents (`SKIP_DEFAULT_NAMESPACE_CREATION`).
+- [ ] **Durability + backup** are the managed DB's job: document that workflow history
+      now survives `down`/`up` (no ephemeral volume), and that PITR/backup is delegated to
+      the managed Postgres — the dev caveat (bundled DB has no volume) no longer applies.
+- [ ] Capture the split in the README "external Postgres" section (provisioning snippet +
+      migrate-job command + non-`autosetup` boot), and add a stubbed migrate step to
+      `.github/workflows/temporalhost.yml` next to the build job.
+
+**Done when:** the prod overlay boots `temporalhost` against a managed Postgres with
+schema applied by a separate migrate job (server `CMD` ≠ `autosetup`), `default`
+registered explicitly, history surviving a server teardown — while `npm run docker:up
+-w @agent-local/temporalhost` still runs the bundled-DB dev stack unchanged.
 
 ---
 

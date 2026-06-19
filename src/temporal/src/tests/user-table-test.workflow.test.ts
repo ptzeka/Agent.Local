@@ -42,7 +42,7 @@ describe("userTableTestWorkflow", () => {
       env.client.workflow.execute(userTableTestWorkflow, {
         taskQueue: "test",
         workflowId: "WORK-1",
-        args: [{ workId: "WORK-1", workspaceId: "WS-1", sessionId: "SESS-1", userId: "55" }],
+        args: [{ workId: "WORK-1", workspaceId: "WS-1", sessionId: "SESS-1" }],
       }),
     );
 

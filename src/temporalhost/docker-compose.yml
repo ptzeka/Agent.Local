@@ -1,0 +1,53 @@
+# Local run of the *built* temporalhost image (not the base image directly).
+# Build first:  npm run docker:build -w @agent-local/temporalhost
+# Up:           npm run docker:up   -w @agent-local/temporalhost
+# Down:         npm run docker:down -w @agent-local/temporalhost
+#
+# The client-only @agent-local/temporal connects over gRPC :7233. Auth is off here so the
+# stack comes up standalone; flip TEMPORAL_AUTH_ENABLED=true below to trust the host JWKS (see README).
+services:
+  postgresql:
+    image: postgres:16-alpine
+    container_name: agent-local-temporalhost-db
+    environment:
+      POSTGRES_USER: temporal
+      POSTGRES_PASSWORD: temporal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U temporal"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  temporal:
+    image: agent-local-temporalhost:local
+    container_name: agent-local-temporalhost
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    environment:
+      # Datastore endpoint is env-only (never baked) — points at the db service above.
+      POSTGRES_SEEDS: postgresql
+      # Local authority: when enabled, validate caller JWTs against the host's JWKS. Endpoint
+      # is env-only; host.docker.internal reaches src/host (:3011) from inside the container.
+      TEMPORAL_AUTH_ENABLED: "false"
+      TEMPORAL_JWKS_URI: "http://host.docker.internal:3011/.well-known/jwks.json"
+    # makes host.docker.internal resolve on Linux too (it is automatic on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "7233:7233" # gRPC frontend (TEMPORAL_ADDRESS)
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "localhost:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Optional Web UI for inspecting workflows; remove if not needed.
+  # ui:
+  #   image: temporalio/ui:2.34.0
+  #   depends_on:
+  #     - temporal
+  #   environment:
+  #     TEMPORAL_ADDRESS: temporal:7233
+  #   ports:
+  #     - "8233:8080"

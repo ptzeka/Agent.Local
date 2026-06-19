@@ -20,7 +20,8 @@
     "src/web",
     "src/workflow",
     "src/camundahost",
-    "src/temporal"
+    "src/temporal",
+    "src/temporalhost"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

@@ -8,6 +8,19 @@ export interface ServiceCredentials {
   clientSecret: string;
 }
 
+// client-credentials grant against the host's own /api/auth/token; null when unconfigured so local dev still calls
+// unauthenticated. Shared so the dispatch path AND the readiness probe present the SAME short-lived service token.
+export async function fetchServiceToken(credentials: ServiceCredentials | undefined, logger: ILogger): Promise<string | null> {
+  if (!credentials) return null;
+  const { tokenUrl, clientId, clientSecret } = credentials;
+  const res = await fetch(tokenUrl, { method: "POST", headers: { authorization: basicAuthHeader(clientId, clientSecret) } });
+  if (!res.ok) {
+    logger.error?.(`[agent-client] token fetch ${tokenUrl} -> ${res.status}`);
+    return null;
+  }
+  return ((await res.json()) as { token?: string }).token ?? null;
+}
+
 // host -> agent SENDER: the orchestrator opens/closes a session per work unit, then this forwards camunda jobs
 // to the agent service over HTTP. Transport is swappable (HTTP now, gRPC later) behind these interfaces; the
 // /events body is the same WORKFLOW_JOB event in envelope form, so the agent runs it as if it came off a bus.
@@ -81,15 +94,8 @@ export class HttpJobSender implements JobSender, AgentClient {
     });
   }
 
-  // client-credentials grant against the host's own /api/auth/token; null when unconfigured so local dev still posts
+  // per-call short-lived agent:trigger bearer via the shared client-credentials grant; null in unconfigured dev
   private async fetchToken(): Promise<string | null> {
-    if (!this.credentials) return null;
-    const { tokenUrl, clientId, clientSecret } = this.credentials;
-    const res = await fetch(tokenUrl, { method: "POST", headers: { authorization: basicAuthHeader(clientId, clientSecret) } });
-    if (!res.ok) {
-      this.logger.error?.(`[agent-client] token fetch ${tokenUrl} -> ${res.status}`);
-      return null;
-    }
-    return ((await res.json()) as { token?: string }).token ?? null;
+    return fetchServiceToken(this.credentials, this.logger);
   }
 }

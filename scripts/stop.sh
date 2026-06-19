@@ -40,4 +40,13 @@ stop_pidfile agent
 stop_port host "$HOST_PORT"
 stop_port agent "$AGENT_PORT"
 
+# Temporal is stateful infra (its postgres holds workflow history), so it is left
+# running across host/agent restarts by default — start.sh calls this script first,
+# and recreating the server each cycle would re-init the datastore. Opt in to tear it
+# down too: STOP_TEMPORAL=1 scripts/stop.sh
+if [ "${STOP_TEMPORAL:-0}" = "1" ] && command -v docker >/dev/null 2>&1; then
+  echo "[stop] bringing temporal down..."
+  ( cd "$ROOT/src/temporalhost" && docker compose down ) || true
+fi
+
 echo "[stop] done"

@@ -55,3 +55,21 @@ scripts/db.sh agent "SELECT session_id, json_extract(payload,'\$.goal') AS goal 
 # raw sqlite3 (skips .sqliterc): sqlite3 -box src/host/data/host.sqlite "SELECT * FROM jobs;"
 # WAL: a reader sees uncommitted rows; to fold -wal back into the file:
 scripts/db.sh host "PRAGMA wal_checkpoint(TRUNCATE);"
+
+# ── temporal (standalone workflow-engine server: src/temporalhost) ────────────
+# Docker runtime WITHOUT Desktop = colima (Linux VM + daemon) + docker CLI.
+colima start                            # bring the docker runtime up (once per session)
+colima stop                             # runtime down   | colima status | colima list
+brew services start colima              # optional: auto-start the runtime at login
+#
+# temporalhost image = Temporal Server (postgres-backed) on gRPC :7233; UI :8233 (optional).
+npm run docker:build -w @agent-local/temporalhost   # build the image (after editing Dockerfile/config)
+npm run docker:up    -w @agent-local/temporalhost   # TEARUP:  temporal + postgres (idempotent)
+npm run docker:down  -w @agent-local/temporalhost   # TEARDOWN: stop + remove the stack
+npm run docker:logs  -w @agent-local/temporalhost   # tail the server log
+docker compose -f src/temporalhost/docker-compose.yml ps          # list the stack
+docker exec agent-local-temporalhost tctl --address localhost:7233 namespace describe default  # verify namespace
+#
+# start.sh brings temporal up automatically (idempotent, best-effort); opt out / opt in:
+START_TEMPORAL=0 scripts/start.sh       # skip temporal on app start
+STOP_TEMPORAL=1  scripts/stop.sh        # also tear temporal down on stop (default: left running)

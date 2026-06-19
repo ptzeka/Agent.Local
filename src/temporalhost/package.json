@@ -1,0 +1,12 @@
+{
+  "name": "@agent-local/temporalhost",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Temporal Server runtime image: a custom container built FROM a pinned temporalio/auto-setup base with our dynamic config + startup script baked in. Deploy workspace only — no Node/agent code. The client lives in @agent-local/temporal.",
+  "scripts": {
+    "docker:build": "docker build -t agent-local-temporalhost:local --build-arg TEMPORAL_VERSION=1.25.2 -f Dockerfile .",
+    "docker:up": "docker compose up -d",
+    "docker:down": "docker compose down",
+    "docker:logs": "docker compose logs -f temporal"
+  }
+}

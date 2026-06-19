@@ -11,7 +11,7 @@ import { createAuthApi } from "./api/auth.js";
 import { createWorksApi } from "./api/works.js";
 import { sessionMiddleware, resolveUserFromRequest } from "./user/session.js";
 import { userContextMiddleware, requirePermission } from "./user/userContext.js";
-import { HttpJobSender } from "./comms/sender.js";
+import { HttpJobSender, fetchServiceToken } from "./comms/sender.js";
 import { Orchestrator } from "./orchestrator.js";
 import { JobRegistry } from "./jobs/job-registry.js";
 import { loadOrCreateKeyRing } from "./user/keys.js";
@@ -79,11 +79,18 @@ async function main(): Promise<void> {
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
   app.use(createWorksApi(orchestrator, jobs, logger));
-  const zeebe = mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
-  // readiness (/health/ready): the host can actually serve work — Camunda link (zeebe.connected) AND a live probe
-  // of the separate agent service. registered after workflow (so we hold the client) and before web (whose SSR
-  // catch-all would shadow it). distinct from /healthz liveness: a down dependency is unready, not dead.
-  app.use(createHealthApi({ zeebeConnected: () => zeebe.connected, agentBaseUrl: settings.agent.baseUrl, logger }));
+  mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
+  // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its gateway)
+  // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
+  // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as
+  // the Zeebe/Temporal SDK reads it (ZEEBE_ADDRESS for the gateway, TEMPORAL_ADDRESS for the frontend).
+  app.use(createHealthApi({
+    engineAddress: process.env.ZEEBE_ADDRESS ?? process.env.TEMPORAL_ADDRESS ?? "localhost:26500",
+    agentBaseUrl: settings.agent.baseUrl,
+    // the readiness probe authenticates to the agent under the host's OWN service identity (same dispatch creds)
+    getServiceToken: () => fetchServiceToken(settings.host.dispatch, logger),
+    logger,
+  }));
   mountWeb(app, ctx);       // React SSR: /static, /public, then the SSR catch-all (last)
   logger.info("[host] wired comms sender + receiver, mounted workflow, web");
 

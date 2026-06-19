@@ -33,7 +33,7 @@ const statusColor = (status: WorkRecord["status"]) => {
 const dash = (v: string | null): string => v ?? "—";
 
 export default function WorkflowPage() {
-  // composite host liveness pinged once on page load: Camunda link + the separate agent service's /healthz
+  // composite host liveness pinged once on page load: workflow-engine link + the separate agent service's /healthz
   const health = useHealth();
   const [works, setWorks] = useState<WorkRecord[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,7 +99,7 @@ export default function WorkflowPage() {
           title={
             health.loading
               ? "pinging /health/ready…"
-              : `camunda: ${health.camunda ? "up" : "down"} · agent: ${health.agent ? "up" : "down"}`
+              : `workflow: ${health.workflow ? "up" : "down"} · agent: ${health.agent ? "up" : "down"}`
           }
         >
           <Chip
@@ -132,9 +132,9 @@ export default function WorkflowPage() {
         <Tooltip
           title={
             health.loading
-              ? "checking Camunda readiness…"
-              : !health.camunda
-                ? "Camunda is offline — start a work once /health/ready reports it up"
+              ? "checking workflow-engine readiness…"
+              : !health.workflow
+                ? "Workflow engine is offline — start a work once /health/ready reports it up"
                 : ""
           }
         >
@@ -144,7 +144,7 @@ export default function WorkflowPage() {
               onClick={() => void onStart()}
               variant="contained"
               size="small"
-              disabled={health.loading || !health.camunda}
+              disabled={health.loading || !health.workflow}
             >
               Start work
             </Button>

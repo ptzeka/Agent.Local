@@ -9,7 +9,30 @@ mkdir -p "$RUN_DIR"
 
 HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
+TEMPORAL_HEALTH_NAME="agent-local-temporalhost"
 WAIT_SECONDS=60
+
+# Bring the standalone Temporal server up before host/agent so the workflow engine is
+# reachable. Best-effort + idempotent: docker/colima absent or unreachable is a warning,
+# never a hard stop — the engine switch is opt-in, so the app still runs without it.
+ensure_temporal() {
+  [ "${START_TEMPORAL:-1}" = "1" ] || { echo "[start] START_TEMPORAL=0 — skipping temporal"; return 0; }
+  command -v docker >/dev/null 2>&1 || { echo "[start] docker not found — skipping temporal (see COMMANDS.md)"; return 0; }
+  if ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 || { echo "[start] WARN: docker daemon unreachable, colima not installed — skipping temporal"; return 0; }
+    echo "[start] docker daemon unreachable — starting colima..."
+    colima start || { echo "[start] WARN: colima start failed — skipping temporal"; return 0; }
+  fi
+  echo "[start] ensuring temporal server is up..."
+  ( cd "$ROOT/src/temporalhost" && docker compose up -d ) || { echo "[start] WARN: temporal compose up failed — continuing without it"; return 0; }
+  local waited=0
+  printf '[start] waiting for temporal health'
+  while [ "$(docker inspect -f '{{.State.Health.Status}}' "$TEMPORAL_HEALTH_NAME" 2>/dev/null || echo none)" != "healthy" ]; do
+    if [ "$waited" -ge 90 ]; then echo; echo "[start] WARN: temporal not healthy after 90s — continuing"; return 0; fi
+    printf '.'; sleep 3; waited=$((waited + 3))
+  done
+  echo " up"
+}
 
 # poll a TCP port until something accepts connections, or give up after WAIT_SECONDS
 wait_for_port() {
@@ -65,6 +88,8 @@ npm run build --prefix "$ROOT" \
 
 echo "[start] initializing databases (host.sqlite, agent.sqlite)..."
 npm run db:init --prefix "$ROOT"
+
+ensure_temporal
 
 echo "[start] launching host on :$HOST_PORT..."
 PORT="$HOST_PORT" npm start --prefix "$ROOT" -w @agent-local/host >"$RUN_DIR/host.log" 2>&1 &
