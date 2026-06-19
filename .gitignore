@@ -34,3 +34,8 @@ Thumbs.db
 agent.log
 /src/agent/metrics
 /src/agent/metrics
+
+# host RS256 signing keypair (local dev, generated on first run)
+src/host/keys/
+src/host/jobs/
+scripts/.run/

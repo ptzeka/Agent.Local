@@ -4,11 +4,23 @@ import { fileURLToPath } from "node:url";
 
 // the agent service owns its own runtime config (no shared/global appsettings); the file sits beside this
 // loader under src/server and is read by fs so it stays editable without a rebuild, in both tsx and dist runs.
+// host -> agent bearer is a host-issued RS256 JWT: `authorityUrl` is where the agent fetches the signing
+// PUBLIC key (and the issuer it expects), so tokens are validated offline against it — no shared secret.
+// `tokenEnv` stays as the legacy static-token fallback used when no authorityUrl is set. `required` gates
+// enforcement: false keeps the staged stub (accept every caller) until the host sender presents a token.
+export interface AgentAuthSettings {
+  scheme: "bearer";
+  required: boolean;
+  tokenEnv: string;
+  authorityUrl?: string;
+}
+
 export interface AgentServerSettings {
   port: number;
   workspace: string;
   sessionsDir: string;
   host: { receiveUrl: string };
+  authentication: AgentAuthSettings;
   secrets?: Record<string, string>;
 }
 

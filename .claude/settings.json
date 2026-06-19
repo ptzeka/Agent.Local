@@ -85,7 +85,19 @@
       "Bash(python -c ' *)",
       "Bash(node -e \"const p=require\\('./src/web/package.json'\\);console.log\\(JSON.stringify\\(p.exports\\)\\)\")",
       "Bash(node -e \"const p=require\\('./src/workflow/package.json'\\);console.log\\('name',p.name\\);console.log\\(JSON.stringify\\(p.exports\\)\\)\")",
-      "Bash(node -e \"const p=require\\('./src/workflow/package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,1\\)\\)\")"
+      "Bash(node -e \"const p=require\\('./src/workflow/package.json'\\);console.log\\(JSON.stringify\\(p.scripts,null,1\\)\\)\")",
+      "Bash(node -e \"console.log\\(require\\('./node_modules/jose/package.json'\\).version\\)\")",
+      "Bash(chmod +x scripts/start.sh scripts/stop.sh)",
+      "Bash(./scripts/start.sh)",
+      "Bash(perl -i -pe 's/\\\\x{2026}/.../g' scripts/start.sh)",
+      "Bash(perl -CSD -i -pe 's/\\\\x{2026}/.../g' scripts/start.sh)",
+      "Bash(./scripts/stop.sh)",
+      "Bash(/Applications/WWW/Agent.Local/scripts/stop.sh)",
+      "Bash(/Applications/WWW/Agent.Local/scripts/start.sh)",
+      "Bash(curl -s http://localhost:3020/healthz)",
+      "Bash(curl -s http://localhost:3011/api/auth/public-key)",
+      "Bash(curl -s -X POST http://localhost:3011/api/login -H 'Content-Type: application/json' -d '{\"username\":\"peritze\",\"password\":\"Passwrod1\"}')",
+      "Bash(curl -s -o /dev/null -w '%{http_code}\\\\n' -X POST http://localhost:3011/api/login -H 'Content-Type: application/json' -d '{\"username\":\"peritze\",\"password\":\"nope\"}')"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

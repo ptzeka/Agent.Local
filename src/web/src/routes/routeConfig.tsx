@@ -4,6 +4,7 @@ import { useApplicationContext } from "../providers/application_context";
 import { useMiniStore } from "../components/shared/miniStore";
 import IndexPage, { Page as Index } from "../pages/index";
 import WorkflowPage, { Page as Workflow } from "../pages/workflow";
+import LoginPage, { Page as Login } from "../pages/login";
 import NotFound from "../pages/not_found";
 import Unauthorized from "../pages/unauthorized";
 
@@ -30,6 +31,7 @@ export default function RouteConfig() {
     <Routes>
       <Route path={`${prefix}/`} Component={IndexPage} />
       <Route path={`${prefix}/${Index.pageName.toLowerCase()}`} Component={IndexPage} />
+      <Route path={`${prefix}/${Login.pageName.toLowerCase()}`} Component={LoginPage} />
 
       <Route element={<AuthorizedRoute permission={Workflow.permission!} />}>
         <Route path={`${prefix}/${Workflow.pageName.toLowerCase()}`} Component={WorkflowPage} />

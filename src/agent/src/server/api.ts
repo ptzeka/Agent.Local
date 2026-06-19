@@ -1,18 +1,51 @@
 import { Router, type Request, type Response } from "express";
-import type { ILogger, EventEnvelope } from "@agent-local/common";
-import { WORKFLOW_JOB, type WorkflowJob } from "./contract.js";
-import type { SessionManager } from "./session-manager.js";
+import type { EventEnvelope } from "@agent-local/common";
+import { WORKFLOW_JOB, AGENT_RESULT, WORKFLOW_FAILED, type WorkflowJob } from "./contract.js";
 
-// receive API: the host's sender posts here. /session/create returns a sessionId the host correlates to a
-// camunda job; /events is the envelope bridge — the same bus events, carried over HTTP and run by the agent.
-export function createApi(sessions: SessionManager, logger: ILogger): Router {
+// the camunda job carries the instruction in a variable; accept the common spellings
+function promptFor(variables: Record<string, unknown>): string {
+  return String(variables.prompt ?? variables.input ?? variables.task ?? "").trim();
+}
+
+// runs one job against the request's runtime and publishes the answer on the request's bus (the sender
+// forwards it to the host); a turn-level failure surfaces as WORKFLOW_FAILED instead. The runtime lives
+// only for this job, so it is drained in finally — the session flushes to disk and MCP clients close.
+async function runJob(req: Request, job: WorkflowJob): Promise<void> {
+  try {
+    const prompt = promptFor(job.variables ?? {});
+    if (!prompt) {
+      req.eventing.publish(WORKFLOW_FAILED, {
+        processInstanceKey: job.processInstanceKey,
+        jobKey: job.jobKey,
+        error: "agent job carried no prompt/input/task variable",
+      });
+      return;
+    }
+    const result = await req.agentRuntime.dispatchAsync(prompt, { signal: req.runtimeSignal });
+    const text = result.finalMessage.content;
+    // jobKey is the host's correlation key; the session is internal to this server, so it isn't echoed back
+    req.eventing.publish(AGENT_RESULT, {
+      processInstanceKey: job.processInstanceKey,
+      jobKey: job.jobKey,
+      result: text,
+      // returned DOWN to camunda by workflow.completeJob(jobKey, variables)
+      variables: { agentResult: text, processInstanceKey: job.processInstanceKey },
+    });
+  } finally {
+    await req.closeRuntime();
+  }
+}
+
+// receive API: the host's sender posts here. The runtime, bus and signal for the call are already resolved
+// onto req by the context middleware (a fresh runtime per request), so handlers read them off req — no
+// injected manager. Each handler drains its runtime when done; /events runs a job and reports back.
+export function createApi(): Router {
   const router = Router();
 
-  router.post("/session/create", (_req: Request, res: Response) => {
-    sessions
-      .create()
-      .then((sessionId) => res.status(201).json({ sessionId }))
-      .catch((err) => res.status(500).json({ error: String(err) }));
+  // surfaces the session the request resolved to, then releases the runtime built for it
+  router.post("/session/create", (req: Request, res: Response) => {
+    res.status(201).json({ sessionId: req.sessionId });
+    void req.closeRuntime();
   });
 
   // envelope receiver { eventType, payload }. The answer returns out-of-band via the sender's webhook, so
@@ -23,13 +56,13 @@ export function createApi(sessions: SessionManager, logger: ILogger): Router {
       res.status(400).json({ error: `unsupported eventType ${String(envelope?.eventType)}` });
       return;
     }
-    const job = envelope.payload as WorkflowJob & { sessionId: string };
-    void sessions.run(job).catch((err) => logger.error?.("[agent-server] run failed", err));
+    const job = envelope.payload as WorkflowJob;
+    void runJob(req, job).catch((err) => req.logger?.error?.("[agent-server] run failed", err));
     res.status(202).json({ accepted: true });
   });
 
   router.post("/session/:id/close", (req: Request, res: Response) => {
-    void sessions.close(req.params.id);
+    void req.closeRuntime();
     res.status(202).json({ closing: req.params.id });
   });
 

@@ -1686,6 +1686,74 @@ JWT-as-middleware).
 - [ ] Tests: a job carrying an identity builds a runtime whose `IdentityContext`
       reflects it; absent identity falls back to anonymous/dev.
 
+### M7-6 · Work-unit registry — host-owned job lifecycle + `workId` correlation — `~1.5d` · P1
+The host is the orchestrator and owns the **work unit** — the join that ties a
+user's request to its Camunda instance and its agent session. None of the three
+engines should hold that join: Camunda knows `processInstanceKey`/`jobKey`, the
+agent knows `sessionId`, and only the host knows they are the same piece of work.
+`jobId` is the **`workId`** — the one id the host hands the agent and gets echoed
+back; the agent treats it as opaque (round-trips it, never parses it), so the
+agent boundary sheds every Camunda-shaped field. This makes the agent a generic
+executor and the host the only place work status is queryable (the M8 console
+reads it).
+
+**The id model — three ids, one join only the host holds:**
+```
+jobId (= workId, durable, user-facing)
+  ├─ status: new | running | stuck | cancelled | error | completed
+  ├─ camundaId  (processInstanceKey)
+  ├─ step       (current Camunda element/job)
+  └─ sessionId  (agent — its local knowledge)
+```
+One work unit is **1:N** with Camunda `jobKey`s (a workflow emits several service
+tasks over its life); every task resolves to the **same** agent `sessionId`, so
+the agent conversation persists across workflow steps. The host tracks the
+*current* `jobKey` on the aggregate to complete the right Camunda task.
+
+- [x] **`JobRegistry`** (`src/host/src/jobs/job-registry.ts`) — JSONL store
+      modelled on `MetricsStore`: `add`/`get`/`search`/`update`, append-one-line
+      per change, current state = last line per `jobId` (no rewrite, torn line
+      skipped). Persists to `host/jobs/jobs.jsonl` (`HOST_JOBS_FILE` overrides),
+      package-root-anchored like appsettings. Added to `MountContext` (the one
+      host-owned *service* on the seam, distinct from the bus) + instantiated at
+      the composition root.
+- [ ] **Boundary rename to `workId`** — the agent contract becomes
+      `{ workId, input }` in / `{ workId, result }` out (`src/agent/src/server/`
+      `contract.ts` + `api.ts`); strip `processInstanceKey`/`jobKey`/`jobType`
+      from the agent payloads. The host's `agent-client.ts` keys by `jobId`
+      (= `workId`), retiring the current `sessionByJob` `jobKey → sessionId` map.
+- [ ] **Wire the updaters** (the lifecycle the registry exists to record):
+      - web creates a request → `jobs.add(jobId)` (status `new`).
+      - Camunda drives a job (`workflow.job`) → resolve/create the work unit,
+        `update(jobId, { status: 'running', step, camundaId })`.
+      - agent `/session/create` reply → `update(jobId, { sessionId })`
+        (association is the agent's `sessionId`, recorded host-side for audit).
+      - agent result (the hook → `/receive` → `agent.result`) carries `workId`;
+        host finds the work unit, `update(jobId, { status: 'completed' })`, then
+        completes the *current* Camunda `jobKey` for `camundaId`.
+      - `workflow.failed` → `update(jobId, { status: 'error' })`; a job parked too
+        long without progress → `stuck` (timer/heartbeat, can defer).
+- [ ] **`description` on the work unit** — add a `description` field to
+      `JobRecord` (the user's request text / task summary), set at `add` from the
+      create-request flow. The M8-4 jobs table renders it as a column; until set it
+      falls back to `jobId`/`step`.
+- [ ] **Host `/api/jobs` endpoint** (the surface M8 + web's create-request flow
+      use): `GET /api/jobs` (search, optional `?status=`), `GET /api/jobs/:jobId`
+      (current state), `POST /api/jobs` (save — create/update a work unit),
+      `POST /api/jobs/:jobId/cancel` (M8-4 cancel → `cancelled` + halt the Camunda
+      instance via M7-1). Thin router over `JobRegistry`
+      (`add`/`get`/`search`/`update`), mounted before web's SSR catch-all so it
+      isn't shadowed.
+- [ ] Tests: `add` then fold returns the seeded record; a sequence of `update`s
+      yields the last-line state; `search({status})` filters; a full
+      `new → running → completed` lifecycle reconstructs from the JSONL; an
+      `agent.result` for an unknown `workId` is a no-op, not a throw.
+
+**Done when:** a request creates a work unit the host can list/search; a Camunda
+job advances it to `running` with `camundaId`/`step`/`sessionId` recorded; the
+agent's `workId`-keyed result flips it to `completed` and completes the correct
+Camunda job — with the agent carrying no Camunda-shaped field, only `workId`.
+
 ---
 
 ## M8 — Frontend epic (React console + API)
@@ -1794,6 +1862,40 @@ generated `api_module/` (via axios hooks) + SSE hook.
 **Done when:** a user starts the M7-1 sample process from the console and watches
 the full `Camunda job → agent execute → result → process advances` cycle render
 live in the browser, sourced entirely from the SSE bus bridge.
+
+### M8-4 · Jobs table view — list work units + cancel — `~1d` · P1
+A simple table over the host's `/api/jobs` (M7-6): one row per work unit so a user
+can see what is in flight and stop a run. The minimal observe surface for the
+work-unit aggregate, distinct from the M8-3 live timeline — this is the flat
+"what jobs exist and what's their status" list.
+
+| jobId | status | description | action |
+|-------|--------|-------------|--------|
+| …     | running| "…"         | Cancel |
+
+- [ ] MUI table component (react-router 7 route, e.g. `/jobs`) reading
+      `GET /api/jobs` through the M8-2 generated client + axios hook; optional
+      `?status=` filter chips. Rows refresh from the SSE stream (M8-2) so a status
+      change (`running → completed/error/cancelled`) repaints without a reload.
+- [ ] Columns: `jobId`, `status` (MUI chip colored by state), `description`, and
+      an **action** cell. `description` reads the work unit's `description` —
+      requires adding that field to `JobRecord` (the user's request text / task
+      summary), tracked back in **M7-6**; until it exists the column shows the
+      `jobId`/`step` as a fallback.
+- [ ] **Cancel action**: a Cancel button on non-terminal rows → `POST
+      /api/jobs/:jobId/cancel`, which sets the work unit `cancelled` AND cancels
+      the Camunda instance via the M7-1 control surface (cancelling a *process* is
+      allowed under the M7 invariant — the UI initiates, never dispatches the agent
+      directly). Button disabled/hidden for terminal states
+      (`completed`/`error`/`cancelled`).
+- [ ] Presentational only — over the generated client + SSE hook, no engine/bus
+      logic in the browser (M8-3 rule).
+- [ ] Smoke: the table lists seeded jobs, a status chip updates live off the SSE
+      stream, and Cancel flips a running job to `cancelled` and halts its instance.
+
+**Done when:** the console renders a `jobId | status | description | action` table
+sourced from `/api/jobs`, rows update live as work units change state, and Cancel
+stops a running work unit and its Camunda instance.
 
 ---
 

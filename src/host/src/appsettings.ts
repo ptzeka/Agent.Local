@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AppSettings } from "@agent-local/common";
 
-// the host owns its own (host-specific) config; appsettings.json sits beside this loader under src/server.
+// the host owns its own (host-specific) config; appsettings.json sits beside this loader under src/.
 // anchor to the package root (the dir holding package.json) so the same source file resolves whether the
 // process runs from src (tsx dev) or dist (built) — config stays editable without a rebuild.
 function findPackageRoot(): string {
@@ -18,7 +18,7 @@ function findPackageRoot(): string {
 
 function resolveSettingsPath(): string {
   if (process.env.APPSETTINGS_PATH) return path.resolve(process.env.APPSETTINGS_PATH);
-  return path.join(findPackageRoot(), "src", "server", "appsettings.json");
+  return path.join(findPackageRoot(), "src", "appsettings.json");
 }
 
 // secrets are NOT read here — appsettings only names env vars; each feature reads its own from process.env.

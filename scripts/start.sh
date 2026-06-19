@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Clean dist, build all workspaces, then start the host (3011) and agent server (3020) in the background
+# and block until both ports are actually listening. PIDs/logs land in scripts/.run for stop.sh to use.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_DIR="$ROOT/scripts/.run"
+mkdir -p "$RUN_DIR"
+
+HOST_PORT="${PORT:-3011}"
+AGENT_PORT="${AGENT_PORT:-3020}"
+WAIT_SECONDS=60
+
+# poll a TCP port until something accepts connections, or give up after WAIT_SECONDS
+wait_for_port() {
+  local name="$1" port="$2" pid="$3" waited=0
+  printf '[start] waiting for %s on :%s' "$name" "$port"
+  while ! nc -z localhost "$port" >/dev/null 2>&1; do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      echo; echo "[start] ERROR: $name (pid $pid) exited before binding :$port — see $RUN_DIR/$name.log"
+      tail -n 20 "$RUN_DIR/$name.log" || true
+      exit 1
+    fi
+    if [ "$waited" -ge "$WAIT_SECONDS" ]; then
+      echo; echo "[start] ERROR: $name did not open :$port within ${WAIT_SECONDS}s — see $RUN_DIR/$name.log"
+      exit 1
+    fi
+    printf '.'; sleep 1; waited=$((waited + 1))
+  done
+  echo " up (pid $pid)"
+}
+
+echo "[start] cleaning dist folders..."
+npm run clean --prefix "$ROOT"
+
+echo "[start] building host/agent and their deps (in dependency order)..."
+# root `npm run build --workspaces` builds in listing order (host before workflow/web), so a clean build
+# breaks on missing types. Build the chain leaves-first explicitly: common -> mcp/web/workflow -> agent/host.
+npm run build --prefix "$ROOT" \
+  -w @agent-local/common \
+  -w @agent-local/mcp \
+  -w @agent-local/web \
+  -w @agent-local/workflow \
+  -w @agent-local/agent \
+  -w @agent-local/host
+
+echo "[start] launching host on :$HOST_PORT..."
+PORT="$HOST_PORT" npm start --prefix "$ROOT" -w @agent-local/host >"$RUN_DIR/host.log" 2>&1 &
+HOST_PID=$!
+echo "$HOST_PID" >"$RUN_DIR/host.pid"
+
+echo "[start] launching agent server on :$AGENT_PORT..."
+AGENT_PORT="$AGENT_PORT" npm run start:server --prefix "$ROOT" -w @agent-local/agent >"$RUN_DIR/agent.log" 2>&1 &
+AGENT_PID=$!
+echo "$AGENT_PID" >"$RUN_DIR/agent.pid"
+
+wait_for_port host "$HOST_PORT" "$HOST_PID"
+wait_for_port agent "$AGENT_PORT" "$AGENT_PID"
+
+echo "[start] both up — host http://localhost:$HOST_PORT  agent http://localhost:$AGENT_PORT"
+echo "[start] logs: $RUN_DIR/host.log  $RUN_DIR/agent.log   (stop with scripts/stop.sh)"

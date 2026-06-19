@@ -37,10 +37,12 @@ export interface WorkflowFailedPayload {
   error: string;
 }
 
+// jobKey is the host's correlation key for completing the camunda job. The agent's session is its own
+// local knowledge (host gives jobKey -> agent creates/associates a session -> replies jobKey done), so it
+// is deliberately NOT part of this payload.
 export interface AgentResultPayload {
   processInstanceKey: string;
   jobKey: string;
-  sessionId: string;
   result: unknown;
 }
 

@@ -7,3 +7,4 @@ export * from "./ilogger.js";
 export * from "./filelogger.js";
 export * from "./appsettings.js";
 export * from "./event-envelope.js";
+export * from "./jwt.js";

@@ -3,9 +3,12 @@ import { Eventing, type ILogger } from "@agent-local/common";
 import { mount as mountWorkflow } from "@agent-local/workflow";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
-import { loadAppSettings } from "./appsettings.json";
+import { loadAppSettings } from "./appsettings.js";
 import { createReceiveApi } from "./api/receive.js";
+import { createAuthApi } from "./api/auth.js";
 import { HttpJobSender } from "./agent-client.js";
+import { JobRegistry } from "./jobs/job-registry.js";
+import { loadOrCreateKeyPair } from "./user/keys.js";
 
 const DEFAULT_PORT = 3011;
 
@@ -26,13 +29,18 @@ async function main(): Promise<void> {
   const bus = new Eventing();
   const app = express();
   const settings = loadAppSettings();
-  const ctx: MountContext = { bus, logger, signal: root.signal, settings };
+  // host-owned services added to the mount container; the job registry is the work-unit store features query
+  const jobs = new JobRegistry();
+  // host owns IAM: load (or first-run generate) the RS256 keypair so /api/login can sign tokens
+  const keys = loadOrCreateKeyPair();
+  const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs };
 
   app.use(express.json());
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok" });
   });
 
+  app.use(createAuthApi(keys, settings.host.iam, logger));          // POST /api/login (sign JWT) + GET /api/auth/public-key
   app.use(createReceiveApi(bus, logger));                           // POST /receive -> republish onto the bus
   new HttpJobSender(bus, settings.agent.baseUrl, logger).start();   // workflow.job -> HTTP -> agent service
   mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
