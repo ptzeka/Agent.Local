@@ -9,19 +9,31 @@ export interface KeyPair {
   publicPem: string;
 }
 
-// load the keypair from disk, generating + persisting it on first run so tokens survive restarts and the
-// public key has a stable on-disk home other deps can read. HOST_KEYS_DIR overrides the location.
-export function loadOrCreateKeyPair(): KeyPair {
-  const dir = resolveKeysDir();
-  const privPath = path.join(dir, "private.pem");
-  const pubPath = path.join(dir, "public.pem");
+// the host's signing keys, newest first: index 0 mints new tokens, the rest stay published in the JWKS and
+// accepted on verify so tokens signed before a rotation keep validating until they expire.
+export type KeyRing = KeyPair[];
 
-  if (fs.existsSync(privPath) && fs.existsSync(pubPath)) {
-    return {
-      privatePem: fs.readFileSync(privPath, "utf8"),
-      publicPem: fs.readFileSync(pubPath, "utf8"),
-    };
+// at most two keys live at once: the active signer plus one retiring key whose tokens are still in flight
+const MAX_KEYS = 2;
+
+// load the key ring from disk, generating + persisting the primary keypair on first run so tokens survive
+// restarts. A second key (private.1.pem/public.1.pem) is picked up only if an operator stages one for a
+// rotation — never auto-generated. HOST_KEYS_DIR overrides the location.
+export function loadOrCreateKeyRing(): KeyRing {
+  const dir = resolveKeysDir();
+  const ring: KeyRing = [];
+  for (let i = 0; i < MAX_KEYS; i++) {
+    const suffix = i === 0 ? "" : `.${i}`;
+    const privPath = path.join(dir, `private${suffix}.pem`);
+    const pubPath = path.join(dir, `public${suffix}.pem`);
+    if (fs.existsSync(privPath) && fs.existsSync(pubPath)) {
+      ring.push({
+        privatePem: fs.readFileSync(privPath, "utf8"),
+        publicPem: fs.readFileSync(pubPath, "utf8"),
+      });
+    }
   }
+  if (ring.length > 0) return ring;
 
   const { privateKey, publicKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
@@ -29,9 +41,9 @@ export function loadOrCreateKeyPair(): KeyPair {
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(privPath, privateKey, "utf8");
-  fs.writeFileSync(pubPath, publicKey, "utf8");
-  return { privatePem: privateKey, publicPem: publicKey };
+  fs.writeFileSync(path.join(dir, "private.pem"), privateKey, "utf8");
+  fs.writeFileSync(path.join(dir, "public.pem"), publicKey, "utf8");
+  return [{ privatePem: privateKey, publicPem: publicKey }];
 }
 
 function resolveKeysDir(): string {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { IdentityClaims } from "@agent-local/common";
+import { AGENT_INVOKE_PERMISSION, EXECUTE_WORK_PERMISSION, type IdentityClaims } from "@agent-local/common";
 
 // LOCAL DEV ONLY credential store: md5 is deliberately weak and the operators are hardcoded below. This
 // exists so the JWT issuer has something to authenticate against before real IAM lands — never ship it.
@@ -8,6 +8,9 @@ export type UserIdentity = Omit<IdentityClaims, "sub"> & { userId: string };
 interface UserEntry extends UserIdentity {
   passwordHash: string;
 }
+
+// gates GET /api/auth/accesstoken — only holders may read their current session's access key back over the API
+export const ACCESS_TOKEN_PERMISSION = "auth.accesstoken";
 
 // md5 of the password; the registry stores hashes, never the plaintext, even for these dev accounts
 function md5(value: string): string {
@@ -21,8 +24,8 @@ const USERS: UserEntry[] = [
     userName: "peritze",
     firstName: "Local",
     lastName: "Operator",
-    permissions: ["workflow"],
-    passwordHash: md5("Passwrod1"),
+    permissions: ["workflow", ACCESS_TOKEN_PERMISSION, EXECUTE_WORK_PERMISSION, AGENT_INVOKE_PERMISSION],
+    passwordHash: md5("Password1"),
   },
 ];
 

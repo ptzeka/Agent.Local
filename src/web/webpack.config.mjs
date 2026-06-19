@@ -100,12 +100,11 @@ export default function () {
     module: { rules: [babelRule, assetIgnoreRule] },
     plugins: [
       new webpack.DefinePlugin({ __MODULE_URL__: "require('url').pathToFileURL(__filename).href" }),
-      // self-contained publish/: the SSR server serves /static (bundles) and /public (loader, images)
-      // from beside its bundle, and ssr_render reads index.html next to it
+      // ssr_render reads index.html next to the bundle; copy just that single source file here. The /static
+      // and /public asset trees are copied into publish/ by the copy-publish.mjs post-build step, NOT an
+      // in-compiler glob — globbing the concurrently-cleaned dist/static raced and nested manifest.json.
       new CopyPlugin({
         patterns: [
-          { from: path.join(__dirname, "dist/static"), to: path.join(__dirname, "publish/static") },
-          { from: path.join(__dirname, "src/public"), to: path.join(__dirname, "publish/public") },
           { from: path.join(__dirname, "src/server/index.html"), to: path.join(__dirname, "publish/index.html") },
         ],
       }),
@@ -137,8 +136,9 @@ export default function () {
       new webpack.DefinePlugin({ __MODULE_URL__: "import.meta.url" }),
       new CopyPlugin({
         patterns: [
-          { from: path.join(__dirname, "dist/static"), to: path.join(__dirname, "dist/server/static") },
-          { from: path.join(__dirname, "src/public"), to: path.join(__dirname, "dist/server/public") },
+          // /static and /public are copied beside this bundle by the copy-assets.mjs post-build step, NOT an
+          // in-compiler glob — globbing the concurrently-cleaned dist/static raced and nested manifest.json.
+          // only index.html is copied here: a single source file (no race), read by ssr_render from __dirname.
           { from: path.join(__dirname, "src/server/index.html"), to: path.join(__dirname, "dist/server/index.html") },
         ],
       }),

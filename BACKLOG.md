@@ -1697,18 +1697,27 @@ agent boundary sheds every Camunda-shaped field. This makes the agent a generic
 executor and the host the only place work status is queryable (the M8 console
 reads it).
 
-**The id model — three ids, one join only the host holds:**
+**The id model — the host owns the TRUE session; `workId` is its key:**
+*(reshaped 2026-06-18)* — `workId` is not just a correlation join, it **is** the
+work unit / true session, host-owned. It binds, **1:1:1**, the three facets none of
+the engines should own together:
 ```
-jobId (= workId, durable, user-facing)
-  ├─ status: new | running | stuck | cancelled | error | completed
-  ├─ camundaId  (processInstanceKey)
-  ├─ step       (current Camunda element/job)
-  └─ sessionId  (agent — its local knowledge)
+workId (= the unit of WORK — request start → end, reflects work done; host-owned)
+  ├─ status:        new | running | stuck | cancelled | error | completed
+  ├─ workspaceId:   guid naming the shared folder/bucket (workspaces/<workspaceId>)
+  ├─ sessionId:     the agent session (metrics + conversation), linked under the unit
+  ├─ camundaId:     processInstanceKey — the one linked Camunda execution
+  └─ currentJobKey / step:  the live Camunda task to complete
 ```
-One work unit is **1:N** with Camunda `jobKey`s (a workflow emits several service
-tasks over its life); every task resolves to the **same** agent `sessionId`, so
-the agent conversation persists across workflow steps. The host tracks the
-*current* `jobKey` on the aggregate to complete the right Camunda task.
+`workId` and `workspaceId` are **deliberately distinct**: `workId` is the unit of
+*work* (effort/status the host reports), `workspaceId` is just the *storage locator*
+for the file area — different concerns, kept as separate ids even though 1:1.
+**1 `workId` = 1 `workspaceId` = 1 agent session = 1 Camunda execution.** The unit is
+**1:N** with Camunda `jobKey`s (a workflow emits several service tasks over its
+life); every task resolves to the **same** session + workspace, so files and
+conversation persist across the whole run. The host holds every link; the agent
+sees only its own `sessionId`. The host tracks the *current* `jobKey` to complete
+the right Camunda task.
 
 - [x] **`JobRegistry`** (`src/host/src/jobs/job-registry.ts`) — JSONL store
       modelled on `MetricsStore`: `add`/`get`/`search`/`update`, append-one-line
@@ -1717,21 +1726,78 @@ the agent conversation persists across workflow steps. The host tracks the
       package-root-anchored like appsettings. Added to `MountContext` (the one
       host-owned *service* on the seam, distinct from the bus) + instantiated at
       the composition root.
-- [ ] **Boundary rename to `workId`** — the agent contract becomes
-      `{ workId, input }` in / `{ workId, result }` out (`src/agent/src/server/`
-      `contract.ts` + `api.ts`); strip `processInstanceKey`/`jobKey`/`jobType`
-      from the agent payloads. The host's `agent-client.ts` keys by `jobId`
-      (= `workId`), retiring the current `sessionByJob` `jobKey → sessionId` map.
+- [ ] **Agent boundary stays `sessionId`** — *(decision 2026-06-18)* the agent is
+      a pure executor that knows **only its own `sessionId`**; it never learns
+      `workId`, `jobKey`, or any Camunda field. The agent contract is
+      `{ sessionId, input }` in / `{ sessionId, result }` out (`src/agent/src/server/`
+      `contract.ts` + `api.ts`); strip `processInstanceKey`/`jobKey`/`jobType` from
+      the agent payloads. The host **trusts the returned `sessionId`** because the
+      session is authenticated — that's the correlation key on the way back. No
+      `workId` rename at the agent (reversing the earlier plan).
+- [ ] **Host owns the true session (`workId` binds the three facets)** — `workId`
+      is the host's durable key (`jobKey` is Camunda-bound, so it can't be it).
+      `agent-client.ts` keys by `workId`, holds `camundaId(processInstanceKey) →
+      workId`, `workId → currentJobKey`, and `sessionId ↔ workId`, retiring the
+      current `sessionByJob` `jobKey → sessionId` map. The work unit also owns its
+      **workspace** — one sandbox dir per `workId`, provisioned at trigger and reused
+      for every step (`AGENT_WORKSPACE`/`sandboxRoot` is set per work unit, not
+      process-global as `runtime_context` does today).
+- [ ] **Workspace as shared blackboard (host-bridged)** *(decision 2026-06-18)* —
+      the per-`workId` workspace is the work unit's **data plane**: the agent reads
+      and modifies files in it across steps; Camunda "sees" them via the host, since
+      Zeebe reasons over **variables, not files**. Two host-mediated directions:
+      (a) **agent → Camunda** — on `completeJob` the host lifts *declared* workspace
+      artifacts into Camunda variables (e.g. `valid`, `rowCount`, a file ref) so BPMN
+      **gateways branch on the agent's output**; (b) **Camunda → agent** — process
+      variables seeded at trigger / carried on the job seed the workspace (input
+      data, a file reference). Boundary: the agent touches **only its own `workId`
+      sandbox**, and **only declared artifacts** cross to variables — never arbitrary
+      file contents. (This is the 3-step demo: `setup` writes the user-roster xlsx →
+      `update` mutates a row → `validate` reads it back and the host lifts `valid`
+      for the BPMN to branch on.)
+- [ ] **Local workspace = `workspaces/<workspaceId>` (shared root)** *(decision
+      2026-06-18)* — for local dev the host creates a `workspaces/` dir under the
+      Agent.Local project root; host/Camunda-side **and** agent both build the path
+      as `workspaces/<workspaceId>` from the **host-generated `workspaceId`** (passed
+      on `/session/create`), so they resolve the *identical* dir while co-hosted — no
+      copying, it IS the shared medium. Behind a thin `Workspace` seam
+      (`pathFor`/`read`/`write`/`list`/`dispose`) so the future **cloud bucket** is a
+      backend swap, not a rewrite; the variable-lift bridge to Camunda is unchanged
+      either way. Replaces the process-global `sandboxRoot` in `runtime_context.ts`.
+- [ ] **Host mints `workspaceId`, pushes it down on `/session/create`** *(decision
+      2026-06-18)* — the **host generates one `workspaceId` guid per work unit** and
+      **passes it into `/session/create`**; the agent uses it to resolve its sandbox
+      (`workspaces/<workspaceId>`). This reshapes today's flow, where the agent
+      derives the session id (`resolveSessionId` returns the principal, collapsing
+      all a principal's traffic to one session) and *returns* it — instead the host
+      supplies the workspace locator and the agent honors it. The **same**
+      `workspaceId` + session serve every step of the one Camunda run, so files +
+      conversation persist across the whole workflow; both retire on
+      `workflow.completed`/`failed`. Auth-trust: the workspace is created during the
+      authenticated trigger; the agent records the owning principal at create and
+      rejects a foreign principal resuming it. *(Open: whether `sessionId` is a
+      separate guid or simply equals `workspaceId` — 1:1 either way.)*
+- [ ] **`+` Trigger endpoint** *(decision 2026-06-18)* — the host-initiated entry
+      point, under `/workflow` (host owns `workId`): `POST /workflow/trigger`
+      `{ workflowId }` → `202 { workId }`. The trigger, in order: mint `workId` →
+      `jobs.add(workId)` (`new`) → **create the agent session up front**
+      (`sessionId`, recorded `sessionId ↔ workId`) → start Camunda → wire the join.
+      Bus-pure start: trigger `publish`es `workflow.start` `{ workId, workflowId }`;
+      the workflow mount subscribes, calls `createProcessInstance`, and replies
+      `workflow.started` `{ workId, camundaId }`; the host fills `camundaId → workId`
+      + `update(workId, { camundaId, status:'running' })` async. (Invariant holds:
+      the host starts a *process*, never dispatches the agent — Camunda still
+      initiates every job.)
 - [ ] **Wire the updaters** (the lifecycle the registry exists to record):
-      - web creates a request → `jobs.add(jobId)` (status `new`).
-      - Camunda drives a job (`workflow.job`) → resolve/create the work unit,
-        `update(jobId, { status: 'running', step, camundaId })`.
-      - agent `/session/create` reply → `update(jobId, { sessionId })`
-        (association is the agent's `sessionId`, recorded host-side for audit).
-      - agent result (the hook → `/receive` → `agent.result`) carries `workId`;
-        host finds the work unit, `update(jobId, { status: 'completed' })`, then
-        completes the *current* Camunda `jobKey` for `camundaId`.
-      - `workflow.failed` → `update(jobId, { status: 'error' })`; a job parked too
+      - `+` trigger (above) seeds the work unit: `workId`, `sessionId`, `camundaId`.
+      - Camunda drives a job (`workflow.job` → `processInstanceKey`, `jobKey`) →
+        resolve `workId` via `camundaId` (session already exists), remember the live
+        `jobKey`, dispatch `{ sessionId, input }` to the agent,
+        `update(workId, { status: 'running', step })`.
+      - agent result (the hook → `/receive` → `agent.result`) carries `sessionId`;
+        host resolves `sessionId → workId`, `update(workId, { status: 'completed' })`,
+        then completes the *current* Camunda `jobKey` for `camundaId`.
+      - `workflow.failed` → `update(workId, { status: 'error' })`; a job parked too
         long without progress → `stuck` (timer/heartbeat, can defer).
 - [ ] **`description` on the work unit** — add a `description` field to
       `JobRecord` (the user's request text / task summary), set at `add` from the
@@ -1747,12 +1813,13 @@ the agent conversation persists across workflow steps. The host tracks the
 - [ ] Tests: `add` then fold returns the seeded record; a sequence of `update`s
       yields the last-line state; `search({status})` filters; a full
       `new → running → completed` lifecycle reconstructs from the JSONL; an
-      `agent.result` for an unknown `workId` is a no-op, not a throw.
+      `agent.result` for an unknown `sessionId` is a no-op, not a throw.
 
 **Done when:** a request creates a work unit the host can list/search; a Camunda
 job advances it to `running` with `camundaId`/`step`/`sessionId` recorded; the
-agent's `workId`-keyed result flips it to `completed` and completes the correct
-Camunda job — with the agent carrying no Camunda-shaped field, only `workId`.
+agent's `sessionId`-keyed result resolves to its `workId`, flips it to `completed`,
+and completes the correct Camunda job — with the agent carrying no Camunda-shaped
+field, only its own `sessionId`.
 
 ---
 

@@ -10,6 +10,7 @@ import { useApplicationContext } from "../providers/application_context";
 import { useNotificationContext } from "../providers/notification_context";
 import { useMiniStore } from "./shared/miniStore";
 import PageMenu from "./shared/PageMenu";
+import UserMenu from "./shared/UserMenu";
 
 // app chrome: title bar + page navigation + a global toast sink. Renders identically on server and
 // client (the Snackbar is hidden until a toast is set), so hydration matches.
@@ -26,6 +27,9 @@ export default function Layout({ children }: { children: ReactNode }) {
             {title}
           </Typography>
           <PageMenu />
+          {/* spacer pushes the auth area to the far right, like the sandbox Header's userArea */}
+          <Box sx={{ flexGrow: 1 }} />
+          <UserMenu />
         </Toolbar>
       </AppBar>
       <Container maxWidth="lg" sx={{ py: 4, flex: 1 }}>

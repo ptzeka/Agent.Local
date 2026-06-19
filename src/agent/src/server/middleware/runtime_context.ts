@@ -4,7 +4,7 @@ import url from "node:url";
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import { buildRuntime, type AgentRuntime, type AgentRuntimeDeps } from "../../runtime.js";
 
-// header an anonymous caller uses to pick its session until token-based identity lands
+// the work unit's session id, sent by the host on every call; selects which runtime/session serves the request
 const SESSION_HEADER = "x-session-id";
 
 declare global {
@@ -43,12 +43,9 @@ function findProjectRoot(): string {
 }
 
 // resolves the session a request runs under, and thus which runtime serves it (one runtime == one session,
-// the id IS the key). With a verified token the session is the authenticated subject — one runtime per
-// principal. Until auth lands, an anonymous caller supplies its own id via X-Session-Id so distinct callers
-// stay isolated; absent that header, all anonymous traffic shares the single "anonymous" session.
+// the id IS the key). Purely the X-Session-Id the host sends — the work unit's minted sessionId; identity is
+// enforced separately in userContext. Absent the header, all callers share the single "anonymous" session.
 function resolveSessionId(req: Request): string {
-  const principal = req.userContext?.userInfo?.serviceId;
-  if (req.userContext?.accessToken && principal) return principal;
   return req.header(SESSION_HEADER)?.trim() || "anonymous";
 }
 

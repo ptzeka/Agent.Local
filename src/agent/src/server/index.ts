@@ -1,14 +1,15 @@
 import express from "express";
 import { Eventing, type ILogger } from "@agent-local/common";
 import { loadAgentSettings } from "./appsettings.js";
-import { createApi } from "./api.js";
+import { createApi, createSessionApi } from "./api.js";
+import { SessionRegistry } from "./session-registry.js";
 import { HttpResultSender } from "./sender.js";
 import { configContextMiddleware } from "./middleware/config_context.js";
 import { loggerContextMiddleware } from "./middleware/logger_context.js";
 import { eventingContextMiddleware } from "./middleware/eventing_context.js";
 import { userContextMiddleware } from "./middleware/user_context.js";
 import { runtimeContextMiddleware } from "./middleware/runtime_context.js";
-import { createPublicKeyProvider } from "./auth/public-key.js";
+import { createJwksProvider } from "./auth/jwks.js";
 
 // console-backed ILogger: this service owns its process lifecycle, so it logs without FileLogger's filesystem
 const logger: ILogger = {
@@ -25,6 +26,8 @@ async function main(): Promise<void> {
   const root = new AbortController();
   const bus = new Eventing();
   const app = express();
+  // the agent owns the sessions it mints; lives across requests for the process, so it is built once here
+  const sessions = new SessionRegistry();
 
   new HttpResultSender(bus, settings.host.receiveUrl, logger).start();
 
@@ -39,9 +42,12 @@ async function main(): Promise<void> {
   app.use(loggerContextMiddleware(logger));
   app.use(eventingContextMiddleware(bus));
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
-  // the agent validates the bearer JWT offline against the host's public key, fetched once from authorityUrl
-  const getPublicKey = createPublicKeyProvider(settings.authentication.authorityUrl ?? "", logger);
-  app.use(userContextMiddleware(getPublicKey));
+  // the agent validates the bearer JWT against the host's JWKS, fetched from authorityUrl on first verify
+  const getKey = createJwksProvider(settings.authentication.authorityUrl ?? "", logger);
+  app.use(userContextMiddleware(getKey));
+  // session lifecycle mounts BEFORE the runtime middleware: minting/closing a session needs no runtime, and
+  // routing it through runtime_context would build a per-request runtime (and spurious session state) for it
+  app.use(createSessionApi(sessions));
   app.use(runtimeContextMiddleware({ signal: root.signal }));
   app.use(createApi());
 

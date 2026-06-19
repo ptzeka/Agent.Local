@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from "express";
-import type { EventEnvelope } from "@agent-local/common";
+import { EXECUTE_WORK_PERMISSION, type EventEnvelope } from "@agent-local/common";
 import { WORKFLOW_JOB, AGENT_RESULT, WORKFLOW_FAILED, type WorkflowJob } from "./contract.js";
+import { type SessionRegistry } from "./session-registry.js";
 
 // the camunda job carries the instruction in a variable; accept the common spellings
 function promptFor(variables: Record<string, unknown>): string {
@@ -36,17 +37,40 @@ async function runJob(req: Request, job: WorkflowJob): Promise<void> {
   }
 }
 
-// receive API: the host's sender posts here. The runtime, bus and signal for the call are already resolved
-// onto req by the context middleware (a fresh runtime per request), so handlers read them off req — no
-// injected manager. Each handler drains its runtime when done; /events runs a job and reports back.
-export function createApi(): Router {
+// session lifecycle API: minting/closing a work session needs no runtime, so it mounts BEFORE the runtime
+// middleware (which would otherwise build a runtime — and spurious session/sandbox state — per request).
+// /session/create is privileged: gated on EXECUTE_WORK_PERMISSION from the verified token. The host owns
+// workId (the unit) and workspaceId (the shared folder guid) and passes both; the agent mints the sessionId.
+export function createSessionApi(sessions: SessionRegistry): Router {
   const router = Router();
 
-  // surfaces the session the request resolved to, then releases the runtime built for it
   router.post("/session/create", (req: Request, res: Response) => {
-    res.status(201).json({ sessionId: req.sessionId });
-    void req.closeRuntime();
+    if (!req.userContext?.permissions?.includes(EXECUTE_WORK_PERMISSION)) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
+    const { workspaceId, workId } = (req.body ?? {}) as { workspaceId?: string; workId?: string };
+    if (!workspaceId || !workId) {
+      res.status(400).json({ error: "workspaceId and workId are required" });
+      return;
+    }
+    const record = sessions.create(workspaceId, workId);
+    res.status(201).json({ sessionId: record.sessionId });
   });
+
+  router.post("/session/close", (req: Request, res: Response) => {
+    const { sessionId } = (req.body ?? {}) as { sessionId?: string };
+    res.status(202).json({ closed: sessionId ? sessions.close(sessionId) : false });
+  });
+
+  return router;
+}
+
+// receive API: the host's sender posts here. The runtime, bus and signal for the call are already resolved
+// onto req by the context middleware (a fresh runtime per request), so handlers read them off req — no
+// injected manager. /events runs a job and reports back, draining its runtime when done.
+export function createApi(): Router {
+  const router = Router();
 
   // envelope receiver { eventType, payload }. The answer returns out-of-band via the sender's webhook, so
   // this responds 202 immediately (fire-and-forget) rather than blocking on the runtime turn.
@@ -59,11 +83,6 @@ export function createApi(): Router {
     const job = envelope.payload as WorkflowJob;
     void runJob(req, job).catch((err) => req.logger?.error?.("[agent-server] run failed", err));
     res.status(202).json({ accepted: true });
-  });
-
-  router.post("/session/:id/close", (req: Request, res: Response) => {
-    void req.closeRuntime();
-    res.status(202).json({ closing: req.params.id });
   });
 
   return router;

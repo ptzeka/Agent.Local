@@ -27,8 +27,10 @@ export interface MountContext {
 // context middleware first (config -> logger -> user), then static + the live event bridge, then the
 // catch-all SSR last so it can read the resolved request context and never shadows real routes.
 export const mount = (app: Express, ctx: MountContext): void => {
-  // both dirs sit next to this server bundle (webpack copies them in): /static = hashed webpack bundles
-  // + manifest.json; /public = static files copied from src/public (manifest loader, images)
+  // both dirs sit next to this server bundle: /static = hashed client bundles + manifest.json, /public =
+  // loader + images. The two bundles that call mount() live in different trees (host: dist/server, standalone:
+  // publish), so resolving beside __dirname keeps this layout-agnostic; the copy-assets.mjs post-build step
+  // populates both (deterministically — an in-compiler glob raced clean:true and nested manifest.json).
   const staticDir = path.join(__dirname, "static");
   const publicDir = path.join(__dirname, "public");
 

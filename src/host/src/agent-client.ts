@@ -1,29 +1,28 @@
 import type { Eventing, ILogger, EventEnvelope } from "@agent-local/common";
-import {
-  WORKFLOW_JOB,
-  WORKFLOW_FAILED,
-  AGENT_RESULT,
-  type WorkflowJobPayload,
-  type AgentResultPayload,
-} from "./events.js";
+import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload } from "./events.js";
 
-// sends camunda jobs to the agent SERVICE over HTTP and owns the correlation table camunda jobKey ->
-// agent sessionId. The transport is swappable (HTTP now, gRPC later) behind this interface; the body is
+// the agent SERVICE over HTTP: the orchestrator opens/closes a session per work unit, the sender forwards
+// camunda jobs. Transport is swappable (HTTP now, gRPC later) behind these interfaces; the /events body is
 // the same WORKFLOW_JOB event in envelope form, so the agent runs it exactly as if it came off a bus.
+export interface AgentClient {
+  // opens a session bound to the host's work unit; authHeader carries the caller's bearer JWT (executework)
+  createSession(workspaceId: string, workId: string, authHeader?: string): Promise<string>;
+  closeSession(sessionId: string): Promise<void>;
+}
+
 export interface JobSender {
   start(): void;
 }
 
-export class HttpJobSender implements JobSender {
-  // one agent session per camunda job; this map is the host-owned jobKey -> sessionId link
-  private readonly sessionByJob = new Map<string, string>();
-
+export class HttpJobSender implements JobSender, AgentClient {
   constructor(
     private readonly bus: Eventing,
     private readonly baseUrl: string,
     private readonly logger: ILogger,
   ) {}
 
+  // the session is created up front at trigger time, so dispatch no longer mints one: it reads the sessionId
+  // the engine seeded as a process variable off the job and forwards the job to the agent under it.
   start(): void {
     this.bus.subscribe(WORKFLOW_JOB, (event) => {
       const job = event.payload as unknown as WorkflowJobPayload;
@@ -36,47 +35,38 @@ export class HttpJobSender implements JobSender {
         });
       });
     });
-
-    // the receiver republishes the agent's answer onto the bus; close the correlated session when it lands
-    this.bus.subscribe(AGENT_RESULT, (event) => {
-      const result = event.payload as unknown as AgentResultPayload;
-      void this.closeSession(result.jobKey);
-    });
   }
 
-  private async dispatch(job: WorkflowJobPayload): Promise<void> {
-    const sessionId = await this.sessionFor(job.jobKey);
-    const envelope: EventEnvelope = { eventType: WORKFLOW_JOB, payload: { ...job, sessionId } };
-    const res = await this.post("/events", envelope);
-    if (!res.ok) throw new Error(`agent /events -> ${res.status}`);
-  }
-
-  // create a session on the first job for a jobKey, reuse it on retries
-  private async sessionFor(jobKey: string): Promise<string> {
-    const existing = this.sessionByJob.get(jobKey);
-    if (existing) return existing;
-    const res = await this.post("/session/create");
+  async createSession(workspaceId: string, workId: string, authHeader?: string): Promise<string> {
+    const res = await this.post("/session/create", { workspaceId, workId }, authHeader);
     if (!res.ok) throw new Error(`agent /session/create -> ${res.status}`);
     const { sessionId } = (await res.json()) as { sessionId: string };
-    this.sessionByJob.set(jobKey, sessionId);
     return sessionId;
   }
 
-  private async closeSession(jobKey: string): Promise<void> {
-    const sessionId = this.sessionByJob.get(jobKey);
-    if (!sessionId) return;
-    this.sessionByJob.delete(jobKey);
+  async closeSession(sessionId: string): Promise<void> {
     try {
-      await this.post(`/session/${sessionId}/close`);
+      await this.post("/session/close", { sessionId });
     } catch (err) {
       this.logger.error?.("[agent-client] session close failed", err);
     }
   }
 
-  private post(path: string, body?: unknown): Promise<Response> {
+  private async dispatch(job: WorkflowJobPayload): Promise<void> {
+    const sessionId = String((job.variables ?? {}).sessionId ?? "");
+    const envelope: EventEnvelope = { eventType: WORKFLOW_JOB, payload: { ...job, sessionId } };
+    const res = await this.post("/events", envelope, undefined, sessionId);
+    if (!res.ok) throw new Error(`agent /events -> ${res.status}`);
+  }
+
+  // sessionId is also sent as a header so the agent resolves the runtime bound to the work unit's session
+  private post(path: string, body?: unknown, authHeader?: string, sessionId?: string): Promise<Response> {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (authHeader) headers.authorization = authHeader;
+    if (sessionId) headers["x-session-id"] = sessionId;
     return fetch(`${this.baseUrl}${path}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
   }

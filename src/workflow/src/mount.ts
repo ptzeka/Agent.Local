@@ -25,6 +25,19 @@ export const mount = (app: Express, ctx: MountContext): void => {
   const client = new ZeebeClient(config, ctx.bus, ctx.logger, ctx.signal);
   void client.start();
 
+  // the host commands a start over the bus (it owns no Zeebe handle); seed the work-unit ids as process
+  // variables so every activated job carries them back, then ack with the processInstanceKey as camundaId
+  ctx.bus.subscribe("workflow.start", (event) => {
+    const { workId, workspaceId, sessionId, workflowId } = event.payload as Record<string, string>;
+    const bpmnProcessId = workflowId || "agent-execute-process";
+    client
+      .startProcess(bpmnProcessId, { workId, workspaceId, sessionId })
+      .then((record) =>
+        ctx.bus.publish("workflow.started", { workId, camundaId: record.processInstanceKey }),
+      )
+      .catch((err) => ctx.bus.publish("workflow.failed", { workId, error: String(err) }));
+  });
+
   // a future agent.result drives out-of-band completion; Camunda state refreshes here, agent is never called from this side
   ctx.bus.subscribe("agent.result", (event) => {
     const jobKey = event.payload.jobKey;

@@ -23,7 +23,10 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "stop": "bash scripts/stop.sh",
+    "start": "bash scripts/start.sh",
+    "restart": "bash scripts/stop.sh && bash scripts/start.sh"
   },
   "devDependencies": {
     "rimraf": "^6.0.1",

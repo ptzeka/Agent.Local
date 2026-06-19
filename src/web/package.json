@@ -9,7 +9,8 @@
   },
   "scripts": {
     "dev": "concurrently -k -n webpack,server \"webpack --config webpack.dev.mjs --mode=development -w\" \"nodemon --watch publish --delay 1 publish/index.cjs -p 3000\"",
-    "build": "node clean.mjs && webpack --config webpack.prod.mjs --mode=production",
+    "watch": "webpack --config webpack.dev.mjs --mode=development -w --config-name client --config-name mount",
+    "build": "node clean.mjs && webpack --config webpack.prod.mjs --mode=production && node copy-assets.mjs",
     "start": "node publish/index.cjs -p 3000",
     "clean": "node clean.mjs"
   },

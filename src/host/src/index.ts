@@ -7,8 +7,9 @@ import { loadAppSettings } from "./appsettings.js";
 import { createReceiveApi } from "./api/receive.js";
 import { createAuthApi } from "./api/auth.js";
 import { HttpJobSender } from "./agent-client.js";
+import { Orchestrator } from "./orchestrator.js";
 import { JobRegistry } from "./jobs/job-registry.js";
-import { loadOrCreateKeyPair } from "./user/keys.js";
+import { loadOrCreateKeyRing } from "./user/keys.js";
 
 const DEFAULT_PORT = 3011;
 
@@ -31,8 +32,8 @@ async function main(): Promise<void> {
   const settings = loadAppSettings();
   // host-owned services added to the mount container; the job registry is the work-unit store features query
   const jobs = new JobRegistry();
-  // host owns IAM: load (or first-run generate) the RS256 keypair so /api/login can sign tokens
-  const keys = loadOrCreateKeyPair();
+  // host owns IAM: load (or first-run generate) the RS256 key ring so /api/login can sign tokens
+  const keys = loadOrCreateKeyRing();
   const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs };
 
   app.use(express.json());
@@ -40,9 +41,19 @@ async function main(): Promise<void> {
     res.json({ status: "ok" });
   });
 
-  app.use(createAuthApi(keys, settings.host.iam, logger));          // POST /api/login (sign JWT) + GET /api/auth/public-key
+  app.use(createAuthApi(keys, settings.host.iam, logger));          // POST /api/login (sign JWT) + GET /.well-known/jwks.json
   app.use(createReceiveApi(bus, logger));                           // POST /receive -> republish onto the bus
-  new HttpJobSender(bus, settings.agent.baseUrl, logger).start();   // workflow.job -> HTTP -> agent service
+  const sender = new HttpJobSender(bus, settings.agent.baseUrl, logger);
+  sender.start();                                                   // workflow.job -> HTTP -> agent service
+  // the orchestrator owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs
+  const orchestrator = new Orchestrator(bus, jobs, sender, logger);
+  orchestrator.start();
+  app.post("/workflow/trigger", (req, res) => {                     // + start a work unit by workflowId
+    orchestrator
+      .trigger(String(req.body?.workflowId ?? ""), req.headers.authorization)
+      .then((workId) => res.status(202).json({ workId }))
+      .catch((err) => res.status(503).json({ error: String(err) }));
+  });
   mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
   mountWeb(app, ctx);       // React SSR: /static, /public, /events SSE, then the SSR catch-all (last)
   logger.info("[host] wired agent-client + /receive, mounted workflow, web");

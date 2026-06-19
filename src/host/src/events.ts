@@ -5,12 +5,16 @@
 // Event names
 // ---------------------------------------------------------------------------
 
+export const WORKFLOW_START = "workflow.start" as const;
+export const WORKFLOW_STARTED = "workflow.started" as const;
 export const WORKFLOW_JOB = "workflow.job" as const;
 export const WORKFLOW_COMPLETED = "workflow.completed" as const;
 export const WORKFLOW_FAILED = "workflow.failed" as const;
 export const AGENT_RESULT = "agent.result" as const;
 
 export type EventName =
+  | typeof WORKFLOW_START
+  | typeof WORKFLOW_STARTED
   | typeof WORKFLOW_JOB
   | typeof WORKFLOW_COMPLETED
   | typeof WORKFLOW_FAILED
@@ -19,6 +23,21 @@ export type EventName =
 // ---------------------------------------------------------------------------
 // Payloads
 // ---------------------------------------------------------------------------
+
+// the host commands a process start (bus-pure, so it never reaches into the workflow engine); the work-unit
+// ids ride along so the engine seeds them as process variables and every later job carries them back.
+export interface WorkflowStartPayload {
+  workId: string;
+  workspaceId: string;
+  sessionId: string;
+  workflowId: string;
+}
+
+// the engine's acknowledgement: the process is live, here is its processInstanceKey for the work unit
+export interface WorkflowStartedPayload {
+  workId: string;
+  camundaId: string;
+}
 
 export interface WorkflowJobPayload {
   processInstanceKey: string;
@@ -48,6 +67,8 @@ export interface AgentResultPayload {
 
 // maps each event name to its payload so publishers/subscribers stay in lockstep across workspaces
 export interface EventPayloads {
+  [WORKFLOW_START]: WorkflowStartPayload;
+  [WORKFLOW_STARTED]: WorkflowStartedPayload;
   [WORKFLOW_JOB]: WorkflowJobPayload;
   [WORKFLOW_COMPLETED]: WorkflowCompletedPayload;
   [WORKFLOW_FAILED]: WorkflowFailedPayload;
