@@ -1584,9 +1584,13 @@ worker, BPMN deploy, control endpoints, resilience, and tests landed 2026-06-17
 
 ### M7-2 · Packagable agentic engine — resilient background service — `~2.5d` · P0
 Wrap the host-agnostic runtime + the M4-1 HTTP surface into one embeddable
-engine object. **Co-hosted today** (mounted into the workflow express process),
-but built standalone-ready so the later split is a deploy change, not a rewrite —
-it never reaches into workflow internals, only the bus.
+engine object. ~~**Co-hosted today**~~ — **superseded 2026-06-19 (see M7-3
+reversal):** the agent already runs as a SEPARATE express service
+(`src/agent/src/server/`) reached over HTTP, not co-hosted in-process. It exposes
+`/session/create`, job intake (`/events`), and `/healthz`; the `createAgenticEngine`
+factory shape (start/stop/health + drain + leases) below is still the open work —
+the standalone *process* exists, the resilient *engine object* contract does not
+yet. Bullets stay open against that contract.
 - [ ] `createAgenticEngine(deps)` factory (`src/agent/src/agent/engine/`):
       composes `buildRuntime` + the M4-1 app into `{ start(), stop(), health() }`;
       `start()` connects MCP servers and subscribes its bus handlers, `stop()`
@@ -1641,6 +1645,21 @@ the seam is designed so a pub/sub broker is a later transport swap, not a rewrit
       `completeJob(jobKey, vars)` on `agent.result`. Host composition is now three
       tidy seams in `src/host/src/index.ts`: `wireCamunda` / `wireApi` /
       `wireAgentWorker` (`src/host/src/wiring/`).
+> **Reversed 2026-06-19 — agent is now a SEPARATE HTTP service, not a bus-only
+> in-process worker.** The `common/src/mesh.ts` (`wireCamundaMesh`) + its test and
+> the `src/host/src/wiring/*` seams were **deleted**; `@agent-local/agent`'s bus-only
+> `mount` (`src/agent/src/worker/`) was replaced by a standalone express service
+> (`src/agent/src/server/`: `index.ts`, `api.ts`, `contract.ts`, middleware,
+> `session-registry.ts`, `sender.ts`, `appsettings`). The host now reaches it over
+> HTTP: `HttpJobSender`/`AgentClient` (`src/host/src/agent-client.ts`) subscribes
+> `WORKFLOW_JOB` and POSTs the job (envelope form) to the agent's `/events`;
+> `Orchestrator` (`src/host/src/orchestrator.ts`) opens/closes one agent session per
+> work unit via `/session/create`; results return via `POST /receive` →
+> republished onto the bus (`src/host/src/api/receive.ts`). The bus seam contract is
+> unchanged (this is the documented transport swap, in-memory → wire), but the agent
+> is no longer co-hosted in-process. **Open:** the `Transport` seam abstraction
+> bullet above is now embodied by `AgentClient`/`JobSender` (HTTP impl); gRPC/broker
+> remains a later impl swap behind those interfaces.
 - [ ] *Remaining for "done":* a live-model turn + running broker E2E (the seam is
       verified `workflow.job → agent.job → worker → session` on a real bus; the
       model turn + `completeJob` need Ollama/a provider and a Zeebe broker).
@@ -1777,7 +1796,7 @@ the right Camunda task.
       authenticated trigger; the agent records the owning principal at create and
       rejects a foreign principal resuming it. *(Open: whether `sessionId` is a
       separate guid or simply equals `workspaceId` — 1:1 either way.)*
-- [ ] **`+` Trigger endpoint** *(decision 2026-06-18)* — the host-initiated entry
+- [x] **`+` Trigger endpoint** *(decision 2026-06-18)* — the host-initiated entry
       point, under `/workflow` (host owns `workId`): `POST /workflow/trigger`
       `{ workflowId }` → `202 { workId }`. The trigger, in order: mint `workId` →
       `jobs.add(workId)` (`new`) → **create the agent session up front**
@@ -1787,7 +1806,13 @@ the right Camunda task.
       `workflow.started` `{ workId, camundaId }`; the host fills `camundaId → workId`
       + `update(workId, { camundaId, status:'running' })` async. (Invariant holds:
       the host starts a *process*, never dispatches the agent — Camunda still
-      initiates every job.)
+      initiates every job.) — **landed 2026-06-19**: `Orchestrator.trigger`
+      (`src/host/src/orchestrator.ts`) mints `workId`+`workspaceId`, `jobs.add`,
+      `agent.createSession(workspaceId, workId, authHeader)` up front, records
+      `sessionId`, publishes `WORKFLOW_START`; `POST /workflow/trigger`
+      (`src/host/src/index.ts`) returns `202 { workId }` and forwards the caller's
+      ticket access token as the agent bearer. `WORKFLOW_STARTED` updater fills
+      `camundaId` + flips to `running`.
 - [ ] **Wire the updaters** (the lifecycle the registry exists to record):
       - `+` trigger (above) seeds the work unit: `workId`, `sessionId`, `camundaId`.
       - Camunda drives a job (`workflow.job` → `processInstanceKey`, `jobKey`) →
@@ -1799,6 +1824,11 @@ the right Camunda task.
         then completes the *current* Camunda `jobKey` for `camundaId`.
       - `workflow.failed` → `update(workId, { status: 'error' })`; a job parked too
         long without progress → `stuck` (timer/heartbeat, can defer).
+      - *(partial 2026-06-19)* `Orchestrator.start` wires the terminal folds:
+        `WORKFLOW_STARTED → camundaId/running`, `WORKFLOW_COMPLETED/FAILED →`
+        resolve by `camundaId`, `closeSession`, set `completed`/`error`. Still
+        open: the per-job `workflow.job → running/step` updater and the
+        `agent.result → completeJob` return path (host receives via `/receive`).
 - [ ] **`description` on the work unit** — add a `description` field to
       `JobRecord` (the user's request text / task summary), set at `add` from the
       create-request flow. The M8-4 jobs table renders it as a column; until set it
@@ -1820,6 +1850,122 @@ job advances it to `running` with `camundaId`/`step`/`sessionId` recorded; the
 agent's `sessionId`-keyed result resolves to its `workId`, flips it to `completed`,
 and completes the correct Camunda job — with the agent carrying no Camunda-shaped
 field, only its own `sessionId`.
+
+### M7-7 · `src/camundahost` — Camunda runtime image (Dockerfile + local build + CI deploy) — `~1d` · P1
+The Camunda runtime gets its **own deploy workspace**, separate from the Node side.
+Today the broker is an inline `camunda/zeebe:8.7.6` in `src/workflow`'s
+`docker-compose.yml` (M7-1); that conflates the *client* (Zeebe job workers +
+control surface) with the *runtime* (the broker container). Split them: a new
+`src/camundahost` owns the Camunda runtime image — a `Dockerfile` `FROM` a Camunda
+base with our startup scripts + broker/BPMN config baked in — its local build/run
+commands, and the future CI pipeline that builds and deploys it. This is distinct
+from M4-2 (the **Node app** image); camundahost is the **Camunda** image only.
+
+> **Decision 2026-06-19:** `src/workflow` is **client-only** — no Camunda runtime,
+> no broker compose. It keeps the Zeebe workers + `POST /workflow/process` control
+> surface and connects to the broker purely via the env endpoint (M7-1 rule), which
+> camundahost now provides. The runtime moves out of workflow entirely.
+
+- [ ] **New workspace `@agent-local/camundahost` (`src/camundahost`)** owning the
+      runtime container only (no Node app, no agent code). Holds the package/docker
+      config: `Dockerfile`, a `dockerfiles/` dir for the copied-in artifacts
+      (startup scripts, `application.yaml`/Zeebe config, BPMN), and a `package.json`
+      carrying the build/run scripts below.
+- [ ] **Dockerfile = Camunda base + our layer.** `FROM` the pinned Camunda base
+      (`camunda/zeebe:8.7.6` to match M7-1 — version configurable via build arg),
+      then `COPY` from `src/camundahost/dockerfiles/` the startup script(s) and
+      broker/BPMN config into the image; set the entrypoint to our script. No
+      secrets or endpoints baked in — env at run time only (same rule as M7-1).
+- [ ] **Remove the broker from `src/workflow`.** Delete the inline broker service
+      from `src/workflow/docker-compose.yml` (or the whole file if it only held the
+      broker); workflow keeps connecting via its env endpoint unchanged. The only
+      Camunda *runtime* definition in the repo now lives in camundahost.
+- [ ] **Local build/run commands** as workspace npm scripts: `docker:build` (build
+      + tag the image from the Dockerfile/build args), `docker:up` / `docker:down`
+      (run it locally — a thin compose that uses the **built** image, optional
+      Operate commented like M7-1). Document the one-liner in the workspace README.
+- [ ] **Future CI yml pipeline (scaffold now, deploy stubbed).** A GitHub Actions
+      workflow (sibling to M0-5's CI) that builds the camundahost image on push/tag
+      and pushes to a registry, with a deploy job to the runtime host. Wire the
+      **build** job live; leave registry creds + deploy target as a documented TODO
+      until a registry/host exists — build is verifiable in CI immediately, deploy
+      activates when infra lands.
+- [ ] Tests/verify: `npm run docker:build -w @agent-local/camundahost` produces a
+      runnable image; `docker:up` brings the broker up and the (client-only)
+      `src/workflow` worker connects + deploys its BPMN against it — this is exactly
+      the **live-broker E2E still pending in M7-1**, now unblocked by a one-command
+      local broker.
+
+**Done when:** `npm run docker:build -w @agent-local/camundahost` builds a Camunda
+runtime image from a Camunda base with our startup scripts/config copied in; a local
+`docker:up` brings the broker up so the client-only `src/workflow` worker connects
+and deploys BPMN against it; and a CI yml builds the image (push/deploy stubbed) —
+with no Camunda runtime left in `src/workflow`.
+
+### M7-8 · Host-owned IAM — login, JWKS, encrypted session cookie + agent JWT trust — `~2d` · P1
+The auth seam that lets the browser, the host, and the agent share one identity
+without the agent ever sharing a secret with the host. **The host owns IAM**; the
+browser authenticates to the host with a cookie; the host↔agent hop is a bearer
+JWT the agent verifies via **standard JWKS**. Browser↔host secrecy and host↔agent
+trust are deliberately different mechanisms (opaque encrypted cookie vs. signed
+JWT) so a browser can never replay an agent-facing token and the agent never holds
+a cookie key. Prerequisite for M7-5 (Camunda IAM identity) and overlaps M2-1
+(agent-side JWKS verification — landed here for the host-issued token).
+
+- [x] **Host RS256 key ring + login.** `loadOrCreateKeyRing` (`src/host/src/user/keys.ts`)
+      loads/first-run-generates the signing ring; `UserRegistry`
+      (`src/host/src/user/userRegistry.ts`) is the local credential store;
+      `POST /api/login` (`src/host/src/api/auth.ts`) verifies creds and mints an
+      RS256 access token (2h) carrying `sub`/`userName`/`permissions`, each token
+      stamped with the signing key's `kid`.
+- [x] **Standard JWKS endpoint.** `GET /.well-known/jwks.json` publishes the whole
+      ring as JWKs (`publicJwk` in `@agent-local/common`, RFC 7638 thumbprint `kid`,
+      `use:sig`/`alg:RS256`) so a rotation keeps verifying in-flight tokens. The
+      agent validates host JWTs via `createRemoteJWKSet` — no shared secret.
+- [x] **Encrypted cookie = authentication ticket.** `sealTicket`/`openTicket`
+      (`@agent-local/common/jwt`, `jose` `dir`/`A256GCM`, key = `sessionKey` =
+      SHA-256 of `host.session.secret`) wrap `{ accessToken, claims, authenticated }`
+      into an httpOnly, `SameSite=Lax`, 2h cookie opaque to the browser.
+      **Encrypt-at-response** (`/api/login` seals + `Set-Cookie`),
+      **decrypt-at-middleware** (`sessionMiddleware`, `src/host/src/user/session.ts`,
+      opens it ONCE → `req.authTicket`; missing/tampered/expired → unauthenticated).
+      `GET /api/me` returns claims; `POST /api/logout` clears it. Cookie `maxAge`
+      mirrors the ticket exp so both go stale together.
+- [x] **Host identity middleware + guard.** `userContextMiddleware`
+      (`src/host/src/user/userContext.ts`) resolves a presented bearer (verified
+      against the host's own ring via `createLocalKeyResolver`) OVER the session
+      ticket → `req.userContext`; `requirePermission(p)` is the route guard
+      (401 unauth / 403 missing permission).
+- [x] **Service tokens (client-credentials).** `POST /api/auth/token` takes HTTP
+      Basic `clientId:secret` → short-lived (15m) RS256 JWT for service-to-service
+      calls (the agent presents it as a bearer); no cookie, no scope negotiation.
+- [x] **Agent verifies host JWT via JWKS.** `src/agent/src/server/auth/jwks.ts`
+      (`createJwksProvider`) + `src/agent/src/server/middleware/user_context.ts`
+      verify the bearer (signature/`kid`/`iss`/`aud`/`exp`) against the host JWKS;
+      `/session/create` and job dispatch are gated on `executework`. *(satisfies the
+      agent-side half of M2-1 for the host-issued token; external-OIDC verification
+      in the CLI runtime stays open under M2-1.)*
+- [x] **Web drives off the cookie, localStorage removed.** `login`/`profile`/
+      `UserMenu` read identity from `/api/me`; sign-out posts `/api/logout`; the
+      old localStorage `token.ts` was deleted. SSR hydrates identity from the
+      ticket via the `resolveUser` seam (`src/web/src/server/mount.tsx`).
+- [ ] **Secrets out of `appsettings`.** `host.session.secret` and the signing key
+      ring are dev-local today (the host warns when the secret is absent and falls
+      back to an insecure dev key). Move both to a real secret store before any
+      non-local deploy.
+- [ ] **Agent session ownership binding (M2-2).** A foreign principal must not
+      resume another's agent session — bind `session.user.sub` on create and refuse
+      mismatched resume; today the agent trusts the returned `sessionId`.
+- [ ] **CSRF posture review.** Cookie is `SameSite=Lax` + httpOnly; confirm that is
+      sufficient for the state-changing `/api/*` + `/workflow/trigger` POSTs or add
+      a token-header check before exposing beyond local dev.
+
+**Done when:** *(met 2026-06-19 for local dev)* a browser logs in and gets an
+opaque encrypted cookie (no token in the response body); `/api/me` decrypts it;
+`/api/logout` and expiry both drop to signed-out; the host forwards the ticket's
+access token as a bearer the agent validates via `/.well-known/jwks.json` (verified
+`/session/create` → 201); cookie + JWT both expire at 2h. Open bullets above gate
+the non-local hardening.
 
 ---
 
