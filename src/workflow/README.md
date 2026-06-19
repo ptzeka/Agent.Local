@@ -11,14 +11,19 @@ worker reacts to activated jobs and reports back over the bus.
 
 ## Run a local broker
 
+This workspace is **client-only** — it carries no Camunda runtime. The broker
+image lives in [`@agent-local/camundahost`](../camundahost/README.md); bring it
+up there, then point this client at it via the env vars below.
+
 ```sh
-docker compose -f src/workflow/docker-compose.yml up -d
+npm run docker:build -w @agent-local/camundahost
+npm run docker:up    -w @agent-local/camundahost
 ```
 
 ## Connection env vars
 
 The `@camunda8/sdk` reads connection details from the environment. For the
-self-managed single-broker dev setup (OAuth disabled) in the compose file:
+self-managed single-broker dev setup (OAuth disabled) that camundahost provides:
 
 | Var | Example | Purpose |
 |---|---|---|

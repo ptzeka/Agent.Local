@@ -7,6 +7,7 @@
 
 export const WORKFLOW_START = "workflow.start" as const;
 export const WORKFLOW_STARTED = "workflow.started" as const;
+export const WORKFLOW_STOP = "workflow.stop" as const;
 export const WORKFLOW_JOB = "workflow.job" as const;
 export const WORKFLOW_COMPLETED = "workflow.completed" as const;
 export const WORKFLOW_FAILED = "workflow.failed" as const;
@@ -15,6 +16,7 @@ export const AGENT_RESULT = "agent.result" as const;
 export type EventName =
   | typeof WORKFLOW_START
   | typeof WORKFLOW_STARTED
+  | typeof WORKFLOW_STOP
   | typeof WORKFLOW_JOB
   | typeof WORKFLOW_COMPLETED
   | typeof WORKFLOW_FAILED
@@ -35,6 +37,13 @@ export interface WorkflowStartPayload {
 
 // the engine's acknowledgement: the process is live, here is its processInstanceKey for the work unit
 export interface WorkflowStartedPayload {
+  workId: string;
+  camundaId: string;
+}
+
+// the host commands a running process be cancelled (user stopped the work); the engine cancels the instance
+// by its camundaId. bus-pure like WORKFLOW_START — the host never reaches into the engine directly.
+export interface WorkflowStopPayload {
   workId: string;
   camundaId: string;
 }
@@ -69,6 +78,7 @@ export interface AgentResultPayload {
 export interface EventPayloads {
   [WORKFLOW_START]: WorkflowStartPayload;
   [WORKFLOW_STARTED]: WorkflowStartedPayload;
+  [WORKFLOW_STOP]: WorkflowStopPayload;
   [WORKFLOW_JOB]: WorkflowJobPayload;
   [WORKFLOW_COMPLETED]: WorkflowCompletedPayload;
   [WORKFLOW_FAILED]: WorkflowFailedPayload;

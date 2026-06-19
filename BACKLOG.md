@@ -1866,35 +1866,34 @@ from M4-2 (the **Node app** image); camundahost is the **Camunda** image only.
 > surface and connects to the broker purely via the env endpoint (M7-1 rule), which
 > camundahost now provides. The runtime moves out of workflow entirely.
 
-- [ ] **New workspace `@agent-local/camundahost` (`src/camundahost`)** owning the
+- [x] **New workspace `@agent-local/camundahost` (`src/camundahost`)** owning the
       runtime container only (no Node app, no agent code). Holds the package/docker
       config: `Dockerfile`, a `dockerfiles/` dir for the copied-in artifacts
       (startup scripts, `application.yaml`/Zeebe config, BPMN), and a `package.json`
-      carrying the build/run scripts below.
-- [ ] **Dockerfile = Camunda base + our layer.** `FROM` the pinned Camunda base
-      (`camunda/zeebe:8.7.6` to match M7-1 — version configurable via build arg),
-      then `COPY` from `src/camundahost/dockerfiles/` the startup script(s) and
-      broker/BPMN config into the image; set the entrypoint to our script. No
+      carrying the build/run scripts below. Registered in the root workspaces array.
+- [x] **Dockerfile = Camunda base + our layer.** `FROM` the pinned Camunda base
+      (`camunda/zeebe:8.7.6` to match M7-1 — version configurable via the
+      `CAMUNDA_VERSION` build arg), then `COPY` from `src/camundahost/dockerfiles/`
+      `startup.sh` + `application.yaml` into the image; entrypoint is our script. No
       secrets or endpoints baked in — env at run time only (same rule as M7-1).
-- [ ] **Remove the broker from `src/workflow`.** Delete the inline broker service
-      from `src/workflow/docker-compose.yml` (or the whole file if it only held the
-      broker); workflow keeps connecting via its env endpoint unchanged. The only
-      Camunda *runtime* definition in the repo now lives in camundahost.
-- [ ] **Local build/run commands** as workspace npm scripts: `docker:build` (build
-      + tag the image from the Dockerfile/build args), `docker:up` / `docker:down`
-      (run it locally — a thin compose that uses the **built** image, optional
-      Operate commented like M7-1). Document the one-liner in the workspace README.
-- [ ] **Future CI yml pipeline (scaffold now, deploy stubbed).** A GitHub Actions
-      workflow (sibling to M0-5's CI) that builds the camundahost image on push/tag
-      and pushes to a registry, with a deploy job to the runtime host. Wire the
-      **build** job live; leave registry creds + deploy target as a documented TODO
-      until a registry/host exists — build is verifiable in CI immediately, deploy
+- [x] **Remove the broker from `src/workflow`.** Deleted `src/workflow/docker-compose.yml`
+      (it only held the broker); the workflow README now points at camundahost and
+      workflow keeps connecting via its env endpoint unchanged. The only Camunda
+      *runtime* definition in the repo now lives in camundahost.
+- [x] **Local build/run commands** as workspace npm scripts: `docker:build` (build
+      + tag from the Dockerfile/build args), `docker:up` / `docker:down` / `docker:logs`
+      (run the **built** image via a thin compose, optional Operate commented like
+      M7-1). One-liner documented in the workspace README.
+- [x] **Future CI yml pipeline (scaffold now, deploy stubbed).** `.github/workflows/camundahost.yml`
+      builds the image on push/tag/PR (path-filtered). The **build** job is live;
+      registry push + a gated (`if: false`) deploy job are documented `TODO(infra)`
+      until a registry/host exists — build verifiable in CI immediately, deploy
       activates when infra lands.
 - [ ] Tests/verify: `npm run docker:build -w @agent-local/camundahost` produces a
       runnable image; `docker:up` brings the broker up and the (client-only)
       `src/workflow` worker connects + deploys its BPMN against it — this is exactly
       the **live-broker E2E still pending in M7-1**, now unblocked by a one-command
-      local broker.
+      local broker. _(Pending a host with Docker — not installed in the scaffold env.)_
 
 **Done when:** `npm run docker:build -w @agent-local/camundahost` builds a Camunda
 runtime image from a Camunda base with our startup scripts/config copied in; a local
@@ -2026,6 +2025,16 @@ from).
 A thin BFF on the express host, layered over the existing endpoints, **described
 by an OpenAPI/swagger spec** the frontend generates its typed client from — plus
 the live event stream the UI renders.
+
+> **Revised 2026-06-19 — auth + transport replaced.** OIDC was superseded by host-owned
+> cookie-ticket auth + JWKS (M7-8); the **SSE bus bridge was removed for now** — it was
+> unauthenticated and broadcast-to-all (every client saw every tenant's events, no per-user
+> scope), so it was deleted in favour of **cookie-scoped refetch**. What landed instead: the
+> user-scoped **works API** — `GET /api/works` (search), `GET /api/works/:id` (get),
+> `POST /api/works` (create → trigger flow), `POST /api/works/:id/stop` — each gated by
+> `requirePermission` and scoped to the cookie identity (`src/host/src/api/works.ts`). The live
+> event stream is **deferred** (future re-add, SSE or WebSocket). Still open: the OpenAPI/swagger
+> spec + generated typed client (the `api_module/` + axios machinery).
 - [ ] BFF endpoints on the express host (`src/web/src/server/`): list/start
       process instances (proxy M7-1), list/read agent sessions (proxy M4-1) —
       shape responses for the view, don't reimplement engine logic.
@@ -2034,17 +2043,17 @@ the live event stream the UI renders.
       via an `npm run gen` script (mirrors the sandbox's `gen` flow), consumed
       through an **axios** factory + domain hooks — `api_module/` is generated,
       never hand-edited.
-- [ ] Bus→browser bridge: subscribe the express handler to the `Eventing` root
-      (M7-3) and stream events to the browser as **SSE**, reusing M4-1's
-      runner-event serialization 1:1 (don't invent a second wire format);
-      WebSocket only if a later view needs client→server push.
+- [x] ~~Bus→browser bridge: subscribe the express handler to the `Eventing` root
+      and stream events to the browser as **SSE**~~ — **removed 2026-06-19**: the SSE
+      bridge (`events_sse.ts`, `/events`, `eventing_context`) was deleted; the console
+      refetches the works API on load + a Refresh button instead. Live stream revisited later.
 - [ ] Correlation passthrough: each streamed event carries its
       `processInstanceKey` / `sessionId` so the client can route it to the right
       view without a second lookup.
-- [ ] OIDC auth mirroring the sandbox: `express-openid-connect` server middleware
-      handles login/session, `oidc-client-ts` on the client; the token is sent as
-      bearer to the `/api` tunnel → validated → `IdentityContext` on the same M4-1
-      path (no anonymous console in service mode, per D4).
+- [x] ~~OIDC auth mirroring the sandbox~~ — **superseded 2026-06-19 (M7-8)**: host-owned
+      encrypted cookie ticket + JWKS, not OIDC. Every works route reads the resolved
+      `req.userContext` and 401/403s via `requirePermission` — "no anonymous console in
+      service mode" (D4) is met for the works surface.
 - [ ] Test: a published bus event reaches an SSE client; a started process via
       the BFF returns the instance key from M7-1; the generated client compiles
       against the published spec.
@@ -2081,6 +2090,16 @@ A simple table over the host's `/api/jobs` (M7-6): one row per work unit so a us
 can see what is in flight and stop a run. The minimal observe surface for the
 work-unit aggregate, distinct from the M8-3 live timeline — this is the flat
 "what jobs exist and what's their status" list.
+
+> **Largely landed 2026-06-19 as `/api/works`** (the endpoint is `/api/works`, user-scoped, not
+> `/api/jobs`). `src/web/src/pages/workflow.tsx` renders a works table (Work · Status · Step ·
+> Camunda · Agent session · Updated · Stop) off `searchWorks`/`getWork`
+> (`src/web/src/components/shared/worksApi.ts`); a per-row **Stop** → `POST /api/works/:id/stop`
+> cancels the Camunda instance (new `workflow.stop` event → `ZeebeClient.cancelProcess`), closes
+> the agent session, and sets `stopped` with a reason. Rows refresh via a manual **Refresh**
+> button (refetch the list or the opened work) — NOT the SSE stream (removed, M8-2). `JobRecord`
+> now carries `userId` (owner, set from the cookie at create). Still open: a `description` field,
+> status filter chips, and the OpenAPI/axios typed client.
 
 | jobId | status | description | action |
 |-------|--------|-------------|--------|

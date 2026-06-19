@@ -5,7 +5,6 @@ import CardContent from "@mui/material/CardContent";
 import Chip from "@mui/material/Chip";
 import { useApplicationContext } from "../providers/application_context";
 import { useUserContext } from "../providers/user_context";
-import { useEventingContext } from "../providers/eventing_context";
 import { useMiniStore } from "../components/shared/miniStore";
 import type IPage from "./IPage";
 
@@ -15,10 +14,8 @@ export const Page: IPage = { pageName: "home", displayLabel: "Overview" };
 export default function IndexPage() {
   const { title, $config } = useApplicationContext();
   const { $user } = useUserContext();
-  const { $connected } = useEventingContext();
   const [config] = useMiniStore($config);
   const [user] = useMiniStore($user);
-  const [connected] = useMiniStore($connected);
 
   return (
     <Stack spacing={3}>
@@ -33,10 +30,6 @@ export default function IndexPage() {
             <Chip label={`env: ${config.environment.name || "local"}`} />
             <Chip label={`app: ${config.environment.applicationName}`} />
             <Chip label={`user: ${user.userName}`} color="primary" variant="outlined" />
-            <Chip
-              label={`bus: ${connected ? "live" : "offline"}`}
-              color={connected ? "success" : "default"}
-            />
           </Stack>
         </CardContent>
       </Card>

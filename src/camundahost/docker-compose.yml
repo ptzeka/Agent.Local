@@ -1,0 +1,26 @@
+# Local run of the *built* camundahost image (not a base image directly).
+# Build first:  npm run docker:build -w @agent-local/camundahost
+# Up:           npm run docker:up   -w @agent-local/camundahost
+# Down:         npm run docker:down -w @agent-local/camundahost
+#
+# The client-only @agent-local/workflow connects over gRPC :26500 (OAuth disabled).
+services:
+  zeebe:
+    image: agent-local-camundahost:local
+    container_name: agent-local-camundahost
+    ports:
+      - "26500:26500" # gRPC gateway (ZEEBE_GRPC_ADDRESS)
+      - "8080:8080"   # REST + monitoring
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c 'cat < /dev/null > /dev/tcp/localhost/9600' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # Optional Operate UI for inspecting instances; remove if not needed.
+  # operate:
+  #   image: camunda/operate:8.7.6
+  #   ports:
+  #     - "8081:8080"
+  #   depends_on:
+  #     - zeebe

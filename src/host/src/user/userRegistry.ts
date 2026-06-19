@@ -9,9 +9,6 @@ interface UserEntry extends UserIdentity {
   passwordHash: string;
 }
 
-// gates GET /api/auth/accesstoken — only holders may read their current session's access key back over the API
-export const ACCESS_TOKEN_PERMISSION = "auth.accesstoken";
-
 // md5 of the password; the registry stores hashes, never the plaintext, even for these dev accounts
 function md5(value: string): string {
   return createHash("md5").update(value, "utf8").digest("hex");
@@ -25,7 +22,7 @@ const USERS: UserEntry[] = [
     firstName: "Local",
     lastName: "Operator",
     // the human operator drives the workflow UI/APIs; agent:trigger/host:callback are service scopes, not theirs
-    permissions: ["workflow:read", "workflow:write", ACCESS_TOKEN_PERMISSION],
+    permissions: ["workflow:read", "workflow:write", "auth.accesstoken"],
     passwordHash: md5("Password1"),
   },
   // the agent's client-credentials identity: it fetches a token from /api/auth/token and presents host:callback on /receive

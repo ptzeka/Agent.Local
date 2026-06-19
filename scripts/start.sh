@@ -30,6 +30,25 @@ wait_for_port() {
   echo " up (pid $pid)"
 }
 
+# poll a TCP port until nothing is listening, so a relaunch never races a dying process for the bind
+wait_for_port_free() {
+  local name="$1" port="$2" waited=0
+  while nc -z localhost "$port" >/dev/null 2>&1; do
+    if [ "$waited" -ge 15 ]; then
+      echo "[start] ERROR: :$port ($name) still held after 15s — run scripts/stop.sh and retry"
+      exit 1
+    fi
+    sleep 1; waited=$((waited + 1))
+  done
+}
+
+# always start from a clean slate: stop whatever a previous start.sh left running (and sweep the ports),
+# so a stale in-memory build can never outlive a restart — this script is the single go-to entrypoint.
+echo "[start] stopping any running host/agent..."
+bash "$ROOT/scripts/stop.sh"
+wait_for_port_free host "$HOST_PORT"
+wait_for_port_free agent "$AGENT_PORT"
+
 echo "[start] cleaning dist folders..."
 npm run clean --prefix "$ROOT"
 

@@ -6,12 +6,14 @@ import { type MountContext } from "./mount.js";
 import { loadAppSettings } from "./appsettings.js";
 import { createReceiveApi } from "./comms/receiver.js";
 import { createAuthApi } from "./api/auth.js";
+import { createWorksApi } from "./api/works.js";
 import { sessionMiddleware, resolveUserFromRequest } from "./user/session.js";
 import { userContextMiddleware, requirePermission } from "./user/userContext.js";
 import { HttpJobSender } from "./comms/sender.js";
 import { Orchestrator } from "./orchestrator.js";
 import { JobRegistry } from "./jobs/job-registry.js";
 import { loadOrCreateKeyRing } from "./user/keys.js";
+import { createHealthApi } from "./health.js";
 
 const DEFAULT_PORT = 3011;
 
@@ -43,6 +45,7 @@ async function main(): Promise<void> {
   const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs, resolveUser: resolveUserFromRequest };
 
   app.use(express.json());
+  // liveness: the host process is up and serving. cheap, dependency-free — orchestrators restart on its failure.
   app.get("/healthz", (_req, res) => {
     res.json({ status: "ok" });
   });
@@ -63,19 +66,20 @@ async function main(): Promise<void> {
   const orchestrator = new Orchestrator(bus, jobs, sender, logger);
   orchestrator.start();
   // gate the whole /workflow surface on the caller's session: reads need workflow:read, writes workflow:write;
-  // liveness (/workflow/healthz) stays public. Mounted before the routes so it covers trigger + the engine routes.
+  // liveness (/workflow/healthz) stays public. Mounted before the routes so it covers the engine routes.
   app.use("/workflow", (req, res, next) => {
     if (req.path === "/healthz") return next();
     return requirePermission(req.method === "GET" ? "workflow:read" : "workflow:write")(req, res, next);
   });
-  app.post("/workflow/trigger", (req, res) => {                     // + start a work unit by workflowId
-    orchestrator
-      .trigger(String(req.body?.workflowId ?? ""))
-      .then((workId) => res.status(202).json({ workId }))
-      .catch((err) => res.status(503).json({ error: String(err) }));
-  });
-  mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
-  mountWeb(app, ctx);       // React SSR: /static, /public, /events SSE, then the SSR catch-all (last)
+  // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
+  // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
+  app.use(createWorksApi(orchestrator, jobs, logger));
+  const zeebe = mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
+  // readiness (/health/ready): the host can actually serve work — Camunda link (zeebe.connected) AND a live probe
+  // of the separate agent service. registered after workflow (so we hold the client) and before web (whose SSR
+  // catch-all would shadow it). distinct from /healthz liveness: a down dependency is unready, not dead.
+  app.use(createHealthApi({ zeebeConnected: () => zeebe.connected, agentBaseUrl: settings.agent.baseUrl, logger }));
+  mountWeb(app, ctx);       // React SSR: /static, /public, then the SSR catch-all (last)
   logger.info("[host] wired comms sender + receiver, mounted workflow, web");
 
   const port = Number(process.env.PORT) || settings.host.port || DEFAULT_PORT;

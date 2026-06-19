@@ -6,10 +6,15 @@ import { fileURLToPath } from "node:url";
 // the work unit the host orchestrates: the join that ONLY the host holds, tying the user's request to the
 // camunda instance and the agent session. jobId is the workId — the id the host hands the agent and gets
 // echoed back. step/camundaId track the workflow; sessionId is the agent's local id, recorded for audit.
-export type JobStatus = "new" | "running" | "stuck" | "cancelled" | "error" | "completed";
+export type JobStatus = "new" | "running" | "stuck" | "cancelled" | "stopped" | "error" | "completed";
 
 export interface JobRecord {
   jobId: string;
+  // the owner: the userSub (cookie identity) that created the work. search/get scope to this so a user
+  // only ever sees their own works; seeded once at add() and never rewritten.
+  userId: string;
+  // the bpmn process this work runs; null only for legacy records created before it was tracked
+  workflowId: string | null;
   status: JobStatus;
   // current camunda element/step (null until the workflow reports one)
   step: string | null;
@@ -17,6 +22,8 @@ export interface JobRecord {
   sessionId: string | null;
   // camunda processInstanceKey; null until the instance starts
   camundaId: string | null;
+  // human-readable reason for a terminal state (e.g. why a work was stopped); null otherwise
+  reason: string | null;
   // ISO timestamp of THIS line — a later line for the same jobId supersedes it
   ts: string;
 }
@@ -31,14 +38,18 @@ export class JobRegistry {
     this.file = file ?? resolveJobsFile();
   }
 
-  // seeds a brand-new work unit; the host calls this when web creates the request, before camunda/agent ids exist
-  public async add(jobId: string): Promise<JobRecord> {
+  // seeds a brand-new work unit owned by userId; the host calls this when web creates the request, before
+  // camunda/agent ids exist. userId is the cookie identity and is fixed for the life of the work.
+  public async add(jobId: string, userId: string, workflowId: string | null = null): Promise<JobRecord> {
     const record: JobRecord = {
       jobId,
+      userId,
+      workflowId,
       status: "new",
       step: null,
       sessionId: null,
       camundaId: null,
+      reason: null,
       ts: new Date().toISOString(),
     };
     await this.write(record);
@@ -51,10 +62,13 @@ export class JobRegistry {
     return byId.get(jobId) ?? null;
   }
 
-  // every job's current state, newest-first; an optional status filter narrows it (the web list/search view)
-  public async search(filter?: { status?: JobStatus }): Promise<JobRecord[]> {
+  // every job's current state, newest-first; filters narrow it. userId scopes to one owner (the web list/search
+  // view always passes it so a user sees only their own works); status narrows further.
+  public async search(filter?: { userId?: string; status?: JobStatus }): Promise<JobRecord[]> {
     const records = [...(await this.foldLatest()).values()];
-    const matched = filter?.status ? records.filter((r) => r.status === filter.status) : records;
+    const matched = records.filter(
+      (r) => (!filter?.userId || r.userId === filter.userId) && (!filter?.status || r.status === filter.status),
+    );
     return matched.sort((a, b) => b.ts.localeCompare(a.ts));
   }
 

@@ -18,7 +18,8 @@
     "src/openclaw",
     "src/host",
     "src/web",
-    "src/workflow"
+    "src/workflow",
+    "src/camundahost"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

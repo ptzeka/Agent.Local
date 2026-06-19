@@ -17,8 +17,10 @@ export interface MountContext {
 }
 
 // host-called seam: starts the Zeebe client + worker and registers the control surface on the host's express app
-// uses ctx.bus to publish (never mints its own) and ctx.signal to stop cleanly when the host aborts
-export const mount = (app: Express, ctx: MountContext): void => {
+// uses ctx.bus to publish (never mints its own) and ctx.signal to stop cleanly when the host aborts. Returns the
+// client so the host can fold its Camunda liveness (client.connected) into a composite /healthz; standalone
+// callers (main.ts) ignore the return.
+export const mount = (app: Express, ctx: MountContext): ZeebeClient => {
   // appsettings supplies non-secret engine knobs; ZEEBE_* connection secrets still come from env via loadConfig
   const config = loadConfig(process.env, packageRoot);
   if (ctx.settings?.workflow?.taskType) config.taskType = ctx.settings.workflow.taskType;
@@ -36,6 +38,16 @@ export const mount = (app: Express, ctx: MountContext): void => {
         ctx.bus.publish("workflow.started", { workId, camundaId: record.processInstanceKey }),
       )
       .catch((err) => ctx.bus.publish("workflow.failed", { workId, error: String(err) }));
+  });
+
+  // the host commands a stop over the bus (user stopped the work); cancel the instance by its camundaId.
+  // tolerant — a broker reject is logged, never thrown back onto the bus; the host still records the stop.
+  ctx.bus.subscribe("workflow.stop", (event) => {
+    const { camundaId } = event.payload as Record<string, string>;
+    if (!camundaId) return;
+    client.cancelProcess(camundaId).catch((err) => {
+      ctx.logger.warn?.(`[workflow] cancel of ${camundaId} failed: ${String(err)}`);
+    });
   });
 
   // a future agent.result drives out-of-band completion; Camunda state refreshes here, agent is never called from this side
@@ -76,4 +88,6 @@ export const mount = (app: Express, ctx: MountContext): void => {
       taskType: AGENT_EXECUTE_TASK_TYPE,
     });
   });
+
+  return client;
 };

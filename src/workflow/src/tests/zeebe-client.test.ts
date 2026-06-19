@@ -6,9 +6,10 @@ import { loadConfig } from "../config.js";
 const noopLogger = { error() {}, warn() {}, info() {}, debug() {} };
 
 // a fake gRPC that captures the registered worker handler so a test can drive a job without a broker
-function fakeGrpc(): { grpc: ZeebeGrpc; activate: (job: any) => Promise<unknown>; completed: any[] } {
+function fakeGrpc(): { grpc: ZeebeGrpc; activate: (job: any) => Promise<unknown>; completed: any[]; cancelled: any[] } {
   let handler: (job: any) => Promise<unknown> = async () => undefined;
   const completed: any[] = [];
+  const cancelled: any[] = [];
   const grpc: ZeebeGrpc = {
     async topology() {},
     async deployResource() {},
@@ -22,9 +23,12 @@ function fakeGrpc(): { grpc: ZeebeGrpc; activate: (job: any) => Promise<unknown>
     async completeJob(req) {
       completed.push(req);
     },
+    async cancelProcessInstance(req) {
+      cancelled.push(req);
+    },
     async close() {},
   };
-  return { grpc, activate: (job) => handler(job), completed };
+  return { grpc, activate: (job) => handler(job), completed, cancelled };
 }
 
 function captured(bus: Eventing): EventMessage[] {

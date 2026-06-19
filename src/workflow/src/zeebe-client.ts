@@ -15,6 +15,7 @@ export interface ZeebeGrpc {
     name?: string;
   }): { close(): Promise<void> };
   completeJob(req: { jobKey: string; variables: Record<string, unknown> }): Promise<unknown>;
+  cancelProcessInstance(req: { processInstanceKey: string }): Promise<unknown>;
   topology(): Promise<unknown>;
   close(): Promise<void>;
 }
@@ -129,6 +130,14 @@ export class ZeebeClient {
 
   getInstance(processInstanceKey: string): InstanceRecord | undefined {
     return this.instances.get(processInstanceKey);
+  }
+
+  // cancel a running instance (the host's stop-work path); CAMUNDA owns state, we just drop our local reflection
+  // and let the cancel propagate. throws if the broker rejects it so the caller can record the failure reason.
+  async cancelProcess(processInstanceKey: string): Promise<void> {
+    await this.grpc.cancelProcessInstance({ processInstanceKey });
+    const record = this.instances.get(processInstanceKey);
+    if (record) record.status = "failed";
   }
 
   // out-of-band completion seam: a future agent.result event calls this to refresh Camunda state for a held job

@@ -6,7 +6,6 @@ import {
 } from "../providers/application_context";
 import { UserContextProvider, type IUser } from "../providers/user_context";
 import { NotificationContextProvider } from "../providers/notification_context";
-import { EventingContextProvider } from "../providers/eventing_context";
 import ErrorBoundary from "../components/shared/ErrorBoundary";
 import AppStart from "../components/appstart";
 import Layout from "../components/layout";
@@ -37,15 +36,13 @@ export default function Root({ bootstrap }: { bootstrap: Bootstrap }) {
       <ApplicationContextProvider value={{ ...bootstrap.applicationContext, logger: ConsoleLogger }}>
         <UserContextProvider value={bootstrap.userContext}>
           <NotificationContextProvider>
-            <EventingContextProvider>
-              <ErrorBoundary logger={ConsoleLogger}>
-                <AppStart>
-                  <Layout>
-                    <RouteConfig />
-                  </Layout>
-                </AppStart>
-              </ErrorBoundary>
-            </EventingContextProvider>
+            <ErrorBoundary logger={ConsoleLogger}>
+              <AppStart>
+                <Layout>
+                  <RouteConfig />
+                </Layout>
+              </AppStart>
+            </ErrorBoundary>
           </NotificationContextProvider>
         </UserContextProvider>
       </ApplicationContextProvider>

@@ -8,7 +8,7 @@ import {
   type ILogger,
   type HostSettings,
 } from "@agent-local/common";
-import { UserRegistry, ACCESS_TOKEN_PERMISSION } from "../user/userRegistry.js";
+import { UserRegistry } from "../user/userRegistry.js";
 import type { KeyRing } from "../user/keys.js";
 
 // session lifetime: both the RS256 access token and the encrypted cookie ticket expire after this, so the
@@ -117,7 +117,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
       res.status(401).json({ error: "no session" });
       return;
     }
-    if (!ticket.claims.permissions.includes(ACCESS_TOKEN_PERMISSION)) {
+    if (!ticket.claims.permissions.includes("auth.accesstoken")) {
       res.status(403).json({ error: "forbidden" });
       return;
     }

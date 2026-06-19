@@ -3,12 +3,14 @@ import type { Eventing, ILogger } from "@agent-local/common";
 import {
   WORKFLOW_START,
   WORKFLOW_STARTED,
+  WORKFLOW_STOP,
   WORKFLOW_COMPLETED,
   WORKFLOW_FAILED,
   type WorkflowStartedPayload,
   type WorkflowCompletedPayload,
   type WorkflowFailedPayload,
 } from "./events.js";
+import type { JobRecord } from "./jobs/job-registry.js";
 import type { JobRegistry } from "./jobs/job-registry.js";
 import type { AgentClient } from "./comms/sender.js";
 
@@ -41,16 +43,27 @@ export class Orchestrator {
     });
   }
 
-  // provisions a new work unit and commands its start; returns the workId the caller polls/queries by.
+  // provisions a new work unit owned by userId and commands its start; returns the workId the caller queries by.
   // the agent session is opened under the host's OWN agent:trigger service token (see HttpJobSender), not the caller's.
-  async trigger(workflowId: string): Promise<string> {
+  async trigger(workflowId: string, userId: string): Promise<string> {
     const workId = randomUUID();
     const workspaceId = randomUUID();
-    await this.jobs.add(workId);
+    await this.jobs.add(workId, userId, workflowId);
     const sessionId = await this.agent.createSession(workspaceId, workId);
     await this.jobs.update(workId, { sessionId });
     this.bus.publish(WORKFLOW_START, { workId, workspaceId, sessionId, workflowId });
     return workId;
+  }
+
+  // stops a work the caller owns: cancel the camunda instance (bus -> engine), shut the agent session, and
+  // record `stopped` with a reason. Tolerant by design — a down broker or already-closed session must not block
+  // the stop, so the camunda cancel rides the bus (fire-and-forget) and closeSession swallows its own errors.
+  async stop(workId: string, userId: string, reason: string): Promise<JobRecord | null> {
+    const record = await this.jobs.get(workId);
+    if (!record || record.userId !== userId) return null;
+    if (record.camundaId) this.bus.publish(WORKFLOW_STOP, { workId, camundaId: record.camundaId });
+    if (record.sessionId) await this.agent.closeSession(record.sessionId);
+    return this.jobs.update(workId, { status: "stopped", reason });
   }
 
   // terminal fold: resolve the work unit by its camundaId, close its session, and record the final status

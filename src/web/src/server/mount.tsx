@@ -7,7 +7,6 @@ import { configContextMiddleware, defaultServerConfig, serverConfigFromSettings 
 import { loggerContextMiddleware, type IServerLogger } from "./middleware/logger_context.js";
 import { userContextMiddleware } from "./middleware/user_context.js";
 import { staticAssetsMiddleware } from "./middleware/static_assets.js";
-import { eventsSseMiddleware } from "./middleware/events_sse.js";
 import { ssrRenderMiddleware } from "./middleware/ssr_render.js";
 
 // __MODULE_URL__ is injected per bundle (DefinePlugin) so the runtime dir is correct in both CJS and ESM
@@ -56,10 +55,9 @@ export const mount = (app: Express, ctx: MountContext): void => {
   app.use("/static", staticAssetsMiddleware(staticDir));
   app.use("/public", staticAssetsMiddleware(publicDir));
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
-  app.get("/events", eventsSseMiddleware(ctx.bus, ctx.signal));
 
   app.get(/.*/, ssrRenderMiddleware());
 
-  ctx.logger.debug?.("@agent-local/web mounted (config/logger/user + static + public + SSE /events + SSR)");
+  ctx.logger.debug?.("@agent-local/web mounted (config/logger/user + static + public + SSR)");
   ctx.signal.addEventListener("abort", () => ctx.logger.debug?.("@agent-local/web mount aborted"));
 };
