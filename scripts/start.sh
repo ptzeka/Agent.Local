@@ -89,13 +89,13 @@ echo "[start] cleaning dist folders..."
 npm run clean --prefix "$ROOT"
 
 echo "[start] building host/agent and their deps (in dependency order)..."
-# root `npm run build --workspaces` builds in listing order (host before workflow/web), so a clean build
-# breaks on missing types. Build the chain leaves-first explicitly: common -> mcp/web/workflow -> agent/host.
+# root `npm run build --workspaces` builds in listing order (host before temporal/web), so a clean build
+# breaks on missing types. Build the chain leaves-first explicitly: common -> mcp/web/temporal -> agent/host.
 npm run build --prefix "$ROOT" \
   -w @agent-local/common \
   -w @agent-local/mcp \
   -w @agent-local/web \
-  -w @agent-local/workflow \
+  -w @agent-local/temporal \
   -w @agent-local/agent \
   -w @agent-local/host
 

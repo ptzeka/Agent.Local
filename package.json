@@ -18,8 +18,6 @@
     "src/openclaw",
     "src/host",
     "src/web",
-    "src/workflow",
-    "src/camundahost",
     "src/temporal",
     "src/temporalhost",
     "src/postgres"

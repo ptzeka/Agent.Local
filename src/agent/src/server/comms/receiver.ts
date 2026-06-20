@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { type EventEnvelope } from "@agent-local/common";
 import { WORKFLOW_JOB, AGENT_RESULT, WORKFLOW_FAILED, type WorkflowJob } from "./contract.js";
 
-// the camunda job carries the instruction in a variable; accept the common spellings
+// the workflow job carries the instruction in a variable; accept the common spellings
 function promptFor(variables: Record<string, unknown>): string {
   return String(variables.prompt ?? variables.input ?? variables.task ?? "").trim();
 }
@@ -15,7 +15,7 @@ async function runJob(req: Request, job: WorkflowJob): Promise<void> {
     const prompt = promptFor(job.variables ?? {});
     if (!prompt) {
       req.eventing.publish(WORKFLOW_FAILED, {
-        processInstanceKey: job.processInstanceKey,
+        temporalId: job.temporalId,
         jobKey: job.jobKey,
         error: "agent job carried no prompt/input/task variable",
       });
@@ -25,11 +25,11 @@ async function runJob(req: Request, job: WorkflowJob): Promise<void> {
     const text = result.finalMessage.content;
     // jobKey is the host's correlation key; the session is internal to this server, so it isn't echoed back
     req.eventing.publish(AGENT_RESULT, {
-      processInstanceKey: job.processInstanceKey,
+      temporalId: job.temporalId,
       jobKey: job.jobKey,
       result: text,
-      // returned DOWN to camunda by workflow.completeJob(jobKey, variables)
-      variables: { agentResult: text, processInstanceKey: job.processInstanceKey },
+      // returned DOWN to the workflow by the engine when it completes the job
+      variables: { agentResult: text, temporalId: job.temporalId },
     });
   } finally {
     await req.closeRuntime();

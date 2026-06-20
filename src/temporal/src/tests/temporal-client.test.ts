@@ -32,6 +32,10 @@ function fakeCore(): {
       cancelled.push(workflowId);
     },
     async terminate() {},
+    async result() {
+      // a never-settling watcher keeps these unit tests focused on routing, not terminal folding
+      return new Promise<never>(() => {});
+    },
     async signal(req) {
       signals.push(req);
     },

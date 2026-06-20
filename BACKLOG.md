@@ -1120,6 +1120,13 @@ the user and the executor — while memomcp remains a general-use MCP.
 - [ ] Dockerfile (multi-stage, node:20-slim), compose file with a volume for
       the SQLite db; `GET /healthz` (db reachable + MCP servers connected).
 - [ ] Decide MCP servers in-container vs sidecar; document.
+> **Cross-platform run scripts landed 2026-06-19** (commit "with temporal live
+> container"): `scripts/start.sh`/`stop.sh` no longer assume Unix tools that
+> Git-for-Windows bash lacks — port probes use the bash `/dev/tcp` built-in instead
+> of `nc`; `pkill`/`lsof` are guarded with `command -v`; and `stop_port` falls back to
+> PowerShell (`Get-NetTCPConnection` → `Stop-Process`) to reap the detached node child
+> that binds a port on Windows. COMMANDS.md documents the docker runtime per OS
+> (Rancher Desktop on Windows / colima on macOS — Lima does not run on Windows).
 
 ### M4-3 · Structured logging — `~1d` · P1
 - [ ] Pino implementation of the existing `Logger` interface
@@ -2042,6 +2049,10 @@ engine-neutral bus vocabulary — `mount.ts` is the glue, not a Camunda detail.
       `main.ts` mirror the workflow package; `MountContext` kept local for now (lifting
       the shared `EngineClient`/`MountContext` to `@agent-local/common` + the host
       `WORKFLOW_ENGINE=camunda|temporal` switch are the deferred "add workflow later").
+      **Update 2026-06-19:** in the live run Temporal is now the **default** engine, not
+      a behind-a-switch alternative — the host dropped its `ZEEBE_ADDRESS`/`26500`
+      fallback and reads only `TEMPORAL_ADDRESS` (see M7-10). The `WORKFLOW_ENGINE`
+      camunda↔temporal toggle stays deferred; Temporal is just the default path until it lands.
 - [ ] Speak the identical bus events — subscribe `workflow.start` / `workflow.stop`
       / `workflow.inject` / `workflow.retry` / `agent.result`; publish
       `workflow.started` / `workflow.failed` / `workflow.job`. The agent and mesh
@@ -2160,6 +2171,13 @@ Extracts the deferred "Self-managed Temporal Server" bullet of M7-9 into its own
 broker runtime behind `@agent-local/workflow`'s client. The existing
 `@agent-local/temporal` client stays the *client*; this is only the *server* it
 points at via `TEMPORAL_ADDRESS`. **No Node/agent code** — docker-compose + config.
+> **Live in `npm start` — 2026-06-19** (commit "with temporal live container"):
+> `scripts/start.sh` `ensure_temporal()` now brings the container up before host/agent
+> AND pings the **published** `:7233` gRPC port from the host (not just in-container
+> health) so the 7233 mapping is confirmed reachable by the clients. The host defaults
+> its engine to Temporal — `health.ts`/`index.ts` dropped the `ZEEBE_ADDRESS`/`26500`
+> fallback; `TEMPORAL_ADDRESS` (default `localhost:7233`) is the sole engine endpoint.
+> **Remaining:** the worker-driven live E2E bullet below.
 - [x] New workspace `@agent-local/temporalhost` (`src/temporalhost`), registered in
       the root `workspaces` array next to `camundahost`. Deploy-only, **same layout as
       camundahost**: `Dockerfile`, `dockerfiles/startup.sh`, a local **`config/`**
@@ -2223,6 +2241,13 @@ boot-time auto-setup) to a deploy-shaped server backed by a **managed/external
 Postgres**. The image does NOT change — datastore endpoint/creds are already env-only
 (M7-10) — so this is operational wiring, not new bake. The local `docker:up` path
 stays exactly as-is and untouched: this story is the prod overlay only.
+> **Adjacent landed 2026-06-19** (commit "with temporal live container"): a standalone
+> **`src/postgres`** workspace (`@agent-local/postgres`) — local Postgres + pgAdmin,
+> deploy-only, **NOT** part of the app lifecycle (`npm start` doesn't touch it). Config
+> (`postgresql.conf`/`pg_hba.conf`) is baked into the image; pgAdmin auto-registers the
+> server; env-overridable creds/ports; `npm stop -- --wipe` drops the volume. It is an
+> **ad-hoc query stack**, not the managed datastore this story provisions and not the
+> memomcp pg repository (M3-12) — but it's the local-Postgres-runtime precedent both lean on.
 - [ ] **Datastore is external, not in the stack.** Drop the bundled `postgresql`
       compose service in the prod overlay; point the server at a managed Postgres via
       the existing env (`POSTGRES_SEEDS`/`DB_PORT`/`POSTGRES_USER`/`POSTGRES_PWD`, TLS
@@ -2387,6 +2412,13 @@ work-unit aggregate, distinct from the M8-3 live timeline — this is the flat
 > button (refetch the list or the opened work) — NOT the SSE stream (removed, M8-2). `JobRecord`
 > now carries `userId` (owner, set from the cookie at create). Still open: a `description` field,
 > status filter chips, and the OpenAPI/axios typed client.
+>
+> **Actions landed 2026-06-19**: the per-row action cell is now three MUI `IconButton`s — **Stop**
+> (`StopCircle`, on `new|running|stuck`), **Continue** (`PlayArrow`, on `stuck` only), **Refresh**
+> (`Refresh`, any status, re-GETs just that row). **Continue** = engine **Reset** to the last
+> workflow-task boundary, re-running the stuck step with the same inputs — new `WORKFLOW_RESET` bus
+> event → `TemporalClient.resetProcess` → `workflowService.resetWorkflowExecution`; `POST
+> /api/works/:id/continue` (404 non-owner, 409 unless `stuck`). Added `@mui/icons-material`.
 
 | jobId | status | description | action |
 |-------|--------|-------------|--------|
@@ -2411,6 +2443,25 @@ work-unit aggregate, distinct from the M8-3 live timeline — this is the flat
       logic in the browser (M8-3 rule).
 - [ ] Smoke: the table lists seeded jobs, a status chip updates live off the SSE
       stream, and Cancel flips a running job to `cancelled` and halts its instance.
+
+### M8-5 · Per-step breakdown — one row per workflow step — `~1.5d` · P2
+Today the works table is **one row per work**, off the host's single `JobRecord.step`
+(the current element). A workflow runs several steps internally (`userTableTestWorkflow`:
+initialize → create sheet → add row → assert → done), but the host only ever sees the
+*current* one. This story breaks a work into **per-step rows**, each with its own status
+and its own Continue (re-run just that step).
+- [ ] Source the step list from Temporal **event history** (`WorkflowHandle.fetchHistory`),
+      not `describe` (which returns only current state): enumerate `ActivityTaskScheduled`/
+      `Started`/`Completed`/`Failed` events into an ordered per-step status list.
+- [ ] Expose it host-side without breaking bus-purity — a new describe-style round-trip
+      (`workflow.describe` → a richer `workflow.status` carrying the step array), folded
+      onto the record (or a sibling store) the works API returns.
+- [ ] Web: expandable work row → child step rows (step name · status · Continue), the
+      Continue here Resetting to **that step's** workflow-task rather than the last one
+      (refine `TemporalClient.resetProcess` to take an explicit reset target).
+
+**Done when:** a stuck multi-step work expands to per-step rows showing which step failed,
+and Continue on a step re-runs from exactly that step with its original inputs.
 
 **Done when:** the console renders a `jobId | status | description | action` table
 sourced from `/api/jobs`, rows update live as work units change state, and Cancel

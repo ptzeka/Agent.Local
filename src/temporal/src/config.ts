@@ -1,4 +1,4 @@
-// the default Workflow Type a turn runs under; code-first, so there is nothing to deploy (Zeebe's bpmnProcessId analog)
+// the default Workflow Type a turn runs under; code-first, so there is nothing to deploy
 export const AGENT_EXECUTE_WORKFLOW_TYPE = "agentExecuteWorkflow";
 
 export interface TemporalConfig {

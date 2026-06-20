@@ -1,9 +1,17 @@
 import { proxyActivities, defineSignal, setHandler, condition } from "@temporalio/workflow";
-// type-only import: erased at runtime so the workflow sandbox stays pure (no bus / no node deps leak in)
+// type-only imports: erased at runtime so the workflow sandbox stays pure (no bus / no node deps leak in)
 import type { AgentActivities } from "./activities.js";
+import type { WorkflowTemplate } from "./index.js";
 
 // the workflow type string == this function's name; the host starts it via TemporalClient.startProcess(type, ...)
 export const USER_TABLE_TEST_WORKFLOW_TYPE = "userTableTestWorkflow";
+
+// the dropdown descriptor for this workflow: `name` is the Temporal Workflow Type started above, so the console
+// offers exactly what the worker can run (the catalog in ./index.ts aggregates these)
+export const userTableTestTemplate: WorkflowTemplate = {
+  name: USER_TABLE_TEST_WORKFLOW_TYPE,
+  label: "User Table Test",
+};
 
 // start args = the work-unit ids the host seeds at trigger; step 1 "gathers" them into the workflow state.
 // the OWNER is the host's principal (JobRegistry keyed by userId), NOT an engine variable — the engine stays

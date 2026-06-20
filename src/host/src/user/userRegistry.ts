@@ -39,7 +39,7 @@ const USERS: UserEntry[] = [
     permissions: ["workflow:read", "workflow:write", "auth.accesstoken"],
     passwordHash: hashPassword("Password1"),
   },
-  // the agent's client-credentials identity: it fetches a token from /api/auth/token and presents host:callback on /receive
+  // the agent's client-credentials identity: it fetches a token from /connect/token and presents host:callback on /receive
   {
     userId: "8001",
     userName: "agentic-client-dev",
@@ -48,7 +48,7 @@ const USERS: UserEntry[] = [
     permissions: ["host:callback"],
     passwordHash: hashPassword("AgentClient1"),
   },
-  // the host's OWN dispatch identity: it fetches a token from /api/auth/token and presents agent:trigger to the agent
+  // the host's OWN dispatch identity: it fetches a token from /connect/token and presents agent:trigger to the agent
   {
     userId: "8002",
     userName: "host-dispatch-dev",

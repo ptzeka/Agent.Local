@@ -57,7 +57,7 @@ then simply not used.
 
 Off by default so `docker:up` comes up green standalone. When enabled, the server
 **trusts `src/host` as the authority**: it validates every caller's bearer JWT against
-the host's published JWKS (`/.well-known/jwks.json`) using Temporal's built-in JWT key
+the host's published JWKS (`/.well-known/openid-configuration/jwks`) using Temporal's built-in JWT key
 provider + default claim mapper + default authorizer — **zero custom Go plugin**. This is
 the M7-9 decision made concrete: one-way gRPC pull, no inbound surface, and the host mints
 its **own** short-lived service token (never the end-user's) for the engine hop.
@@ -67,7 +67,7 @@ Enable it (compose service `temporal`, or any deploy env):
 ```yaml
 environment:
   TEMPORAL_AUTH_ENABLED: "true"
-  TEMPORAL_JWKS_URI: "http://host.docker.internal:3011/.well-known/jwks.json"  # reaches src/host
+  TEMPORAL_JWKS_URI: "http://host.docker.internal:3011/.well-known/openid-configuration/jwks"  # reaches src/host
 ```
 
 | Env | Default | Meaning |

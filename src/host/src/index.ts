@@ -2,7 +2,7 @@ import express from "express";
 import { Eventing, sessionKey, createLocalKeyResolver, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
 import { resolveHostDbFile } from "./jobs/db-schema.js";
-import { mount as mountWorkflow } from "@agent-local/workflow";
+import { mount as mountWorkflow, WORKFLOW_TEMPLATES } from "@agent-local/temporal";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
 import { loadAppSettings } from "./appsettings.js";
@@ -61,7 +61,7 @@ async function main(): Promise<void> {
 
   app.use(sessionMiddleware(cookieKey));                            // decrypt the session cookie ONCE -> req.authTicket
   app.use(userContextMiddleware(getKey, verifyOptions, logger));    // resolve identity: bearer (verified) over ticket
-  app.use(createAuthApi(keys, settings.host.iam, cookieKey, logger)); // POST /api/login (cookie) + GET /.well-known/jwks.json
+  app.use(createAuthApi(keys, settings.host.iam, cookieKey, logger)); // /api/login + /.well-known/openid-configuration(/jwks) + /connect/token
   app.use(createReceiveApi(bus, logger));                           // POST /receive -> republish onto the bus
   // the host calls the agent under its OWN service identity (client-credentials -> agent:trigger), so dispatch
   // never depends on the caller's token and no JWT rides a process variable
@@ -78,8 +78,8 @@ async function main(): Promise<void> {
   });
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
-  app.use(createWorksApi(orchestrator, jobs, logger));
-  mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
+  app.use(createWorksApi(orchestrator, jobs, db, WORKFLOW_TEMPLATES, logger));
+  mountWorkflow(app, ctx);  // temporal bridge: /workflow/* routes + Temporal client (publishes workflow.*)
   // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as

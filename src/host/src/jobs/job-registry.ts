@@ -4,26 +4,30 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 // the work unit the host orchestrates: the join that ONLY the host holds, tying the user's request to the
-// camunda instance and the agent session. jobId is the workId — the id the host hands the agent and gets
-// echoed back. step/camundaId track the workflow; sessionId is the agent's local id, recorded for audit.
-export type JobStatus = "new" | "running" | "stuck" | "cancelled" | "stopped" | "error" | "completed";
+// temporal instance and the agent session. jobId is the workId — the id the host hands the agent and gets
+// echoed back. step/temporalId track the workflow; sessionId is the agent's local id, recorded for audit.
+// the work-unit lifecycle, defined once in job-status.ts (the canonical status catalog that also seeds the
+// db-schema job_status lookup). Re-exported here so existing JobRecord consumers keep importing it from the registry.
+export type { JobStatus } from "./job-status.js";
+import type { JobStatus } from "./job-status.js";
 
 export interface JobRecord {
   jobId: string;
   // the owner: the userSub (cookie identity) that created the work. search/get scope to this so a user
   // only ever sees their own works; seeded once at add() and never rewritten.
   userId: string;
-  // the bpmn process this work runs; null only for legacy records created before it was tracked
+  // the workflow type this work runs; null only for legacy records created before it was tracked
   workflowId: string | null;
   status: JobStatus;
-  // current camunda element/step (null until the workflow reports one)
+  // current workflow element/step (null until the workflow reports one)
   step: string | null;
   // the agent session this job runs under (from /session/create); null until associated
   sessionId: string | null;
-  // camunda processInstanceKey; null until the instance starts
-  camundaId: string | null;
-  // human-readable reason for a terminal state (e.g. why a work was stopped); null otherwise
-  reason: string | null;
+  // the Temporal instance id (the engine's primary key for this run); null until the instance starts
+  temporalId: string | null;
+  // live context for the CURRENT status: running step, stuck error/missing-info, stop reason, or the workflow's
+  // terminal return value (e.g. "user table created"). null when the status needs no further explanation.
+  statusDescription: string | null;
   // ISO timestamp of THIS line — a later line for the same jobId supersedes it
   ts: string;
 }
@@ -39,7 +43,7 @@ export class JobRegistry {
   }
 
   // seeds a brand-new work unit owned by userId; the host calls this when web creates the request, before
-  // camunda/agent ids exist. userId is the cookie identity and is fixed for the life of the work.
+  // temporal/agent ids exist. userId is the cookie identity and is fixed for the life of the work.
   public async add(jobId: string, userId: string, workflowId: string | null = null): Promise<JobRecord> {
     const record: JobRecord = {
       jobId,
@@ -48,8 +52,8 @@ export class JobRegistry {
       status: "new",
       step: null,
       sessionId: null,
-      camundaId: null,
-      reason: null,
+      temporalId: null,
+      statusDescription: null,
       ts: new Date().toISOString(),
     };
     await this.write(record);

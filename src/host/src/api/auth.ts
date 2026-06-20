@@ -21,7 +21,8 @@ const SERVICE_TOKEN_TTL = "15m";
 
 // the host owns IAM: /api/login authenticates against the local UserRegistry, mints an RS256 access token, and
 // returns it ONLY inside an encrypted httpOnly cookie ticket (cookieKey seals it — "encrypt at response");
-// /.well-known/jwks.json publishes the verify keys so the agent validates that access token via standard JWKS.
+// /.well-known/openid-configuration advertises the issuer + jwks + token endpoints so any standard OIDC/OAuth
+// client (jose's createRemoteJWKSet, Temporal's JWT authorizer) self-configures from one discovery URL.
 export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey: Uint8Array, logger: ILogger): Router {
   const router = Router();
   const users = new UserRegistry();
@@ -31,6 +32,11 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
   const signer = keys[0];
   const jwksPromise = Promise.all(keys.map((k) => publicJwk(k.publicPem)));
   const signerKidPromise = jwksPromise.then((jwks) => jwks[0].kid);
+
+  // base origin for the discovery URLs: the configured issuer when set (so discovery's issuer matches the `iss`
+  // verifiers check), else the request's own origin so local dev works before issuerUrl is configured.
+  const configuredIssuer = (iam?.issuerUrl || "").replace(/\/$/, "");
+  const originFor = (req: Request) => configuredIssuer || `${req.protocol}://${req.get("host")}`;
 
   router.post("/api/login", async (req: Request, res: Response) => {
     const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
@@ -76,7 +82,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
 
   // client-credentials grant: a service (the agent) presents HTTP Basic clientId:secret and gets a short-lived
   // RS256 JWT carrying that user's claims — no cookie, no scope negotiation; the agent sends it as a bearer.
-  router.post("/api/auth/token", async (req: Request, res: Response) => {
+  const issueServiceToken = async (req: Request, res: Response): Promise<void> => {
     const creds = basicCredentials(req.headers.authorization);
     if (!creds) {
       res.status(401).json({ error: "missing basic credentials" });
@@ -100,18 +106,38 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
     );
     logger.debug?.(`[host] issued service token for ${identity.userName}`);
     res.json({ token });
-  });
+  };
+  // /connect/token is the standard, discovery-advertised token endpoint — the sole client-credentials path
+  router.post("/connect/token", issueServiceToken);
 
   // standard JWKS: consumers point jose's createRemoteJWKSet (or any JWKS client) here to verify host JWTs.
   // publishes the whole ring so a consumer can verify tokens signed by either the active or the retiring key.
-  router.get("/.well-known/jwks.json", async (_req: Request, res: Response) => {
+  const sendJwks = async (_req: Request, res: Response): Promise<void> => {
     res.json({ keys: await jwksPromise });
+  };
+  // /.well-known/openid-configuration/jwks is the standard, discovery-advertised JWKS path — the sole one
+  router.get("/.well-known/openid-configuration/jwks", sendJwks);
+
+  // OIDC discovery document: one URL a standard client reads to find the issuer, signing keys, and token
+  // endpoint. fields are honest to what this server does — client-credentials only, RS256, no auth-code flow.
+  router.get("/.well-known/openid-configuration", (req: Request, res: Response) => {
+    const origin = originFor(req);
+    res.json({
+      issuer: origin,
+      jwks_uri: `${origin}/.well-known/openid-configuration/jwks`,
+      token_endpoint: `${origin}/connect/token`,
+      token_endpoint_auth_methods_supported: ["client_secret_basic"],
+      grant_types_supported: ["client_credentials"],
+      id_token_signing_alg_values_supported: ["RS256"],
+      subject_types_supported: ["public"],
+      claims_supported: ["sub", "userName", "firstName", "lastName", "permissions"],
+    });
   });
 
   // privileged readback of the caller's own access token from the session ticket (already decrypted by
   // sessionMiddleware). Gated by ACCESS_TOKEN_PERMISSION so the bearer is never echoed back to an ordinary
   // session; returns it for callers that must present it to the agent directly.
-  router.get("/api/auth/accesstoken", (req: Request, res: Response) => {
+  router.get("/connect/accesstoken", (req: Request, res: Response) => {
     const ticket = req.authTicket;
     if (!ticket?.authenticated) {
       res.status(401).json({ error: "no session" });

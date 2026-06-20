@@ -16,9 +16,10 @@ export interface DbSettings {
 }
 
 export interface WorkflowSettings {
+  // engine-neutral task identifier; the Temporal mount maps it to the worker's task queue
   taskType?: string;
-  // allowlist of bpmnProcessIds the host may start; empty/omitted = unrestricted. Zeebe has no native
-  // enable/disable, so enablement is gated here at start — disabled definitions stay deployed but dormant.
+  // allowlist of workflow types the host may start; empty/omitted = unrestricted. Enablement is gated here at
+  // start so a type can be disabled without removing its worker registration.
   enabledProcessIds?: string[];
   secrets?: Record<string, string>;
 }
@@ -41,7 +42,7 @@ export interface HostSettings {
   // for now (will move to a secret store); the host both seals and opens the ticket, so it never leaves it.
   session?: { secret: string };
   // the host's OWN service identity for calling the agent: client-credentials it exchanges at its own
-  // /api/auth/token for a short-lived agent:trigger bearer, so dispatch never rides a user's token.
+  // /connect/token for a short-lived agent:trigger bearer, so dispatch never rides a user's token.
   dispatch?: { tokenUrl: string; clientId: string; clientSecret: string };
   secrets?: Record<string, string>;
 }

@@ -41,7 +41,7 @@ export class HttpResultSender implements ResultSender {
     }
   }
 
-  // client-credentials grant against the host's /api/auth/token; null when unconfigured so local dev still posts
+  // client-credentials grant against the host's /connect/token; null when unconfigured so local dev still posts
   private async fetchToken(): Promise<string | null> {
     if (!this.credentials) return null;
     const { tokenUrl, clientId, clientSecret } = this.credentials;

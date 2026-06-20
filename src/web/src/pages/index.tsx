@@ -21,7 +21,7 @@ export default function IndexPage() {
     <Stack spacing={3}>
       <Typography variant="h4">{title}</Typography>
       <Typography variant="body1" color="text.secondary">
-        The application console for Agent.Local — Camunda workflows, agents, and the event mesh,
+        The application console for Agent.Local — Temporal workflows, agents, and the event mesh,
         streamed server-side via the co-hosted express host.
       </Typography>
       <Card variant="outlined">

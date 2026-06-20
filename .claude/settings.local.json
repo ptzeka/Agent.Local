@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__codemcp__list_commits",
+      "WebSearch",
+      "WebFetch(domain:docs.openclaw.ai)",
+      "PowerShell($models = Invoke-RestMethod -Uri \"http://localhost:11434/api/tags\" -TimeoutSec 5; $models.models | Select-Object name, size | Format-Table -AutoSize | Out-String)",
+      "PowerShell(\"--- node managers ---\"; foreach \\($mgr in @\\(\"nvm\",\"fnm\",\"volta\",\"winget\"\\)\\) { $c = Get-Command $mgr -ErrorAction SilentlyContinue; if \\($c\\) { \"$mgr -> $\\($c.Source\\)\" } else { \"$mgr -> not found\" } }; \"--- node ---\"; node --version; \"--- npm ---\"; npm --version)",
+      "PowerShell($pkg = npm view openclaw version --json 2>&1; \"openclaw latest: $pkg\"; $eng = npm view openclaw engines --json 2>&1; \"openclaw engines: $eng\")",
+      "Bash(npm view *)"
+    ]
+  }
+}

@@ -7,7 +7,7 @@ export function createJwksProvider(authorityUrl: string, logger: ILogger): JwtKe
   let resolver: JwtKeyResolver | null = null;
   return (protectedHeader, token) => {
     if (!resolver) {
-      const url = `${authorityUrl.replace(/\/$/, "")}/.well-known/jwks.json`;
+      const url = `${authorityUrl.replace(/\/$/, "")}/.well-known/openid-configuration/jwks`;
       resolver = createJwksResolver(url);
       logger.debug?.(`[agent-server] verifying JWTs against JWKS at ${url}`);
     }

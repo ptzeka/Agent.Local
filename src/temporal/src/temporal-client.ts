@@ -9,6 +9,13 @@ import type { TemporalConfig } from "./config.js";
 // Temporal execution status normalized to the engine-neutral shape the control surface returns
 export type ExecutionStatus = "running" | "completed" | "failed" | "canceled" | "terminated" | "timedOut";
 
+// the terminal outcome of awaiting a workflow: `completed` carries the return value; `canceled` is a user stop
+// (no terminal publish — the host already recorded it); `failed` carries the error for the host to mark stuck
+export type TerminalOutcome =
+  | { outcome: "completed"; result: unknown }
+  | { outcome: "canceled" }
+  | { outcome: "failed"; error: string };
+
 // @temporalio/client is handle-oriented and typed loosely across versions; pin the few ops we call behind a local
 // shape so tests inject a fake and the real SDK adapter lands later with the worker ("add workflow later", M7-9)
 export interface TemporalCore {
@@ -17,6 +24,12 @@ export interface TemporalCore {
   describe(workflowId: string): Promise<{ runId: string; workflowType: string; status: ExecutionStatus } | undefined>;
   cancel(workflowId: string): Promise<void>;
   terminate(workflowId: string, reason: string): Promise<void>;
+  // reset re-runs the workflow from its last workflow-task boundary, re-executing the most recent step with the
+  // same inputs; returns the new runId. the engine refuses a reset on a still-running execution by design.
+  reset(workflowId: string, reason: string): Promise<{ runId: string }>;
+  // awaits the workflow's terminal outcome; `canceled` is folded apart from `failed` so a user stop never
+  // overwrites the host's `stopped` with `stuck` (the adapter classifies cancel/terminate as canceled)
+  result(workflowId: string): Promise<TerminalOutcome>;
   signal(req: { workflowId: string; name: string; payload: Record<string, unknown> }): Promise<void>;
   query<T>(req: { workflowId: string; name: string; args?: unknown }): Promise<T>;
   close(): Promise<void>;
@@ -50,6 +63,8 @@ function notWiredCore(): TemporalCore {
     describe: async () => fail(),
     cancel: async () => fail(),
     terminate: async () => fail(),
+    reset: async () => fail(),
+    result: async () => fail(),
     signal: async () => fail(),
     query: async () => fail(),
     close: async () => {},
@@ -123,7 +138,32 @@ export class TemporalClient {
   async startProcess(workflowType: string, workId: string, variables: Record<string, unknown> = {}): Promise<ExecutionRecord> {
     if (!this.isEnabled(workflowType)) throw new WorkflowDisabledError(workflowType);
     const { runId } = await this.core.start({ workflowType, workflowId: workId, args: variables });
+    // detached watcher: the WORKFLOW decides done/next, so the terminal event lands here when it returns, not at start
+    this.watchResult(workId);
     return { workflowId: workId, runId, workflowType, status: "running", startedAt: Date.now() };
+  }
+
+  // await the workflow's terminal outcome and fold it onto the bus: a return value -> workflow.completed (the host
+  // marks done -> complete), a failure -> workflow.failed (the host marks stuck), a user cancel -> workflow.stopped
+  // (the host runs its post-stop cleanup and settles `cancelled`). cancel is published, NOT swallowed: the host's
+  // `stopped` is only an ack — this confirmation is what advances it. it never resolves to `failed`, so it cannot
+  // overwrite the stop with stuck.
+  private watchResult(workId: string): void {
+    this.core
+      .result(workId)
+      .then((terminal) => {
+        if (terminal.outcome === "completed") {
+          this.bus.publish("workflow.completed", { temporalId: workId, result: terminal.result });
+        } else if (terminal.outcome === "failed") {
+          this.bus.publish("workflow.failed", { temporalId: workId, error: terminal.error });
+        } else if (terminal.outcome === "canceled") {
+          this.bus.publish("workflow.stopped", { temporalId: workId });
+        }
+      })
+      .catch((err) => {
+        // a watcher failure (not a workflow failure) must not be silent, but also must not crash the client
+        this.logger.warn(`[temporal] result watch for ${workId} failed: ${String(err)}`);
+      });
   }
 
   // graceful cancel (cooperative); the host's stop-work path
@@ -134,6 +174,13 @@ export class TemporalClient {
   // forceful stop when a cancel will not settle
   async terminate(workId: string, reason: string): Promise<void> {
     await this.core.terminate(workId, reason);
+  }
+
+  // re-execute a stuck work: Reset re-runs the failed step with the same parameters. the reset spawns a NEW run,
+  // so re-arm the terminal watcher to fold its completion/failure back onto the bus (the original watcher resolved)
+  async resetProcess(workId: string, reason = "re-execute stuck step"): Promise<void> {
+    await this.core.reset(workId, reason);
+    this.watchResult(workId);
   }
 
   // ---------------------------------------------------------------------------

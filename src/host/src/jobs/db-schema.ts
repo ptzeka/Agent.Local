@@ -3,21 +3,35 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { openDatabase, ensureSchema, type SchemaSpec, type DatabaseHandle } from "@agent-local/common/db";
 import type { ILogger } from "@agent-local/common";
-
-// the work-unit statuses, mirrored from JobRecord["status"]; the lookup table makes them an FK domain so a
-// row can never carry a status the host doesn't know about, and documents the enum in the data itself
-const JOB_STATUSES = ["new", "running", "stuck", "cancelled", "stopped", "error", "completed"] as const;
+import { JOB_STATUS_CODES, type StatusCode, type StatusTone } from "./job-status.js";
 
 // the host DB target schema (host.sqlite). The repository swap onto these tables is M3-H; dbup only ensures
 // the shape exists at startup so the table is ready the moment the repository lands.
 export const HOST_SCHEMA: SchemaSpec = {
   tables: [
     {
+      // the status-code lookup: an FK domain so a job row can never carry an unknown status, AND the catalog the
+      // /api/works/statuscodes endpoint serves. Carries label + presentation tone + action flags so the UI is
+      // fully data-driven. SQLite has no boolean, so the flags are 0/1 INTEGER columns.
       name: "job_status",
-      columns: ["status TEXT PRIMARY KEY", "label TEXT NOT NULL"],
+      columns: [
+        "status TEXT PRIMARY KEY",
+        "label TEXT NOT NULL",
+        "tone TEXT NOT NULL",
+        "terminal INTEGER NOT NULL",
+        "stoppable INTEGER NOT NULL",
+        "continuable INTEGER NOT NULL",
+      ],
       lookup: {
         conflictColumns: ["status"],
-        rows: JOB_STATUSES.map((status) => ({ status, label: status })),
+        rows: JOB_STATUS_CODES.map((s) => ({
+          status: s.status,
+          label: s.label,
+          tone: s.tone,
+          terminal: s.terminal ? 1 : 0,
+          stoppable: s.stoppable ? 1 : 0,
+          continuable: s.continuable ? 1 : 0,
+        })),
       },
     },
     {
@@ -30,8 +44,8 @@ export const HOST_SCHEMA: SchemaSpec = {
         "status TEXT NOT NULL",
         "step TEXT",
         "session_id TEXT",
-        "camunda_id TEXT",
-        "reason TEXT",
+        "temporal_id TEXT",
+        "status_description TEXT",
         "updated_at TEXT NOT NULL",
         "PRIMARY KEY (user_id, job_id)",
       ],
@@ -47,6 +61,22 @@ export function resolveHostDbFile(configured?: string): string {
   if (process.env.HOST_DB_FILE) return path.resolve(process.env.HOST_DB_FILE);
   if (configured) return path.isAbsolute(configured) ? configured : path.join(findPackageRoot(), configured);
   return path.join(findPackageRoot(), "data", "host.sqlite");
+}
+
+// reads the status-code catalog from the live lookup table — the actual source the API serves (not the in-code
+// const). Maps the 0/1 INTEGER flags back to booleans so the wire shape matches StatusCode.
+export function readStatusCodes(db: DatabaseHandle): StatusCode[] {
+  const rows = db
+    .prepare("SELECT status, label, tone, terminal, stoppable, continuable FROM job_status")
+    .all() as Array<{ status: string; label: string; tone: string; terminal: number; stoppable: number; continuable: number }>;
+  return rows.map((r) => ({
+    status: r.status,
+    label: r.label,
+    tone: r.tone as StatusTone,
+    terminal: r.terminal === 1,
+    stoppable: r.stoppable === 1,
+    continuable: r.continuable === 1,
+  }));
 }
 
 // opens host.sqlite and brings it up to HOST_SCHEMA; call once at startup before serving
