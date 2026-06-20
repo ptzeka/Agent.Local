@@ -39,3 +39,4 @@ agent.log
 src/host/keys/
 src/host/jobs/
 scripts/.run/
+/src/workspace

@@ -23,6 +23,13 @@ const ALG = "RS256";
 // aliased so the standard JWKS resolver type stays an implementation detail of this module, not the callers.
 export type JwtKeyResolver = JWTVerifyGetKey;
 
+// the actor in an OBO (RFC 8693) token: the service acting on the subject's behalf, carried as the nested
+// `act` claim so the subject's own permissions stay top-level and the two sets are never flattened together.
+export interface ActorClaim {
+  sub: string;
+  permissions: string[];
+}
+
 // the identity the host puts inside the token and every consumer reads back out; mirrors the web's
 // IRequestUserInfo so the verify side can attach it to a request context unchanged.
 export interface IdentityClaims {
@@ -31,6 +38,8 @@ export interface IdentityClaims {
   firstName: string;
   lastName: string;
   permissions: string[];
+  // present only on an exchanged OBO token: names the service acting for the subject (top-level claims stay the subject's)
+  act?: ActorClaim;
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +119,7 @@ export async function signIdentity(
     firstName: claims.firstName,
     lastName: claims.lastName,
     permissions: claims.permissions,
+    ...(claims.act ? { act: claims.act } : {}),
   })
     .setProtectedHeader(options.kid ? { alg: ALG, kid: options.kid } : { alg: ALG })
     .setSubject(claims.sub)
@@ -208,11 +218,15 @@ export async function verifyIdentity(
     issuer: options.issuer,
     audience: options.audience,
   });
+  const actor = payload.act as { sub?: unknown; permissions?: unknown } | undefined;
   return {
     sub: String(payload.sub),
     userName: String(payload.userName ?? ""),
     firstName: String(payload.firstName ?? ""),
     lastName: String(payload.lastName ?? ""),
     permissions: Array.isArray(payload.permissions) ? (payload.permissions as string[]) : [],
+    ...(actor && actor.sub
+      ? { act: { sub: String(actor.sub), permissions: Array.isArray(actor.permissions) ? (actor.permissions as string[]) : [] } }
+      : {}),
   };
 }

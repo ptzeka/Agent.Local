@@ -50,9 +50,9 @@ npm run db:init                         # create/upgrade both DBs to schema
 # scripts/db.sh opens either DB in the sqlite3 shell with repo .sqliterc formatting (box mode, headers, timer)
 scripts/db.sh host                      # interactive shell on host.sqlite
 scripts/db.sh agent                     # interactive shell on agent.sqlite
-./scripts/db.sh host "SELECT user_id, status, step FROM jobs ORDER BY updated_at DESC LIMIT 10;"
-scripts/db.sh agent "SELECT session_id, status, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 10;"
-scripts/db.sh agent "SELECT session_id, json_extract(payload,'\$.goal') AS goal FROM sessions;"
+bash ./scripts/db.sh host "SELECT user_id, status, step FROM jobs ORDER BY updated_at DESC LIMIT 10;"
+bash ./scripts/db.sh agent "SELECT session_id, status, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 10;"
+./scripts/db.sh agent "SELECT session_id, json_extract(payload,'\$.goal') AS goal FROM sessions;"
 
 # inside the shell: .tables  .schema [table]  .mode line (expanded)  .quit
 # raw sqlite3 (skips .sqliterc): sqlite3 -box src/host/data/host.sqlite "SELECT * FROM jobs;"

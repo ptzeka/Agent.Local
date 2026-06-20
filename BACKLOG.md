@@ -528,6 +528,43 @@ in the prompt (same by-construction rule as the `fsreadonly` mounts).
 cannot write any other workbook even when the model names one, and the pinned
 arg is absent from the tool schema the model sees.
 
+### M2-9 · On-behalf-of (OBO) delegation — subject+actor token exchange — `~1d` · P1
+The host→agent hop today carries only the SERVICE identity (a client-credentials
+bearer, `act`-less), so the agent knows *which service* dispatched a job but never
+*which user* it runs for. OBO closes that: one exchanged token carries BOTH
+principals — `sub` = the session subject (the human who triggered the work, with
+their own permissions), `act` = the service acting for them (`agent:trigger`). RFC
+8693 token exchange, two-claim and **never merged**, so each gate reasons about the
+right principal (transport = actor's scope; on-behalf actions = subject's). Builds
+on M2-1 (JWT verify) and feeds M2-2 (the subject bound on the session is what
+ownership-binding checks resume against).
+- [x] **Mint side — `/connect/token` token-exchange grant.** `signIdentity`/
+      `verifyIdentity` (`@agent-local/common/jwt`) carry an optional nested `act`
+      claim (`ActorClaim`); `POST /connect/token` accepts
+      `grant_type=urn:ietf:params:oauth:grant-type:token-exchange` + `subject_token`,
+      verifies the subject against the host's own ring, takes the Basic principal as
+      the actor, and mints `{ sub, permissions: subject's, act: { sub, permissions } }`.
+      Client-credentials path unchanged; OIDC discovery advertises the new grant.
+- [ ] **Thread the subject to mint (in-request).** `POST /api/works` passes
+      `req.userContext.accessToken` into `Orchestrator.trigger`; `createSession`
+      (`src/host/src/comms/sender.ts`) exchanges it for the OBO bearer it presents —
+      the subject is captured at the HTTP boundary where it is freshest, never seeded
+      onto a workflow process variable (no live bearer in engine history).
+- [ ] **Consume side — agent reads both principals + the gate moves.**
+      `/session/create` and `src/agent/src/server/middleware/user_context.ts` gate
+      `agent:trigger` on **`act.permissions`** (the OBO's top-level perms are the
+      subject's, sans that scope); `req.userContext` splits into `subject` + `actor`
+      so routes know who the work runs for.
+- [ ] **Bind subject to the session (dovetails M2-2).** Store the verified subject on
+      the `SessionRecord` at create; follow-on `/events` (session-as-capability)
+      inherit it without re-presenting a token, giving ownership-binding the
+      `session.user.sub` it refuses mismatched resumes against.
+
+**Done when:** a work triggered by user U dispatches to the agent under a token whose
+`sub`=U (with U's permissions) and `act`=the dispatch service; the agent authorizes
+the call on the actor's `agent:trigger`, attributes the work to U, and refuses a
+resume by anyone but U.
+
 ---
 
 ## M3 — User-keyed store (≈ 1.5–2 weeks) — *supersedes disk-store findings*

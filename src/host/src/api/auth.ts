@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from "express";
 import {
   signIdentity,
+  verifyIdentity,
+  createLocalKeyResolver,
   publicJwk,
   sealTicket,
   basicCredentials,
@@ -19,6 +21,9 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 // service tokens (client-credentials) are short-lived: the agent fetches one per call and discards it
 const SERVICE_TOKEN_TTL = "15m";
 
+// RFC 8693 OAuth 2.0 Token Exchange grant: a subject_token under this grant yields an OBO token
+const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
+
 // the host owns IAM: /api/login authenticates against the local UserRegistry, mints an RS256 access token, and
 // returns it ONLY inside an encrypted httpOnly cookie ticket (cookieKey seals it — "encrypt at response");
 // /.well-known/openid-configuration advertises the issuer + jwks + token endpoints so any standard OIDC/OAuth
@@ -32,6 +37,8 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
   const signer = keys[0];
   const jwksPromise = Promise.all(keys.map((k) => publicJwk(k.publicPem)));
   const signerKidPromise = jwksPromise.then((jwks) => jwks[0].kid);
+  // verify subject tokens against the whole ring (host verifying what it itself signed); reused across exchanges
+  const subjectResolver = createLocalKeyResolver(keys.map((k) => k.publicPem));
 
   // base origin for the discovery URLs: the configured issuer when set (so discovery's issuer matches the `iss`
   // verifiers check), else the request's own origin so local dev works before issuerUrl is configured.
@@ -80,34 +87,66 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
     res.json({ sub, userName, firstName, lastName, permissions });
   });
 
-  // client-credentials grant: a service (the agent) presents HTTP Basic clientId:secret and gets a short-lived
-  // RS256 JWT carrying that user's claims — no cookie, no scope negotiation; the agent sends it as a bearer.
+  // /connect/token: a service presents HTTP Basic clientId:secret and gets a short-lived RS256 bearer. Two grants
+  // share the endpoint — plain client-credentials (the token carries the service's OWN claims) and RFC 8693 token
+  // exchange (a subject_token yields an OBO token whose top-level claims are the SUBJECT's and whose `act` names
+  // the service). The Basic principal authenticates the caller and IS the actor in the exchange case.
   const issueServiceToken = async (req: Request, res: Response): Promise<void> => {
     const creds = basicCredentials(req.headers.authorization);
     if (!creds) {
       res.status(401).json({ error: "missing basic credentials" });
       return;
     }
-    const identity = users.verify(creds.username, creds.password);
-    if (!identity) {
+    const actor = users.verify(creds.username, creds.password);
+    if (!actor) {
       res.status(401).json({ error: "invalid credentials" });
       return;
     }
+
+    const { grant_type, subject_token } = (req.body ?? {}) as { grant_type?: string; subject_token?: string };
+    if (grant_type === TOKEN_EXCHANGE_GRANT && subject_token) {
+      // verify the subject_token against the host's own keys; a bad/forged subject must not yield a delegated token.
+      // the two permission sets stay separate: subject's at top level, actor's under `act` — never merged.
+      let subject;
+      try {
+        subject = await verifyIdentity(subjectResolver, subject_token, jwtOptions);
+      } catch (err) {
+        logger.warn?.(`[host] subject_token verification failed: ${String(err)}`);
+        res.status(400).json({ error: "invalid subject_token" });
+        return;
+      }
+      const oboToken = await signIdentity(
+        signer.privatePem,
+        {
+          sub: subject.sub,
+          userName: subject.userName,
+          firstName: subject.firstName,
+          lastName: subject.lastName,
+          permissions: subject.permissions,
+          act: { sub: actor.userId, permissions: actor.permissions },
+        },
+        { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
+      );
+      logger.debug?.(`[host] issued OBO token sub=${subject.userName} act=${actor.userName}`);
+      res.json({ token: oboToken });
+      return;
+    }
+
     const token = await signIdentity(
       signer.privatePem,
       {
-        sub: identity.userId,
-        userName: identity.userName,
-        firstName: identity.firstName,
-        lastName: identity.lastName,
-        permissions: identity.permissions,
+        sub: actor.userId,
+        userName: actor.userName,
+        firstName: actor.firstName,
+        lastName: actor.lastName,
+        permissions: actor.permissions,
       },
       { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
     );
-    logger.debug?.(`[host] issued service token for ${identity.userName}`);
+    logger.debug?.(`[host] issued service token for ${actor.userName}`);
     res.json({ token });
   };
-  // /connect/token is the standard, discovery-advertised token endpoint — the sole client-credentials path
+  // /connect/token is the standard, discovery-advertised token endpoint: client-credentials + token-exchange
   router.post("/connect/token", issueServiceToken);
 
   // standard JWKS: consumers point jose's createRemoteJWKSet (or any JWKS client) here to verify host JWTs.
@@ -127,7 +166,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
       jwks_uri: `${origin}/.well-known/openid-configuration/jwks`,
       token_endpoint: `${origin}/connect/token`,
       token_endpoint_auth_methods_supported: ["client_secret_basic"],
-      grant_types_supported: ["client_credentials"],
+      grant_types_supported: ["client_credentials", TOKEN_EXCHANGE_GRANT],
       id_token_signing_alg_values_supported: ["RS256"],
       subject_types_supported: ["public"],
       claims_supported: ["sub", "userName", "firstName", "lastName", "permissions"],

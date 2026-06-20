@@ -172,7 +172,7 @@ export class Orchestrator {
     if (!record) return;
     const description = result == null ? null : String(result);
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "completed", statusDescription: description, sessionId: null });
+    await this.jobs.update(record.jobId, { status: "completed", statusDescription: description, sessionId: record.sessionId });
   }
 
   // a failed/absent workflow settles to `stopped` (the recoverable terminal), with the engine's error as the row's
@@ -181,7 +181,7 @@ export class Orchestrator {
     const record = await this.byTemporalId(temporalId);
     if (!record) return;
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "stopped", statusDescription: error, sessionId: null });
+    await this.jobs.update(record.jobId, { status: "stopped", statusDescription: error, sessionId: record.sessionId });
   }
 
   // engine confirmed the cancel: resolve the work by its engine id, then finalize the stop
