@@ -23,11 +23,14 @@ async function runJob(req: Request, job: WorkflowJob): Promise<void> {
     }
     const result = await req.agentRuntime.dispatchAsync(prompt, { signal: req.runtimeSignal });
     const text = result.finalMessage.content;
-    // jobKey is the host's correlation key; the session is internal to this server, so it isn't echoed back
+    // the turn's own success/failure verdict, computed by the orchestrator (satisfied | awaiting-input | capped |
+    // failed). Carried alongside the text so the WORKFLOW can fail a step on a non-satisfied turn instead of
+    // re-deriving the verdict by sniffing the message for a "SYSTEM-FAILURE:" prefix.
     req.eventing.publish(AGENT_RESULT, {
       temporalId: job.temporalId,
       jobKey: job.jobKey,
       result: text,
+      outcome: result.outcome,
       // returned DOWN to the workflow by the engine when it completes the job
       variables: { agentResult: text, temporalId: job.temporalId },
     });

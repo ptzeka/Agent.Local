@@ -103,7 +103,8 @@ export const mount = (app: Express, ctx: MountContext): TemporalClient => {
     const payload = event.payload as Record<string, unknown>;
     const temporalId = payload.temporalId as string | undefined;
     if (typeof temporalId !== "string") return;
-    client.reportResult(temporalId, payload.result).catch((err) => {
+    // outcome rides the signal so the workflow can fail a step on a non-satisfied turn (see user-table-test.ts)
+    client.reportResult(temporalId, payload.result, payload.outcome as string | undefined).catch((err) => {
       ctx.bus.publish("workflow.failed", { temporalId, error: String(err) });
     });
   });

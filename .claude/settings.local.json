@@ -7,7 +7,10 @@
       "PowerShell($models = Invoke-RestMethod -Uri \"http://localhost:11434/api/tags\" -TimeoutSec 5; $models.models | Select-Object name, size | Format-Table -AutoSize | Out-String)",
       "PowerShell(\"--- node managers ---\"; foreach \\($mgr in @\\(\"nvm\",\"fnm\",\"volta\",\"winget\"\\)\\) { $c = Get-Command $mgr -ErrorAction SilentlyContinue; if \\($c\\) { \"$mgr -> $\\($c.Source\\)\" } else { \"$mgr -> not found\" } }; \"--- node ---\"; node --version; \"--- npm ---\"; npm --version)",
       "PowerShell($pkg = npm view openclaw version --json 2>&1; \"openclaw latest: $pkg\"; $eng = npm view openclaw engines --json 2>&1; \"openclaw engines: $eng\")",
-      "Bash(npm view *)"
+      "Bash(npm view *)",
+      "Bash(node -e 'const db=require\\(\"better-sqlite3\"\\)\\(\"src/host/data/host.sqlite\",{readonly:true}\\);const rows=db.prepare\\(\"SELECT * FROM jobs WHERE jobId LIKE ? ORDER BY rowid\"\\).all\\(\"9cfb39ee%\"\\);for\\(const r of rows\\)console.log\\(JSON.stringify\\(r\\)\\);')",
+      "Bash(node -e 'const db=require\\(\"better-sqlite3\"\\)\\(\"src/agent/data/agent.sqlite\",{readonly:true}\\);const s=db.prepare\\(\"SELECT status,payload,updated_at FROM sessions WHERE session_id=?\"\\).get\\(\"25f90d76-811e-4fbb-bc70-f55b877dcef4\"\\);if\\(!s\\){console.error\\(\"no session\"\\);process.exit\\(1\\);}const p=JSON.parse\\(s.payload\\);console.log\\(\"status   :\",s.status\\);console.log\\(\"updated  :\",s.updated_at\\);console.log\\(\"workspace:\",p.workspaceId\\);console.log\\(\"convId   :\",p.conversationId\\);console.log\\(\"parent   :\",p.parentSessionId||\"ROOT\"\\);')",
+      "Bash(node -e ' *)"
     ]
   }
 }

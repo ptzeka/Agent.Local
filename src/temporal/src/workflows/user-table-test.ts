@@ -1,4 +1,4 @@
-import { proxyActivities, defineSignal, setHandler, condition, log } from "@temporalio/workflow";
+import { proxyActivities, defineSignal, setHandler, condition, log, ApplicationFailure } from "@temporalio/workflow";
 // type-only imports: erased at runtime so the workflow sandbox stays pure (no bus / no node deps leak in)
 import type { AgentActivities } from "./activities.js";
 import type { WorkflowTemplate } from "./index.js";
@@ -22,8 +22,10 @@ export interface UserTableTestArgs {
   sessionId: string;
 }
 
-// the agent answers each dispatched step with this signal — TemporalClient.reportResult sends name "agentResult"
-export const agentResultSignal = defineSignal<[{ result: unknown }]>("agentResult");
+// the agent answers each dispatched step with this signal — TemporalClient.reportResult sends name "agentResult".
+// outcome is the turn's verdict (satisfied | awaiting-input | capped | failed); a missing outcome (older agents)
+// is treated as satisfied so the round-trip stays backward compatible.
+export const agentResultSignal = defineSignal<[{ result: unknown; outcome?: string }]>("agentResult");
 // operator intervention: merge variables onto the running workflow — TemporalClient.setVariables sends "inject"
 export const injectSignal = defineSignal<[Record<string, unknown>]>("inject");
 
@@ -39,18 +41,29 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
   const session: Record<string, unknown> = {};
 
   // each agentResult signal appends here; a step waits for its own answer to land before advancing
-  const results: unknown[] = [];
-  setHandler(agentResultSignal, (payload) => void results.push(payload.result));
+  const results: { result: unknown; outcome?: string }[] = [];
+  setHandler(agentResultSignal, (payload) => void results.push(payload));
   setHandler(injectSignal, (vars) => void Object.assign(session, vars));
 
-  // dispatch one prompt, then block until the agent's next agentResult arrives (Temporal's done/next decision)
+  // dispatch one prompt, block until the agent's next agentResult arrives, then GATE on its verdict: only a
+  // `satisfied` turn advances. Any other outcome (failed | capped | awaiting-input) means the step did not
+  // achieve its goal, so throw a non-retryable ApplicationFailure — this fails the workflow, which the host folds
+  // to `stopped` (with the agent's message), instead of the run sailing on to a false `completed`.
   const runStep = async (prompt: string): Promise<unknown> => {
     const awaited = results.length + 1;
     // log.* is the replay-safe sink (suppressed on replay), so the step trace stays deterministic
     log.info("runStep dispatch", { workId: args.workId, step: awaited, prompt });
     await dispatchAgentTask({ workId: args.workId, sessionId: args.sessionId, prompt });
     await condition(() => results.length >= awaited);
-    return results[awaited - 1];
+    const answer = results[awaited - 1];
+    // a missing outcome (older agent) is treated as satisfied to keep the round-trip backward compatible
+    if (answer.outcome !== undefined && answer.outcome !== "satisfied") {
+      throw ApplicationFailure.nonRetryable(
+        `step ${awaited} did not complete (outcome: ${answer.outcome}): ${String(answer.result)}`,
+        "AgentStepFailed",
+      );
+    }
+    return answer.result;
   };
 
   // step 1 — initialize: gather the start command's variables into the session (no agent turn)

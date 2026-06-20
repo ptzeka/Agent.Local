@@ -108,6 +108,18 @@ describe("TemporalClient", () => {
     expect(events.find((e) => e.type === "workflow.completed")).toBeUndefined();
   });
 
+  it("reportResult rides the turn outcome on the signal when provided (so the workflow can fail a step)", async () => {
+    const bus = new Eventing();
+    const { core, signals } = fakeCore();
+    const client = new TemporalClient(loadConfig(), bus, noopLogger, new AbortController().signal, core);
+
+    await client.reportResult("WORK-7", "SYSTEM-FAILURE: …", "failed");
+
+    expect(signals).toEqual([
+      { workflowId: "WORK-7", name: "agentResult", payload: { result: "SYSTEM-FAILURE: …", outcome: "failed" } },
+    ]);
+  });
+
   it("setVariables injects via an inject signal", async () => {
     const bus = new Eventing();
     const { core, signals } = fakeCore();

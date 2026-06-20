@@ -329,9 +329,12 @@ export class TemporalClient {
   }
 
   // the agent reports results back; the WORKFLOW decides done/next. just a named signal — NOT a job completion,
-  // so it does NOT publish workflow.completed: the terminal publish lands with the worker once the Workflow returns
-  async reportResult(workId: string, result: unknown): Promise<void> {
-    await this.core.signal({ workflowId: workId, name: "agentResult", payload: { result } });
+  // so it does NOT publish workflow.completed: the terminal publish lands with the worker once the Workflow returns.
+  // outcome (the turn's success/failure verdict) rides along when known so the workflow can fail a step on a
+  // non-satisfied turn; omitted from the payload when absent to keep the signal shape clean.
+  async reportResult(workId: string, result: unknown, outcome?: string): Promise<void> {
+    const payload = outcome === undefined ? { result } : { result, outcome };
+    await this.core.signal({ workflowId: workId, name: "agentResult", payload });
   }
 
   get connected(): boolean {
