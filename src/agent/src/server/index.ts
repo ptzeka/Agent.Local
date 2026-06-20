@@ -2,6 +2,7 @@ import express from "express";
 import { Eventing, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
 import { resolveAgentDbFile } from "../agent/db-schema.js";
+import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
 import { createReceiveApi } from "./comms/receiver.js";
 import { createSessionApi } from "./session-api.js";
@@ -35,6 +36,8 @@ async function main(): Promise<void> {
   const db = openDatabase(resolveAgentDbFile(settings.db?.file));
   // the agent owns the sessions it mints; lives across requests for the process, so it is built once here
   const sessions = new SessionRegistry();
+  // session-create persists the minted session to agent.sqlite so /events can resume it; shares the one db handle
+  const sessionStore = SessionStore.create(db);
 
   // wire the agent's client-credentials only when fully configured; otherwise the sender posts unauthenticated,
   // which the host accepts only while /receive enforcement is staged off
@@ -62,7 +65,7 @@ async function main(): Promise<void> {
   app.use(userContextMiddleware(getKey, sessions));
   // session lifecycle mounts BEFORE the runtime middleware: minting/closing a session needs no runtime, and
   // routing it through runtime_context would build a per-request runtime (and spurious session state) for it
-  app.use(createSessionApi(sessions));
+  app.use(createSessionApi(sessions, sessionStore));
   app.use(runtimeContextMiddleware({ signal: root.signal, db }));
   app.use(createReceiveApi());
 
