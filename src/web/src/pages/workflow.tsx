@@ -272,7 +272,7 @@ export default function WorkflowPage() {
       </Stack>
 
       <Typography variant="body2" color="text.secondary">
-        Your work units — fetched on load; no live stream. Per row: Stop a running one, Continue (re-run) a stuck one, or Refresh just that row.
+        Your work units — fetched on load; no live stream. Per row: Stop a running one, rerun a stopped one from any step, or Refresh just that row.
       </Typography>
 
       <Stack direction="row" spacing={2} alignItems="center">
@@ -354,9 +354,9 @@ export default function WorkflowPage() {
                 const stoppable = code?.stoppable ?? false;
                 const isOpen = opened === w.jobId;
                 const tree = buildStepTree(steps);
-                // the engine refuses a reset on a live run, so rerun is offered only on a settled work (not new/running/
-                // /pending-stop) — the same in-flight set the host uses for its reconcile gate
-                const canRerun = w.status !== "new" && w.status !== "running" && w.status !== "stopped";
+                // rerun follows the catalog's `continuable` flag — true only for a `stopped` work (a `completed` one
+                // is the clean end, done). new/running aren't continuable either; the engine refuses a live reset anyway
+                const canRerun = code?.continuable ?? false;
                 return (
                   <Fragment key={w.jobId}>
                     <TableRow

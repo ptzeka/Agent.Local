@@ -133,7 +133,15 @@ Hard rules:
   - One dispatch at a time. Wait for feedback before dispatching again.
   - Never invent a tool name. Use only tools the runtime advertises.
     For \`executor__dispatch.tool\`, use only fully-namespaced executor-side
-    tool names (e.g. "fsmcp__write_file", "codemcp__edit_file").
+    tool names (e.g. "fsmcp__write_file", "codemcp__edit_file"). The
+    dispatchable tools are enumerated in \`executor__dispatch.tool\` — those
+    are the ONLY tools that exist. A name not in that enum will be rejected.
+  - If NO available tool can carry out the request, you have NOT failed at
+    your job — but the request CANNOT be done. Say so plainly in your final
+    message and stop. Do NOT invent a plausible-sounding tool, do NOT pretend
+    the work happened, and do NOT hand the action back to the user as a
+    substitute for doing it. A missing capability is a failure to report, not
+    a gap to paper over.
   - Never claim work happened that isn't in a real tool result.
   - Status lines you write in prose (rare) are already prefixed \`[ORCHESTRATOR] so you dont have to tell about yourself\`.
   - Never echo the PHASE headers as prose. The phases shape your turn; the
@@ -193,7 +201,13 @@ Hard rules:
     orchestrator and let it decide the next dispatch.
   - Never invent file paths or tool names. The ask is the contract.
   - Never skip validation. Never claim success without a read-back that
-    proves it.`;
+    proves it.
+  - If the requested tool is NOT in your available tools above, do not
+    pretend — emit "EXECUTOR: ACK <tool>" then a FAIL report stating the tool
+    is unavailable. Likewise, you MUST actually call a tool: a turn that ends
+    without a real tool call is treated as a failure (no action was taken),
+    so NEVER fabricate an EXECUTING/VALIDATING/REPORT sequence or invent a
+    read-back for an action you did not perform via a real tool call.`;
 
 export const EVALUATOR_SYSTEM_PROMPT = `You are the EVALUATOR.
 

@@ -69,6 +69,8 @@ export interface HistoryEvent {
   // a scheduled event's decoded intent (our dispatchAgentTask passes the step's prompt) — distinguishes steps
   // that otherwise all read as the bare activity type
   summary?: string;
+  // the signal name on a WorkflowExecutionSignaled event; `agentResult` marks one step's round-trip answered
+  signalName?: string;
 }
 
 // the engine's own activity status for a step — deliberately NOT the host work-status catalog, which describes the
@@ -109,6 +111,11 @@ function notWiredCore(): TemporalCore {
     close: async () => {},
   };
 }
+
+// the dispatch activity (createAgentActivities in workflows/activities.ts) and the answer signal it round-trips to
+// (TemporalClient.reportResult). getSteps pairs them so a step isn't `completed` until its answer signal lands.
+const AGENT_DISPATCH_ACTIVITY = "dispatchAgentTask";
+const AGENT_RESULT_SIGNAL = "agentResult";
 
 // folds an activity-lifecycle event type onto the step status it implies; null for events that don't move a step
 function mapStepStatus(type: string): StepStatus | null {
@@ -269,9 +276,13 @@ export class TemporalClient {
   async getSteps(workId: string): Promise<WorkflowStep[]> {
     const events = await this.core.history(workId);
     const steps = new Map<string, WorkflowStep>();
+    // dispatch steps in schedule order, paired against the agentResult signals as they arrive — the workflow
+    // serializes dispatch -> await answer, so the Nth signal answers the Nth dispatch (see user-table-test.ts)
+    const dispatchSteps: WorkflowStep[] = [];
+    let answeredCount = 0;
     for (const ev of events) {
       if (ev.type === "ActivityTaskScheduled") {
-        steps.set(ev.eventId, {
+        const step: WorkflowStep = {
           id: ev.eventId,
           name: ev.activityType ?? "activity",
           status: "scheduled",
@@ -279,7 +290,13 @@ export class TemporalClient {
           startedAt: ev.timestamp,
           detail: null,
           description: ev.summary ?? null,
-        });
+        };
+        steps.set(ev.eventId, step);
+        if (ev.activityType === AGENT_DISPATCH_ACTIVITY) dispatchSteps.push(step);
+        continue;
+      }
+      if (ev.type === "WorkflowExecutionSignaled" && ev.signalName === AGENT_RESULT_SIGNAL) {
+        answeredCount++;
         continue;
       }
       // a started/terminal event keys back to its scheduled event; skip if we never saw the schedule (torn history)
@@ -288,6 +305,12 @@ export class TemporalClient {
       step.status = mapStepStatus(ev.type) ?? step.status;
       if (ev.detail) step.detail = ev.detail;
     }
+    // a dispatch activity is fire-and-forget (it returns the instant the job is published), so ActivityTaskCompleted
+    // marks it `completed` too early — the real round-trip lands as the agentResult signal. Hold every dispatch past
+    // the answered count at `running`: it has dispatched but the agent has not answered yet.
+    dispatchSteps.forEach((step, index) => {
+      if (step.status === "completed" && index >= answeredCount) step.status = "running";
+    });
     return [...steps.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }
 

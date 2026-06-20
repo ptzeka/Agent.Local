@@ -11,7 +11,7 @@ export const WORKSPACE_ENV = "AGENT_WORKSPACE";
 export const SESSIONS_DIR_ENV = "AGENT_SESSIONS_DIR";
 
 // the fs sandbox: agent file I/O is confined here, one folder per workspaceId. sessions transcripts sit beside it.
-const DEFAULT_WORKSPACE = path.join("src", "agent", "workspace");
+const DEFAULT_WORKSPACE = path.join("src", "workspace");
 const DEFAULT_SESSIONS_DIR = path.join("src", "agent", "sessions");
 
 // the dir of the calling module — the conventional start point for findProjectRoot (pass `import.meta.url`).

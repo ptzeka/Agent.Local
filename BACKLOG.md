@@ -1563,6 +1563,41 @@ non-zero by BOTH paths — the `awaiting-input` verdict (done) and the evaluator
 no longer rating a pure clarification as SATISFIED (via M5-5) — and the exit-code
 contract is documented. _(Layer 1 shipped 2026-06-16; layer 2 tracked in M5-5.)_
 
+### M5-8 · Evidence-based completion gate — judge reads real state, not claims — `~1.5d` · P1
+Surfaced 2026-06-20 from two `userTableTestWorkflow` runs that reported
+`completed` / "user table created" with an EMPTY workspace (no file ever
+written). Root cause was twofold and the deterministic backstops shipped
+alongside this note (see below); this item is the remaining *judgment* layer.
+- **Shipped 2026-06-20 (deterministic guards, not this item):**
+  - Executor "no tool = failure": an executor sub-run that ends tool-free
+    having issued ZERO tool calls now returns `outcome: "failed"`
+    (`runners/orchestrator.ts`), so a fabricated ACK/REPORT can no longer bank
+    a no-op as `satisfied`. (This corrects the M5-1 "completion-by-absence-of-
+    tool-calls is by design" framing for the executor: absence of *any* tool
+    call is now a failure, not a result.)
+  - Dispatch tool-name grounding: `executor__dispatch` rejects a `tool` not on
+    the executor's live surface (`synthetic-mcp/executor-server.ts`), killing
+    hallucinated names (e.g. `excelmcp__create_excel`) at the boundary.
+  - Context fortification: orchestrator/executor prompts now forbid inventing
+    tools and require declaring failure when no tool can do the work
+    (`context/system-prompt.ts`).
+- [ ] **Evaluator judges from evidence, not prose.** The evaluator
+      ([runners/evaluator.ts](src/agent/src/agent/runners/evaluator.ts)) reads
+      the verbal transcript + the orchestrator's claim. It returned "on track"
+      while the asserted file did not exist. Give the gate (or the evaluator) a
+      read-only check against actual workspace/state before SATISFIED — a
+      claimed artifact that a read-back can't confirm is not SATISFIED.
+- [ ] **Don't fail-open to SATISFIED on a terminal completion.**
+      `evaluateCompletion` swallows judge errors as `satisfied`
+      (`runners/orchestrator.ts` ~L496); for the final completion gate that
+      leaks an unverified pass. Fail-open should not stamp terminal success.
+- [ ] Test: a workflow whose executor never wrote the file ends `stopped`/
+      failed, never `completed`; a run with the file present still completes.
+
+**Done when:** completion is evidence-gated — a turn claiming an artifact that
+an independent read cannot confirm cannot reach SATISFIED, and judge-error
+fail-open no longer yields terminal success.
+
 ---
 
 ## M6 — Feature-flag registry (≈ 1–1.5 days)

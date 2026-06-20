@@ -85,6 +85,22 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     if (!tool) return { isError: true, content: "[dispatch-error] tool is required" };
     if (!intent) return { isError: true, content: "[dispatch-error] intent is required" };
 
+    // ground the dispatch on the executor's LIVE surface: a tool the executor can't run is a hallucinated
+    // name (the orchestrator invented it). Reject here so the orchestrator gets a corrective error instead
+    // of spawning a child that flails. tolerant: accept the namespaced name or its unique bare tail.
+    const dispatchable = this.resolveExecutorTools().map((t) => t.name);
+    const isKnown =
+      dispatchable.includes(tool) ||
+      dispatchable.some((name) => name.slice(name.indexOf("__") + 2) === tool);
+    if (!isKnown) {
+      return {
+        isError: true,
+        content:
+          `[dispatch-error] unknown tool "${tool}". Dispatchable tools: ${dispatchable.join(", ")}. ` +
+          `Call only a tool from this list, or report that the request cannot be done with available tools.`,
+      };
+    }
+
     // cap and duplicate guard run BEFORE the mutex so we fail fast without queuing behind a running dispatch
     const tracker = this.turnTracker;
     if (tracker) {

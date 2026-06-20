@@ -103,12 +103,21 @@
       "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
+    },
+    "gemini-2.5-flash-lite-executor": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "supportsTools": true,
+      "description": "Executor binding for gemini-2.5-flash-lite: WRITE mounts (fsmcp/excel) so a dispatch can actually mutate state. Deliberately omits `executor` so the executor cannot dispatch to itself.",
+      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
+      "toolTimeoutMs": 600000,
+      "iterationCap": 6
     }
   },
   "summaryWordThreshold": 2,
   "roles": {
     "orchestrator": "gemini-2.5-flash-lite-orchestrator",
-    "executor": "qwen-coder-14b",
+    "executor": "gemini-2.5-flash-lite-executor",
     "coder": "gemini-2.5-flash-lite-coder",
     "summarizer": "llama-fast",
     "evaluator": "gemini-2.5-flash-lite-orchestrator"

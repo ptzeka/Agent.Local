@@ -126,6 +126,11 @@ export class Orchestrator {
     // recall runs once per turn, keyed on the first real request; guards against re-recalling each iteration
     let recalled = false;
 
+    // executor evidence gate: count tool calls actually issued this ask. An executor that ends tool-free
+    // having invoked NOTHING produced only prose (a fabricated ACK/REPORT), not a real mutation — that is a
+    // failed dispatch, not success. Without this, a hallucinated report banks a no-op as "satisfied".
+    let toolCallsMade = 0;
+
     // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
@@ -235,6 +240,17 @@ export class Orchestrator {
       if (toolCalls.length === 0) {
         // Executor: first tool-free response is the RESULT — no evaluator gate.
         if (this.role === "executor") {
+          // a tool-free executor that NEVER called a tool only narrated; the mutation never ran. Fail the
+          // dispatch so the parent sees ok=false and cannot bank the no-op (covers the fabricated-report case).
+          if (toolCallsMade === 0) {
+            return this.failTurn(
+              `executor produced no tool call — no action was taken. Reported: ${assistantMessage.content.slice(0, 200)}`,
+              iteration,
+              tracker.count,
+              conversation,
+              turnEvents
+            );
+          }
           return {
             finalMessage: assistantMessage,
             iterations: iteration,
@@ -296,6 +312,7 @@ export class Orchestrator {
         }
 
         logger.debug("tool call start", { name: call.name });
+        toolCallsMade += 1;
         const execution: ToolExecutionResult = await scopedClients.callTool(
           call.name,
           call.arguments,

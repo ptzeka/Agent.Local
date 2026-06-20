@@ -10,7 +10,7 @@ export interface WorkRecord {
   userId: string;
   workflowId: string | null;
   workspaceId: string | null;
-  status: "new" | "running" | "stuck" | "stopped" | "cancelled" | "done" | "complete";
+  status: "new" | "running" | "stopped" | "completed";
   step: string | null;
   sessionId: string | null;
   temporalId: string | null;
@@ -123,8 +123,8 @@ export function createWorksApi(client: AxiosInstance): WorksApi {
       return data.work;
     },
 
-    // continue (re-execute the stuck step of) a work the caller owns; returns its updated record (status "running").
-    // only a `stuck` work is resettable — the host answers 409 otherwise, surfaced by the interceptor as a thrown error.
+    // continue (pick a stopped work back up — re-execute its last step) the caller owns; returns its updated record
+    // (status "running"). only a `stopped` work is resettable — the host answers 409 otherwise, thrown by the interceptor.
     async continueWork(workId: string) {
       const { data } = await client.post<{ work: WorkRecord }>(
         `/api/works/${encodeURIComponent(workId)}/continue`,

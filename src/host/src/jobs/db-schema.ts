@@ -85,7 +85,17 @@ export function readStatusCodes(db: DatabaseHandle): StatusCode[] {
 export function ensureHostDb(logger?: ILogger): DatabaseHandle {
   const db = openDatabase(resolveHostDbFile());
   ensureSchema(db, HOST_SCHEMA, { logger });
+  migrateRetiredStatuses(db);
   return db;
+}
+
+// one-shot fold of the retired 7-status codes onto the 4 that replaced them (see job-status.ts): done/complete are
+// the clean end -> `completed`; stuck/cancelled were the recoverable/stop ends -> `stopped`. The jobs.status FK
+// forces the order — remap the job rows onto the survivors FIRST, then drop the now-unreferenced catalog rows.
+function migrateRetiredStatuses(db: DatabaseHandle): void {
+  db.prepare("UPDATE jobs SET status = 'completed' WHERE status IN ('done', 'complete')").run();
+  db.prepare("UPDATE jobs SET status = 'stopped' WHERE status IN ('stuck', 'cancelled')").run();
+  db.prepare("DELETE FROM job_status WHERE status IN ('done', 'complete', 'stuck', 'cancelled')").run();
 }
 
 function findPackageRoot(): string {

@@ -118,23 +118,27 @@ describe("TemporalClient", () => {
     expect(signals).toEqual([{ workflowId: "WORK-7", name: "inject", payload: { approved: true } }]);
   });
 
-  it("getSteps folds activity events into one step per invocation, latest event setting the status", async () => {
+  it("getSteps holds a dispatch step `running` until its agentResult signal lands (round-trip, not fire-and-forget)", async () => {
     const bus = new Eventing();
     const { core, setEvents } = fakeCore();
     const client = new TemporalClient(loadConfig(), bus, noopLogger, new AbortController().signal, core);
-    // two activity invocations: step 5 ran to completion, step 8 is still only scheduled (order by schedule time)
+    // both dispatch activities returned (fire-and-forget), but only the FIRST has been answered by an agentResult
+    // signal — so step 5 is `completed`, while step 9 stays `running` (dispatched, awaiting the agent's answer)
     setEvents([
       { eventId: "5", type: "ActivityTaskScheduled", timestamp: "2026-06-19T10:00:00.000Z", activityType: "dispatchAgentTask", summary: "Create the users sheet" },
       { eventId: "6", type: "ActivityTaskStarted", timestamp: "2026-06-19T10:00:01.000Z", scheduledEventId: "5" },
       { eventId: "7", type: "ActivityTaskCompleted", timestamp: "2026-06-19T10:00:05.000Z", scheduledEventId: "5" },
-      { eventId: "8", type: "ActivityTaskScheduled", timestamp: "2026-06-19T10:00:06.000Z", activityType: "dispatchAgentTask" },
+      { eventId: "8", type: "WorkflowExecutionSignaled", timestamp: "2026-06-19T10:00:06.000Z", signalName: "agentResult" },
+      { eventId: "9", type: "ActivityTaskScheduled", timestamp: "2026-06-19T10:00:07.000Z", activityType: "dispatchAgentTask", summary: "Append a row" },
+      { eventId: "10", type: "ActivityTaskStarted", timestamp: "2026-06-19T10:00:08.000Z", scheduledEventId: "9" },
+      { eventId: "11", type: "ActivityTaskCompleted", timestamp: "2026-06-19T10:00:09.000Z", scheduledEventId: "9" },
     ]);
 
     const steps = await client.getSteps("WORK-7");
 
     expect(steps.map((s) => ({ id: s.id, status: s.status, description: s.description }))).toEqual([
       { id: "5", status: "completed", description: "Create the users sheet" },
-      { id: "8", status: "scheduled", description: null },
+      { id: "9", status: "running", description: "Append a row" },
     ]);
   });
 

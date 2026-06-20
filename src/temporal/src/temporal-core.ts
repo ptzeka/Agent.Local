@@ -197,6 +197,8 @@ export function createTemporalCore(cfg: TemporalConfig): TemporalCore {
         const failed = ev.activityTaskFailedEventAttributes;
         const timedOut = ev.activityTaskTimedOutEventAttributes;
         const canceled = ev.activityTaskCanceledEventAttributes;
+        // the agent's answer rides a signal, not an activity completion — getSteps pairs it to the dispatch step
+        const signaled = ev.workflowExecutionSignaledEventAttributes;
         if (sched) {
           out.push({
             eventId,
@@ -215,6 +217,8 @@ export function createTemporalCore(cfg: TemporalConfig): TemporalCore {
           out.push({ eventId, timestamp, type: "ActivityTaskTimedOut", scheduledEventId: String(toNumber(timedOut.scheduledEventId)) });
         } else if (canceled) {
           out.push({ eventId, timestamp, type: "ActivityTaskCanceled", scheduledEventId: String(toNumber(canceled.scheduledEventId)) });
+        } else if (signaled) {
+          out.push({ eventId, timestamp, type: "WorkflowExecutionSignaled", signalName: signaled.signalName ?? undefined });
         }
       }
       return out;

@@ -24,20 +24,20 @@ import type { AgentClient } from "./comms/sender.js";
 
 // the SINGLE place that maps the engine's authoritative status (Temporal's describe, or `missing` when it holds no
 // such execution) onto the host lifecycle: the status to fold plus the human description the row shows. Returns
-// null for states a reconcile must NOT fold — still running, or a clean completion the push path owns. Recovery
-// rules: missing / failed / timedOut / terminated -> stuck (recoverable); a confirmed cancel -> cancelled.
+// null for states a reconcile must NOT fold — still running, or a clean completion the push path owns. Every
+// non-clean terminal (missing / failed / timedOut / terminated / canceled) folds to `stopped`, the recoverable end.
 export function resolveEngineStatus(
   engineStatus: string | undefined,
   missing: boolean | undefined,
 ): { status: JobStatus; description: string } | null {
-  if (missing) return { status: "stuck", description: "no running workflow found on the engine" };
+  if (missing) return { status: "stopped", description: "no running workflow found on the engine" };
   switch (engineStatus) {
     case "canceled":
-      return { status: "cancelled", description: "cancellation confirmed by the engine" };
+      return { status: "stopped", description: "cancellation confirmed by the engine" };
     case "failed":
     case "timedOut":
     case "terminated":
-      return { status: "stuck", description: `engine reported ${engineStatus}` };
+      return { status: "stopped", description: `engine reported ${engineStatus}` };
     default:
       return null; // running / completed / unknown: in-flight or owned by the push path
   }
@@ -68,10 +68,10 @@ export class Orchestrator {
 
     this.bus.subscribe(WORKFLOW_FAILED, (event) => {
       const { temporalId, error } = event.payload as unknown as WorkflowFailedPayload;
-      if (temporalId) void this.markStuck(temporalId, error);
+      if (temporalId) void this.markFailed(temporalId, error);
     });
 
-    // the engine confirmed the user's stop settled: run the post-stop cleanup and advance `stopped` -> `cancelled`
+    // the engine confirmed the user's stop settled: run the post-stop cleanup (the work already reads `stopped`)
     this.bus.subscribe(WORKFLOW_STOPPED, (event) => {
       const { temporalId } = event.payload as unknown as WorkflowStoppedPayload;
       if (temporalId) void this.onStopConfirmed(temporalId);
@@ -103,10 +103,10 @@ export class Orchestrator {
     return workId;
   }
 
-  // stops a work the caller owns — phase 1 of two: command the engine cancel (bus -> engine) and record `stopped`
-  // as an ACK, nothing more. Cleanup (close the agent session) and the terminal `cancelled` are deferred to
-  // finalizeStop, which runs only once the engine CONFIRMS the cancel — so resources are not released while the
-  // workflow may still be alive. The confirmation arrives as workflow.stopped (push) or via reconcile-on-refresh.
+  // stops a work the caller owns: command the engine cancel (bus -> engine) and record `stopped` (the recoverable
+  // terminal) as the ACK. Cleanup (close the agent session) is deferred to finalizeStop, which runs only once the
+  // engine CONFIRMS the cancel — so the session is not released while the workflow may still be alive. The
+  // confirmation arrives as workflow.stopped (push) or via reconcile-on-refresh.
   async stop(workId: string, userId: string, reason: string): Promise<JobRecord | null> {
     const record = await this.jobs.get(workId);
     if (!record || record.userId !== userId) return null;
@@ -129,21 +129,21 @@ export class Orchestrator {
     return record;
   }
 
-  // operator "continue": re-execute a stuck work's failed step via engine Reset. ownership by workId; only a
-  // `stuck` work is resettable (the engine refuses a running one anyway). returns null for a non-owner, false
-  // when the work is not stuck. bus-pure like stop/inject; status goes back to `running` as the new run boots.
+  // operator "continue": pick a stopped work back up — re-execute its last step via engine Reset. ownership by
+  // workId; only a `stopped` work is resettable (a clean `completed` is done; the engine refuses a running one).
+  // returns null for a non-owner, false when the work is not stopped. status goes back to `running` as the new run boots.
   async continue(workId: string, userId: string): Promise<JobRecord | null | false> {
     const record = await this.jobs.get(workId);
     if (!record || record.userId !== userId) return null;
-    if (record.status !== "stuck") return false;
+    if (record.status !== "stopped") return false;
     this.bus.publish(WORKFLOW_RESET, { workId });
-    return this.jobs.update(workId, { status: "running", statusDescription: "re-executing stuck step" });
+    return this.jobs.update(workId, { status: "running", statusDescription: "re-executing stopped step" });
   }
 
   // operator "rerun from step": re-execute a work from a chosen step via engine Reset (re-runs that step and
-  // everything after, dropping old answers). ownership by workId; unlike continue() it is NOT gated to `stuck` — a
-  // past step of a done/cancelled work is rerunnable too. the engine still refuses while the run is live. status
-  // goes back to `running` as the new run boots; null for a non-owner.
+  // everything after, dropping old answers). ownership by workId; unlike continue() it is NOT gated to `stopped` — a
+  // past step of a completed work is rerunnable too. the engine still refuses while the run is live. status goes
+  // back to `running` as the new run boots; null for a non-owner.
   async rerunStep(workId: string, userId: string, stepId: string): Promise<JobRecord | null> {
     const record = await this.jobs.get(workId);
     if (!record || record.userId !== userId) return null;
@@ -165,23 +165,23 @@ export class Orchestrator {
     return record;
   }
 
-  // terminal SUCCESS, two-phase: `done` the instant the engine signals the workflow returned, THEN run the host's
-  // post-workflow tasks (close the agent session) and only then `complete` — so the two states are observable apart.
+  // terminal SUCCESS: the engine returned, so close the agent session (post-workflow cleanup) and settle to
+  // `completed` — the clean, non-recoverable end. sessionId is cleared so a settled work stops reconciling.
   private async complete(temporalId: string, result: unknown): Promise<void> {
     const record = await this.byTemporalId(temporalId);
     if (!record) return;
     const description = result == null ? null : String(result);
-    await this.jobs.update(record.jobId, { status: "done", statusDescription: description });
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "complete", statusDescription: description });
+    await this.jobs.update(record.jobId, { status: "completed", statusDescription: description, sessionId: null });
   }
 
-  // a failed/absent workflow is `stuck`, with the engine's error as the live context (the error/missing-info
-  // display). recoverable via inject/retry, so it is NOT terminal — the session is left for the recovery path.
-  public async markStuck(temporalId: string, error: string): Promise<void> {
+  // a failed/absent workflow settles to `stopped` (the recoverable terminal), with the engine's error as the row's
+  // context. close the session like any stop — the recovery path is a Reset (continue/rerun), which rebuilds it.
+  public async markFailed(temporalId: string, error: string): Promise<void> {
     const record = await this.byTemporalId(temporalId);
     if (!record) return;
-    await this.jobs.update(record.jobId, { status: "stuck", statusDescription: error });
+    if (record.sessionId) await this.agent.closeSession(record.sessionId);
+    await this.jobs.update(record.jobId, { status: "stopped", statusDescription: error, sessionId: null });
   }
 
   // engine confirmed the cancel: resolve the work by its engine id, then finalize the stop
@@ -190,33 +190,31 @@ export class Orchestrator {
     if (record) await this.finalizeStop(record);
   }
 
-  // terminal STOP, phase 2 of two — the mirror of complete(): close the agent session (post-stop cleanup) then
-  // settle to `cancelled`, keeping the stop reason as the description. driven by the engine's cancel confirmation
-  // (workflow.stopped) OR by a reconcile that finds the execution cancelled, so a missed confirmation still heals
-  // on refresh. idempotent: a work already in a terminal state is left untouched (double-confirm is a no-op).
+  // post-stop cleanup: the work already reads `stopped` (set at the stop ACK); this just closes the agent session
+  // once the engine confirms the cancel (workflow.stopped) OR a reconcile finds the run gone, so a missed
+  // confirmation still heals on refresh. idempotent via sessionId: clearing it on close makes a re-run a no-op AND
+  // stops the work reconciling. a `completed` work never reaches here (the reconcile gate excludes it).
   private async finalizeStop(record: JobRecord): Promise<void> {
-    if (record.status === "cancelled" || record.status === "done" || record.status === "complete") return;
-    if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "cancelled" });
+    if (!record.sessionId) return;
+    await this.agent.closeSession(record.sessionId);
+    await this.jobs.update(record.jobId, { sessionId: null });
   }
 
   // fold a reconcile answer onto the record — the recovery net for push events the host may have missed (e.g. a
   // restart dropped the in-memory result watcher). Only NON-settled works reconcile: in-flight (new/running) and a
-  // pending stop awaiting its cancel confirmation. resolveEngineStatus is the single status/description authority;
-  // a confirmed cancel runs the post-stop cleanup (finalizeStop), everything else folds straight on.
+  // `stopped` work whose post-stop cleanup is still pending (sessionId set). resolveEngineStatus is the single
+  // status/description authority; an already-stopped work only needs its cleanup run, not another status fold.
   private async reconcile(workId: string, status: string | undefined, missing: boolean | undefined): Promise<void> {
     const record = await this.jobs.get(workId);
     if (!record) return;
-    if (record.status !== "new" && record.status !== "running" && record.status !== "stopped") return;
-    const resolved = resolveEngineStatus(status, missing);
-    if (!resolved) return;
-    // a pending stop settles the instant the engine reports the run is no longer active — an explicit cancel, a
-    // missing run (e.g. it never started, temporalId null), or any terminal. The user asked to stop, so finalize
-    // to `cancelled`, NEVER `stuck`: stuck is only for an in-flight work the engine orphaned, not one already stopped.
-    if (record.status === "stopped" || resolved.status === "cancelled") {
+    // a stopped work is terminal — only run its deferred cleanup (close the session the engine has now released)
+    if (record.status === "stopped") {
       await this.finalizeStop(record);
       return;
     }
+    if (record.status !== "new" && record.status !== "running") return;
+    const resolved = resolveEngineStatus(status, missing);
+    if (!resolved) return;
     await this.jobs.update(workId, { status: resolved.status, statusDescription: resolved.description });
   }
 

@@ -9,11 +9,11 @@ export const WORKFLOW_START = "workflow.start" as const;
 export const WORKFLOW_STARTED = "workflow.started" as const;
 export const WORKFLOW_STOP = "workflow.stop" as const;
 // engine -> host: the cancel commanded by WORKFLOW_STOP has settled (pair to STARTED for START). drives the
-// host's post-stop finalize (cleanup -> `cancelled`); a missed one heals via reconcile-on-refresh.
+// host's post-stop finalize (close the released session); a missed one heals via reconcile-on-refresh.
 export const WORKFLOW_STOPPED = "workflow.stopped" as const;
 export const WORKFLOW_INJECT = "workflow.inject" as const;
 export const WORKFLOW_RETRY = "workflow.retry" as const;
-// operator "continue": re-execute a stuck work's failed step via engine Reset (bus-pure, like stop/inject)
+// operator "continue": re-execute a stopped work's last step via engine Reset (bus-pure, like stop/inject)
 export const WORKFLOW_RESET = "workflow.reset" as const;
 export const WORKFLOW_JOB = "workflow.job" as const;
 export const WORKFLOW_COMPLETED = "workflow.completed" as const;
@@ -66,7 +66,7 @@ export interface WorkflowStopPayload {
 }
 
 // engine -> host: the cancel has settled on the engine. keyed by temporalId (== workId) like the other terminal
-// events; the host runs its post-stop cleanup and settles the work to `cancelled`.
+// events; the host runs its post-stop cleanup (the work already reads `stopped`).
 export interface WorkflowStoppedPayload {
   temporalId: string;
 }
@@ -89,7 +89,7 @@ export interface WorkflowRetryPayload {
 }
 
 // host -> engine: re-execute this work via engine Reset. keyed by workId (== the engine WorkflowId). without
-// stepId the engine resets to the last workflow-task boundary (Continue a stuck step); with stepId it resets to
+// stepId the engine resets to the last workflow-task boundary (Continue the last step); with stepId it resets to
 // the boundary before that step, re-running it and everything after. the engine refuses a reset while running.
 export interface WorkflowResetPayload {
   workId: string;
@@ -121,7 +121,7 @@ export interface WorkflowDescribePayload {
 }
 
 // engine -> host: the answer, keyed by the host workId it was asked about (describe -> status round-trip).
-// `missing` true when the engine has no such workflow (orphaned -> host marks stuck); otherwise `status` is
+// `missing` true when the engine has no such workflow (orphaned -> host marks it stopped); otherwise `status` is
 // the engine's current execution status string (running | completed | failed | …)
 export interface WorkflowStatusPayload {
   workId: string;

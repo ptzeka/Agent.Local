@@ -59,9 +59,10 @@ export function createWorksApi(
     const status = typeof req.query.status === "string" ? (req.query.status as JobStatus) : undefined;
     const works = await jobs.search({ userId: owner(req), status });
     // poll-time reconcile: kick a bus-pure describe for each unsettled work so a NEXT poll reflects engine truth.
-    // `stopped` is included — it is a pending stop, so reconcile heals it to `cancelled` once the engine confirms.
+    // a `stopped` work is included only while its cleanup is pending (sessionId set), so reconcile closes the
+    // released session — once cleaned it is fully settled and no longer pinged.
     for (const work of works) {
-      if (work.status === "new" || work.status === "running" || work.status === "stopped") {
+      if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
         orchestrator.requestReconcile(work.jobId);
       }
     }
@@ -76,9 +77,9 @@ export function createWorksApi(
       return;
     }
     // poll-time reconcile: an unsettled work asks the engine for its live state; this read returns the current
-    // record, the fold lands async (bus-pure) so the next read shows it — orphaned workflows surface as stuck, a
-    // pending `stopped` settles to `cancelled` once the engine confirms the cancel (the Refresh recovery path).
-    if (work.status === "new" || work.status === "running" || work.status === "stopped") {
+    // record, the fold lands async (bus-pure) so the next read shows it — orphaned/failed workflows surface as
+    // `stopped`, and a stopped work with cleanup still pending (sessionId set) gets its released session closed.
+    if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
       orchestrator.requestReconcile(work.jobId);
     }
     // step history: the engine's reconstructed per-step status, folded in so the detail view renders it from one
@@ -109,8 +110,8 @@ export function createWorksApi(
     res.json({ work });
   });
 
-  // continue: re-execute a stuck step of the caller's work via engine Reset. 404 when not the caller's, 409 when
-  // the work is not `stuck` (only a stuck work is resettable; a running one the engine refuses anyway).
+  // continue: pick a stopped work back up — re-execute its last step via engine Reset. 404 when not the caller's,
+  // 409 when the work is not `stopped` (a clean completed work is done; a running one the engine refuses anyway).
   router.post("/api/works/:workId/continue", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const result = await orchestrator.continue(req.params.workId, owner(req));
     if (result === null) {
@@ -118,7 +119,7 @@ export function createWorksApi(
       return;
     }
     if (result === false) {
-      res.status(409).json({ error: "work is not stuck" });
+      res.status(409).json({ error: "work is not stopped" });
       return;
     }
     logger.debug?.(`[host] continued (reset) work ${result.jobId}`);

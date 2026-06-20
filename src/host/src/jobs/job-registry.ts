@@ -28,7 +28,7 @@ export interface JobRecord {
   sessionId: string | null;
   // the Temporal instance id (the engine's primary key for this run); null until the instance starts
   temporalId: string | null;
-  // live context for the CURRENT status: running step, stuck error/missing-info, stop reason, or the workflow's
+  // live context for the CURRENT status: running step, stop/failure reason, or the workflow's
   // terminal return value (e.g. "user table created"). null when the status needs no further explanation.
   statusDescription: string | null;
   // ISO timestamp the work was first added; set once at add() and carried forward unchanged by update(),
