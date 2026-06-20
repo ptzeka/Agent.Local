@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useApiClient } from "@/providers/api_context";
+import { useApiQuery } from "@/components/shared/useApi";
 
 // the host's composite readiness (/health/ready): ok only when the workflow-engine link AND the separate agent
 // service are both up. workflow/agent are the per-dependency legs, surfaced so a chip can explain *what* is down.
@@ -15,26 +16,21 @@ export interface HealthState extends Partial<Health> {
   refresh: () => Promise<void>;
 }
 
-// pings the host's composite /health/ready ONCE per mount (i.e. once per page load) — a readiness snapshot —
-// and again whenever `refresh()` is called. A 503 is expected when a dependency is down, so we read the JSON
-// body on any response to keep the workflow/agent breakdown; only a thrown fetch reads as fully down.
+// pings the host's composite /health/ready ONCE per mount (a readiness snapshot) and again on refresh().
+// a 503 is EXPECTED when a dependency is down, so this call alone bypasses the throw-on-non-2xx interceptor
+// (validateStatus) to keep the workflow/agent breakdown from the body; only a thrown request reads as fully down.
 export function useHealth(): HealthState {
-  const [state, setState] = useState<Omit<HealthState, "refresh">>({ loading: true });
-
-  const refresh = useCallback(async (): Promise<void> => {
-    if (typeof window === "undefined") return; // client-only; SSR never probes
+  const client = useApiClient();
+  const { data, loading, refresh } = useApiQuery<Health>(async () => {
     try {
-      const r = await fetch("/health/ready");
-      const body = (await r.json().catch(() => ({}))) as Partial<Health>;
-      setState({ loading: false, ok: r.ok, workflow: !!body.workflow, agent: !!body.agent });
+      const res = await client.get<Partial<Health>>("/health/ready", { validateStatus: () => true });
+      const body = res.data ?? {};
+      const ok = res.status >= 200 && res.status < 300;
+      return { ok, workflow: !!body.workflow, agent: !!body.agent };
     } catch {
-      setState({ loading: false, ok: false, workflow: false, agent: false });
+      return { ok: false, workflow: false, agent: false };
     }
-  }, []);
+  }, [client]);
 
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  return { ...state, refresh };
+  return { loading, refresh, ok: data?.ok, workflow: data?.workflow, agent: data?.agent };
 }

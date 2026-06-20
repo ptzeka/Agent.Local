@@ -11,11 +11,14 @@
 
 # clear all
 scripts/clear-codeindex.sh
+# rancher docker init
+rdctl start
 
 # Unblock-File .\scripts\publish-codeindex.ps1
 
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:\www\react_sandbox
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/Agent.Local
+powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:\www\react_sandbox
 powershell Remove-Item -Recurse -Force .\src\codeindex\data; Remove-Item -Recurse -Force .\src\codemcp\data;
 scripts/publish-codeindex.sh -Repository /Applications/www/Agent.Local    
 scripts/publish-codeindex.sh -Repository /Applications/www/rxoinc/platform/Rxo.Platform.Web.Sandbox
@@ -32,7 +35,7 @@ npm run start -- --run "remove hello_world.txt file as background task" 3bd1817e
 npm run start -- --run "delay as background task for 2 min poll until done" 3bd1817e-d563-43b2-a6db-771811411913
 
 # integ test
-powershell -ExecutionPolicy Bypass -File .\scripts\e2e-headless.ps1
+powershell -ExecutionPolicy Bypass -File .\scripts\e2e-headless.pm[]
 
 # integ memory test
 powershell -ExecutionPolicy Bypass -File .\scripts\e2e-memory-headless.ps1

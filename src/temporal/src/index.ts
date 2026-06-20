@@ -1,7 +1,7 @@
 export { mount } from "./mount.js";
 export type { MountContext } from "./mount.js";
 export { TemporalClient, WorkflowDisabledError } from "./temporal-client.js";
-export type { ExecutionRecord, ExecutionStatus, TemporalCore } from "./temporal-client.js";
+export type { ExecutionRecord, ExecutionStatus, TemporalCore, HistoryEvent, WorkflowStep, StepStatus } from "./temporal-client.js";
 export { createTemporalCore } from "./temporal-core.js";
 export { startWorker } from "./worker.js";
 export { loadConfig, AGENT_EXECUTE_WORKFLOW_TYPE } from "./config.js";

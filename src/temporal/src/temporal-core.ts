@@ -8,7 +8,42 @@ import {
   TerminatedFailure,
 } from "@temporalio/client";
 import type { TemporalConfig } from "./config.js";
-import type { ExecutionStatus, TemporalCore } from "./temporal-client.js";
+import type { ExecutionStatus, HistoryEvent, TemporalCore } from "./temporal-client.js";
+
+// Temporal carries eventId/scheduledEventId as Long and eventTime as a protobuf Timestamp; coerce both to plain
+// JS without importing the `long` type — a Long exposes toNumber(), a plain number passes through unchanged.
+function toNumber(value: unknown): number {
+  if (typeof value === "number") return value;
+  if (value && typeof (value as { toNumber?: () => number }).toNumber === "function") {
+    return (value as { toNumber: () => number }).toNumber();
+  }
+  return Number(value ?? 0);
+}
+
+function toIso(ts: { seconds?: unknown; nanos?: number | null } | null | undefined): string {
+  if (!ts) return new Date(0).toISOString();
+  return new Date(toNumber(ts.seconds) * 1000 + Math.floor((ts.nanos ?? 0) / 1e6)).toISOString();
+}
+
+// Temporal proto enums.v1.ResetReapplyType.RESET_REAPPLY_TYPE_NONE — a stable wire enum value; reset with NONE so
+// post-reset signals (the old agentResult answers) are NOT replayed and the rerun re-dispatches the step fresh.
+const RESET_REAPPLY_NONE = 2;
+
+// the activity's first input arg is the step's payload (dispatchAgentTask receives { workId, sessionId, prompt });
+// decode the default JSON payload and surface the prompt so a step renders distinctly, not as the bare type.
+function decodeActivitySummary(
+  input: { payloads?: ({ data?: Uint8Array | null } | null)[] | null } | null | undefined,
+): string | undefined {
+  try {
+    const data = input?.payloads?.[0]?.data;
+    if (!data) return undefined;
+    const arg = JSON.parse(Buffer.from(data).toString("utf8")) as { prompt?: unknown };
+    return typeof arg.prompt === "string" ? arg.prompt : undefined;
+  } catch {
+    // a non-JSON or alternately-encoded payload just yields no summary; the step still renders by type
+    return undefined;
+  }
+}
 
 // Temporal's describe status names -> the engine-neutral ExecutionStatus the control surface returns.
 // CONTINUED_AS_NEW reads as still running (the chain is live); anything unknown defaults to running, not a failure.
@@ -117,6 +152,28 @@ export function createTemporalCore(cfg: TemporalConfig): TemporalCore {
       return { runId: res.runId };
     },
 
+    // reset to the workflow-task that scheduled a chosen step: the LAST WorkflowTaskStarted before that step's
+    // scheduled event. replaying that decision re-runs the step and everything after it; NONE drops the old answers.
+    async resetToStep(workflowId, stepId, reason) {
+      const handle = need().getHandle(workflowId);
+      const { runId } = await handle.describe();
+      const history = await handle.fetchHistory();
+      const target = toNumber(stepId);
+      const boundary = (history.events ?? [])
+        .filter((ev) => ev.workflowTaskStartedEventAttributes && toNumber(ev.eventId) < target)
+        .at(-1);
+      if (!boundary?.eventId) throw new Error(`temporal: ${workflowId} has no workflow-task before step ${stepId}`);
+      const res = await connection!.workflowService.resetWorkflowExecution({
+        namespace: cfg.namespace,
+        workflowExecution: { workflowId, runId },
+        reason,
+        requestId: randomUUID(),
+        workflowTaskFinishEventId: boundary.eventId,
+        resetReapplyType: RESET_REAPPLY_NONE,
+      });
+      return { runId: res.runId };
+    },
+
     // payload is delivered as the signal's single argument (agentResult expects {result}, inject expects the vars record)
     async signal(req) {
       await need().getHandle(req.workflowId).signal(req.name, req.payload);
@@ -124,6 +181,43 @@ export function createTemporalCore(cfg: TemporalConfig): TemporalCore {
 
     async query<T>(req: { workflowId: string; name: string; args?: unknown }): Promise<T> {
       return (await need().getHandle(req.workflowId).query(req.name, req.args)) as T;
+    },
+
+    // map the raw protobuf history to engine-neutral records, keeping only the activity-lifecycle events steps are
+    // built from; the client groups these by scheduledEventId. fetchHistory is the same call reset already uses.
+    async history(workflowId): Promise<HistoryEvent[]> {
+      const history = await need().getHandle(workflowId).fetchHistory();
+      const out: HistoryEvent[] = [];
+      for (const ev of history.events ?? []) {
+        const eventId = String(toNumber(ev.eventId));
+        const timestamp = toIso(ev.eventTime);
+        const sched = ev.activityTaskScheduledEventAttributes;
+        const started = ev.activityTaskStartedEventAttributes;
+        const completed = ev.activityTaskCompletedEventAttributes;
+        const failed = ev.activityTaskFailedEventAttributes;
+        const timedOut = ev.activityTaskTimedOutEventAttributes;
+        const canceled = ev.activityTaskCanceledEventAttributes;
+        if (sched) {
+          out.push({
+            eventId,
+            timestamp,
+            type: "ActivityTaskScheduled",
+            activityType: sched.activityType?.name ?? undefined,
+            summary: decodeActivitySummary(sched.input),
+          });
+        } else if (started) {
+          out.push({ eventId, timestamp, type: "ActivityTaskStarted", scheduledEventId: String(toNumber(started.scheduledEventId)) });
+        } else if (completed) {
+          out.push({ eventId, timestamp, type: "ActivityTaskCompleted", scheduledEventId: String(toNumber(completed.scheduledEventId)) });
+        } else if (failed) {
+          out.push({ eventId, timestamp, type: "ActivityTaskFailed", scheduledEventId: String(toNumber(failed.scheduledEventId)), detail: failed.failure?.message ?? undefined });
+        } else if (timedOut) {
+          out.push({ eventId, timestamp, type: "ActivityTaskTimedOut", scheduledEventId: String(toNumber(timedOut.scheduledEventId)) });
+        } else if (canceled) {
+          out.push({ eventId, timestamp, type: "ActivityTaskCanceled", scheduledEventId: String(toNumber(canceled.scheduledEventId)) });
+        }
+      }
+      return out;
     },
 
     async close(): Promise<void> {

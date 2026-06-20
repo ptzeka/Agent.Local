@@ -67,10 +67,12 @@ export const mount = (app: Express, ctx: MountContext): TemporalClient => {
   // the host authorizes then commands a "continue": Reset the execution so its stuck step re-runs with the same
   // inputs. tolerant like stop — a server reject (e.g. the workflow is running) is logged, never thrown onto the bus.
   ctx.bus.subscribe("workflow.reset", (event) => {
-    const { workId } = event.payload as Record<string, string>;
+    const { workId, stepId } = event.payload as Record<string, string>;
     if (!workId) return;
-    client.resetProcess(workId).catch((err) => {
-      ctx.logger.warn?.(`[temporal] reset of ${workId} failed: ${String(err)}`);
+    // stepId present -> rerun from that step (NONE reapply); absent -> Continue (reset to the last task boundary)
+    const reset = stepId ? client.rerunFromStep(workId, stepId) : client.resetProcess(workId);
+    reset.catch((err) => {
+      ctx.logger.warn?.(`[temporal] reset of ${workId}${stepId ? ` from step ${stepId}` : ""} failed: ${String(err)}`);
     });
   });
 

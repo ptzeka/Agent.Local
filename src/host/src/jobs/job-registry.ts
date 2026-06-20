@@ -18,6 +18,9 @@ export interface JobRecord {
   userId: string;
   // the workflow type this work runs; null only for legacy records created before it was tracked
   workflowId: string | null;
+  // the agent workspace this work runs in (minted at trigger, same id handed to /session/create); null only
+  // for legacy records created before it was tracked
+  workspaceId: string | null;
   status: JobStatus;
   // current workflow element/step (null until the workflow reports one)
   step: string | null;
@@ -28,6 +31,9 @@ export interface JobRecord {
   // live context for the CURRENT status: running step, stuck error/missing-info, stop reason, or the workflow's
   // terminal return value (e.g. "user table created"). null when the status needs no further explanation.
   statusDescription: string | null;
+  // ISO timestamp the work was first added; set once at add() and carried forward unchanged by update(),
+  // so it survives the fold-to-latest (unlike ts, which every update rewrites)
+  createdAt: string;
   // ISO timestamp of THIS line — a later line for the same jobId supersedes it
   ts: string;
 }
@@ -44,17 +50,25 @@ export class JobRegistry {
 
   // seeds a brand-new work unit owned by userId; the host calls this when web creates the request, before
   // temporal/agent ids exist. userId is the cookie identity and is fixed for the life of the work.
-  public async add(jobId: string, userId: string, workflowId: string | null = null): Promise<JobRecord> {
+  public async add(
+    jobId: string,
+    userId: string,
+    workflowId: string | null = null,
+    workspaceId: string | null = null,
+  ): Promise<JobRecord> {
+    const now = new Date().toISOString();
     const record: JobRecord = {
       jobId,
       userId,
       workflowId,
+      workspaceId,
       status: "new",
       step: null,
       sessionId: null,
       temporalId: null,
       statusDescription: null,
-      ts: new Date().toISOString(),
+      createdAt: now,
+      ts: now,
     };
     await this.write(record);
     return record;
@@ -79,11 +93,12 @@ export class JobRegistry {
   // merges a patch onto the latest state and appends it as a new line; no-op return null if the job is unknown
   public async update(
     jobId: string,
-    patch: Partial<Omit<JobRecord, "jobId" | "ts">>,
+    patch: Partial<Omit<JobRecord, "jobId" | "createdAt" | "ts">>,
   ): Promise<JobRecord | null> {
     const current = await this.get(jobId);
     if (!current) return null;
-    const next: JobRecord = { ...current, ...patch, jobId, ts: new Date().toISOString() };
+    // createdAt is intentionally not spread from patch — it carries forward from current untouched
+    const next: JobRecord = { ...current, ...patch, jobId, createdAt: current.createdAt, ts: new Date().toISOString() };
     await this.write(next);
     return next;
   }

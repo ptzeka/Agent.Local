@@ -10,6 +10,23 @@
 ## BACKLOG
 Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
 
+## Logs: where to find them
+
+`npm start` runs host + agent in the background and redirects each process's stdout/stderr to a file under
+`scripts/.run/` (PIDs land next to them as `*.pid`). The agent REPL/CLI logs elsewhere because it owns the
+terminal. When debugging traffic, read these first:
+
+| Source | Location | Notes |
+|---|---|---|
+| Host (incl. Temporal **worker**) | `scripts/.run/host.log` | host stdout; the Temporal worker runs in-process, so its activation/workflow logs are here too |
+| Agent **server** (`/events`, `/receive`, webhooks) | `scripts/.run/agent.log` | console-backed logger; all `[agent-server]` lines |
+| Agent **CLI / REPL** | `logs/agent-<MDYYYY>.log` | `FileLogger`, out-of-band so the REPL prompt stays clean; new file per day; override path with `AGENT_LOG_FILE` |
+| Temporal **server** | `docker logs agent-local-temporalhost` | container, not a repo file; from `src/temporalhost` compose |
+
+- Verbosity: `LOG_LEVEL=error|warn|info|debug` (or `DEBUG=1` for debug); defaults to `info`.
+- The `host-client → agent /events` and `agent-server → host /receive` round-trip is the comms path — the host
+  side shows in `host.log`, the agent side in `agent.log`. Read both to see one request end-to-end.
+
 ## Decisions & preferences: persist in-repo, not global memory
 
 Persist decisions, conventions, and preferences as **repo artifacts** — backlog

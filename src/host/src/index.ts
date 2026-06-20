@@ -76,10 +76,12 @@ async function main(): Promise<void> {
     if (req.path === "/healthz") return next();
     return requirePermission(req.method === "GET" ? "workflow:read" : "workflow:write")(req, res, next);
   });
+  // temporal bridge first so its read seam (client.getSteps) feeds the work API's step-history fold; both stay
+  // before web, whose SSR catch-all would otherwise shadow /workflow and /api/works.
+  const temporal = mountWorkflow(app, ctx);  // /workflow/* routes + Temporal client (publishes workflow.*)
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
-  app.use(createWorksApi(orchestrator, jobs, db, WORKFLOW_TEMPLATES, logger));
-  mountWorkflow(app, ctx);  // temporal bridge: /workflow/* routes + Temporal client (publishes workflow.*)
+  app.use(createWorksApi(orchestrator, jobs, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
   // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as

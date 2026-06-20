@@ -88,15 +88,26 @@ wait_for_port_free agent "$AGENT_PORT"
 echo "[start] cleaning dist folders..."
 npm run clean --prefix "$ROOT"
 
-echo "[start] building host/agent and their deps (in dependency order)..."
+echo "[start] building all workspaces (in dependency order)..."
 # root `npm run build --workspaces` builds in listing order (host before temporal/web), so a clean build
-# breaks on missing types. Build the chain leaves-first explicitly: common -> mcp/web/temporal -> agent/host.
-npm run build --prefix "$ROOT" \
+# breaks on missing types. Enumerate every workspace leaves-first so the build mirrors the clean above —
+# clean wipes all dist, so all must be rebuilt or the un-listed ones boot with no compiled output.
+# --if-present skips workspaces without a build script (e.g. temporalhost), matching the clean step's flag.
+npm run build --if-present --prefix "$ROOT" \
   -w @agent-local/common \
+  -w @agent-local/vectorizer \
+  -w @agent-local/vectorstore \
+  -w @agent-local/fsmcp \
+  -w @agent-local/openclaw-runner \
+  -w @agent-local/postgres \
+  -w @agent-local/temporalhost \
   -w @agent-local/mcp \
   -w @agent-local/web \
   -w @agent-local/temporal \
   -w @agent-local/agent \
+  -w @rxo/codeindex \
+  -w @rxo/codemcp \
+  -w @rxo/memomcp \
   -w @agent-local/host
 
 echo "[start] initializing databases (host.sqlite, agent.sqlite)..."
@@ -118,4 +129,11 @@ wait_for_port host "$HOST_PORT" "$HOST_PID"
 wait_for_port agent "$AGENT_PORT" "$AGENT_PID"
 
 echo "[start] both up — host http://localhost:$HOST_PORT  agent http://localhost:$AGENT_PORT"
-echo "[start] logs: $RUN_DIR/host.log  $RUN_DIR/agent.log   (stop with scripts/stop.sh)"
+# print the full log dictionary, not just the two .run files: the REPL and Temporal server log elsewhere,
+# so a "where are the logs" question is answered once, here, at the end of every start
+echo "[start] logs (stop with scripts/stop.sh):"
+echo "  host + Temporal worker : $RUN_DIR/host.log"
+echo "  agent server           : $RUN_DIR/agent.log"
+echo "  agent CLI / REPL       : $ROOT/logs/agent-<MDYYYY>.log   (override: AGENT_LOG_FILE)"
+echo "  Temporal server        : docker logs $TEMPORAL_HEALTH_NAME"
+echo "  verbosity              : LOG_LEVEL=error|warn|info|debug  (or DEBUG=1)"

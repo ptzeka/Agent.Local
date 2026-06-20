@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from "express";
 import type { ILogger } from "@agent-local/common";
 import type { DatabaseHandle } from "@agent-local/common/db";
-import type { WorkflowTemplate } from "@agent-local/temporal";
+import type { WorkflowTemplate, WorkflowStep } from "@agent-local/temporal";
 import { requirePermission } from "../user/userContext.js";
 import type { JobRegistry, JobStatus } from "../jobs/job-registry.js";
 import { readStatusCodes } from "../jobs/db-schema.js";
@@ -16,11 +16,25 @@ export function createWorksApi(
   db: DatabaseHandle,
   workflows: WorkflowTemplate[],
   logger: ILogger,
+  // read-only Temporal seam: the work-detail GET folds in the engine's reconstructed step history. a function, not
+  // the engine client, so the host still holds no engine handle (and degrades to no steps when Temporal is down).
+  getSteps: (workId: string) => Promise<WorkflowStep[]>,
 ): Router {
   const router = Router();
 
   // the owner of THIS request; requirePermission guarantees userInfo is non-null before these handlers run
   const owner = (req: Request): string => req.userContext.userInfo!.sub;
+
+  // a Temporal outage must not fail the work read — the record is host-owned truth, steps are a best-effort overlay.
+  // the error is returned (not swallowed to []) so the UI can show WHY a started work shows no steps vs truly-empty.
+  const safeSteps = async (workId: string): Promise<{ steps: WorkflowStep[]; error: string | null }> => {
+    try {
+      return { steps: await getSteps(workId), error: null };
+    } catch (err) {
+      logger.warn?.(`[host] step history for ${workId} unavailable: ${String(err)}`);
+      return { steps: [], error: String(err) };
+    }
+  };
 
   // workflow catalog: the startable workflow templates (name + label), sourced from code (@agent-local/temporal's
   // WORKFLOW_TEMPLATES) so the console's workflow dropdown reflects what the worker can actually run rather than a
@@ -67,7 +81,10 @@ export function createWorksApi(
     if (work.status === "new" || work.status === "running" || work.status === "stopped") {
       orchestrator.requestReconcile(work.jobId);
     }
-    res.json({ work });
+    // step history: the engine's reconstructed per-step status, folded in so the detail view renders it from one
+    // call. only once the work actually started (temporalId set) does the engine hold a history to read.
+    const { steps, error: stepsError } = work.temporalId ? await safeSteps(work.jobId) : { steps: [], error: null };
+    res.json({ work, steps, stepsError });
   });
 
   // create: spin up a work owned by the caller (camunda instance -> agent session -> first step). 202 + workId.
@@ -106,6 +123,19 @@ export function createWorksApi(
     }
     logger.debug?.(`[host] continued (reset) work ${result.jobId}`);
     res.status(202).json({ work: result });
+  });
+
+  // rerun from step: re-execute the caller's work from a chosen step via engine Reset (re-runs that step and all
+  // after it). 404 when not the caller's. The UI only offers this on a settled work; a live run the engine refuses,
+  // which the worker logs — the host has already optimistically set `running`, healed by reconcile on next refresh.
+  router.post("/api/works/:workId/steps/:stepId/rerun", requirePermission("workflow:write"), async (req: Request, res: Response) => {
+    const work = await orchestrator.rerunStep(req.params.workId, owner(req), req.params.stepId);
+    if (!work) {
+      res.status(404).json({ error: "unknown work" });
+      return;
+    }
+    logger.debug?.(`[host] rerun work ${work.jobId} from step ${req.params.stepId}`);
+    res.status(202).json({ work });
   });
 
   // inject: operator intervention onto the caller's running work — merge variables onto its camunda instance.

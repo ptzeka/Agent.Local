@@ -32,7 +32,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <UserMenu />
         </Toolbar>
       </AppBar>
-      <Container maxWidth="lg" sx={{ py: 4, flex: 1 }}>
+      <Container maxWidth={false} sx={{ py: 4, flex: 1 }}>
         {children}
       </Container>
       <Snackbar

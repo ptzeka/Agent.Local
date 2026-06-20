@@ -88,10 +88,12 @@ export interface WorkflowRetryPayload {
   retries?: number;
 }
 
-// host -> engine: re-execute this stuck work's failed step. keyed by workId (== the engine WorkflowId), so the
-// engine resets that execution to its last workflow-task boundary; the engine refuses a reset while it is running.
+// host -> engine: re-execute this work via engine Reset. keyed by workId (== the engine WorkflowId). without
+// stepId the engine resets to the last workflow-task boundary (Continue a stuck step); with stepId it resets to
+// the boundary before that step, re-running it and everything after. the engine refuses a reset while running.
 export interface WorkflowResetPayload {
   workId: string;
+  stepId?: string;
 }
 
 export interface WorkflowJobPayload {

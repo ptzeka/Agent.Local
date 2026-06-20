@@ -96,7 +96,7 @@ export class Orchestrator {
   async trigger(workflowId: string, userId: string): Promise<string> {
     const workId = randomUUID();
     const workspaceId = randomUUID();
-    await this.jobs.add(workId, userId, workflowId);
+    await this.jobs.add(workId, userId, workflowId, workspaceId);
     const sessionId = await this.agent.createSession(workspaceId, workId);
     await this.jobs.update(workId, { sessionId });
     this.bus.publish(WORKFLOW_START, { workId, workspaceId, sessionId, workflowId });
@@ -138,6 +138,17 @@ export class Orchestrator {
     if (record.status !== "stuck") return false;
     this.bus.publish(WORKFLOW_RESET, { workId });
     return this.jobs.update(workId, { status: "running", statusDescription: "re-executing stuck step" });
+  }
+
+  // operator "rerun from step": re-execute a work from a chosen step via engine Reset (re-runs that step and
+  // everything after, dropping old answers). ownership by workId; unlike continue() it is NOT gated to `stuck` — a
+  // past step of a done/cancelled work is rerunnable too. the engine still refuses while the run is live. status
+  // goes back to `running` as the new run boots; null for a non-owner.
+  async rerunStep(workId: string, userId: string, stepId: string): Promise<JobRecord | null> {
+    const record = await this.jobs.get(workId);
+    if (!record || record.userId !== userId) return null;
+    this.bus.publish(WORKFLOW_RESET, { workId, stepId });
+    return this.jobs.update(workId, { status: "running", statusDescription: `re-running from step ${stepId}` });
   }
 
   // operator intervention: retry a failed step of a work the caller owns, keyed by the jobKey the caller supplies
@@ -199,7 +210,10 @@ export class Orchestrator {
     if (record.status !== "new" && record.status !== "running" && record.status !== "stopped") return;
     const resolved = resolveEngineStatus(status, missing);
     if (!resolved) return;
-    if (resolved.status === "cancelled") {
+    // a pending stop settles the instant the engine reports the run is no longer active — an explicit cancel, a
+    // missing run (e.g. it never started, temporalId null), or any terminal. The user asked to stop, so finalize
+    // to `cancelled`, NEVER `stuck`: stuck is only for an in-flight work the engine orphaned, not one already stopped.
+    if (record.status === "stopped" || resolved.status === "cancelled") {
       await this.finalizeStop(record);
       return;
     }

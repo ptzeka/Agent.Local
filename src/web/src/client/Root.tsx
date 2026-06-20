@@ -3,14 +3,15 @@ import {
   ApplicationContextProvider,
   ConsoleLogger,
   type IConfiguration,
-} from "../providers/application_context";
-import { UserContextProvider, type IUser } from "../providers/user_context";
-import { NotificationContextProvider } from "../providers/notification_context";
-import ErrorBoundary from "../components/shared/ErrorBoundary";
-import AppStart from "../components/appstart";
-import Layout from "../components/layout";
-import RouteConfig from "../routes/routeConfig";
-import type { ThemeName } from "../theme/theme";
+} from "@/providers/application_context";
+import { UserContextProvider, type IUser } from "@/providers/user_context";
+import { ApiContextProvider } from "@/providers/api_context";
+import { NotificationContextProvider } from "@/providers/notification_context";
+import ErrorBoundary from "@/components/shared/ErrorBoundary";
+import AppStart from "@/components/appstart";
+import Layout from "@/components/layout";
+import RouteConfig from "@/routes/routeConfig";
+import type { ThemeName } from "@/theme/theme";
 
 // the data the server injects into window.WEBPACK_ENTRY_DATA and hands to Root for the first render
 export interface Bootstrap {
@@ -35,15 +36,17 @@ export default function Root({ bootstrap }: { bootstrap: Bootstrap }) {
     <Suspense>
       <ApplicationContextProvider value={{ ...bootstrap.applicationContext, logger: ConsoleLogger }}>
         <UserContextProvider value={bootstrap.userContext}>
-          <NotificationContextProvider>
-            <ErrorBoundary logger={ConsoleLogger}>
-              <AppStart>
-                <Layout>
-                  <RouteConfig />
-                </Layout>
-              </AppStart>
-            </ErrorBoundary>
-          </NotificationContextProvider>
+          <ApiContextProvider>
+            <NotificationContextProvider>
+              <ErrorBoundary logger={ConsoleLogger}>
+                <AppStart>
+                  <Layout>
+                    <RouteConfig />
+                  </Layout>
+                </AppStart>
+              </ErrorBoundary>
+            </NotificationContextProvider>
+          </ApiContextProvider>
         </UserContextProvider>
       </ApplicationContextProvider>
     </Suspense>

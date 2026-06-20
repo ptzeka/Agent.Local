@@ -1,4 +1,4 @@
-import { proxyActivities, defineSignal, setHandler, condition } from "@temporalio/workflow";
+import { proxyActivities, defineSignal, setHandler, condition, log } from "@temporalio/workflow";
 // type-only imports: erased at runtime so the workflow sandbox stays pure (no bus / no node deps leak in)
 import type { AgentActivities } from "./activities.js";
 import type { WorkflowTemplate } from "./index.js";
@@ -46,6 +46,8 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
   // dispatch one prompt, then block until the agent's next agentResult arrives (Temporal's done/next decision)
   const runStep = async (prompt: string): Promise<unknown> => {
     const awaited = results.length + 1;
+    // log.* is the replay-safe sink (suppressed on replay), so the step trace stays deterministic
+    log.info("runStep dispatch", { workId: args.workId, step: awaited, prompt });
     await dispatchAgentTask({ workId: args.workId, sessionId: args.sessionId, prompt });
     await condition(() => results.length >= awaited);
     return results[awaited - 1];

@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@agent-local/common": "^0.1.0",
+    "axios": "^1.7.9",
     "@emotion/react": "^11.14.0",
     "@emotion/styled": "^11.14.0",
     "@emotion/server": "^11.11.0",

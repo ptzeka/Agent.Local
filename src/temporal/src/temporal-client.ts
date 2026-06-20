@@ -27,11 +27,16 @@ export interface TemporalCore {
   // reset re-runs the workflow from its last workflow-task boundary, re-executing the most recent step with the
   // same inputs; returns the new runId. the engine refuses a reset on a still-running execution by design.
   reset(workflowId: string, reason: string): Promise<{ runId: string }>;
+  // reset to the boundary just before a chosen step's scheduled event, so that step (and everything after it)
+  // re-runs; post-reset signals are dropped so the rerun re-dispatches fresh rather than replaying old answers
+  resetToStep(workflowId: string, stepId: string, reason: string): Promise<{ runId: string }>;
   // awaits the workflow's terminal outcome; `canceled` is folded apart from `failed` so a user stop never
   // overwrites the host's `stopped` with `stuck` (the adapter classifies cancel/terminate as canceled)
   result(workflowId: string): Promise<TerminalOutcome>;
   signal(req: { workflowId: string; name: string; payload: Record<string, unknown> }): Promise<void>;
   query<T>(req: { workflowId: string; name: string; args?: unknown }): Promise<T>;
+  // the execution's full event history, mapped to engine-neutral records the client folds into steps
+  history(workflowId: string): Promise<HistoryEvent[]>;
   close(): Promise<void>;
 }
 
@@ -52,6 +57,38 @@ export interface ExecutionRecord {
   startedAt: number;
 }
 
+// one Temporal history event, narrowed to the activity-lifecycle fields step reconstruction needs. engine-neutral
+// so the client groups these into steps without importing the SDK's protobuf event shapes (the core does that map)
+export interface HistoryEvent {
+  eventId: string;
+  type: string;
+  timestamp: string;
+  scheduledEventId?: string;
+  activityType?: string;
+  detail?: string;
+  // a scheduled event's decoded intent (our dispatchAgentTask passes the step's prompt) — distinguishes steps
+  // that otherwise all read as the bare activity type
+  summary?: string;
+}
+
+// the engine's own activity status for a step — deliberately NOT the host work-status catalog, which describes the
+// overall work, not its individual steps (a running work can hold a completed and a running step at once)
+export type StepStatus = "scheduled" | "running" | "completed" | "failed" | "timedOut" | "canceled";
+
+// a reconstructed work step: one activity invocation folded from its scheduled -> started -> terminal events.
+// parentId is null today (activities are siblings under the root); kept so child-workflow steps nest under it later.
+export interface WorkflowStep {
+  id: string;
+  name: string;
+  status: StepStatus;
+  parentId: string | null;
+  startedAt: string;
+  detail: string | null;
+  // the step's intent decoded from the activity input (the dispatched prompt); null when the input carried none.
+  // `name` stays the activity type; this is what makes two dispatchAgentTask steps tell themselves apart.
+  description: string | null;
+}
+
 // default core until the real @temporalio/client adapter ships with the worker; tests always inject a fake
 function notWiredCore(): TemporalCore {
   const fail = (): never => {
@@ -64,11 +101,31 @@ function notWiredCore(): TemporalCore {
     cancel: async () => fail(),
     terminate: async () => fail(),
     reset: async () => fail(),
+    resetToStep: async () => fail(),
     result: async () => fail(),
     signal: async () => fail(),
     query: async () => fail(),
+    history: async () => fail(),
     close: async () => {},
   };
+}
+
+// folds an activity-lifecycle event type onto the step status it implies; null for events that don't move a step
+function mapStepStatus(type: string): StepStatus | null {
+  switch (type) {
+    case "ActivityTaskStarted":
+      return "running";
+    case "ActivityTaskCompleted":
+      return "completed";
+    case "ActivityTaskFailed":
+      return "failed";
+    case "ActivityTaskTimedOut":
+      return "timedOut";
+    case "ActivityTaskCanceled":
+      return "canceled";
+    default:
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -183,6 +240,13 @@ export class TemporalClient {
     this.watchResult(workId);
   }
 
+  // rerun a work from a chosen step: Reset to the boundary before that step, re-running it and everything after.
+  // the reset spawns a NEW run (the original watcher resolved), so re-arm the terminal watcher to fold its outcome.
+  async rerunFromStep(workId: string, stepId: string, reason = "rerun from step"): Promise<void> {
+    await this.core.resetToStep(workId, stepId, reason);
+    this.watchResult(workId);
+  }
+
   // ---------------------------------------------------------------------------
   // Queries
   // ---------------------------------------------------------------------------
@@ -197,6 +261,34 @@ export class TemporalClient {
   // read in-flight workflow state; no Camunda gRPC equivalent
   async query<T>(workId: string, name: string, args?: unknown): Promise<T> {
     return this.core.query<T>({ workflowId: workId, name, args });
+  }
+
+  // reconstruct the work's steps from Temporal history: each activity invocation is one step, folded from its
+  // scheduled -> started -> terminal events (grouped by the scheduledEventId those later events carry). the last
+  // event for a group sets the status, so a terminal supersedes the earlier running/scheduled. ordered by schedule time.
+  async getSteps(workId: string): Promise<WorkflowStep[]> {
+    const events = await this.core.history(workId);
+    const steps = new Map<string, WorkflowStep>();
+    for (const ev of events) {
+      if (ev.type === "ActivityTaskScheduled") {
+        steps.set(ev.eventId, {
+          id: ev.eventId,
+          name: ev.activityType ?? "activity",
+          status: "scheduled",
+          parentId: null,
+          startedAt: ev.timestamp,
+          detail: null,
+          description: ev.summary ?? null,
+        });
+        continue;
+      }
+      // a started/terminal event keys back to its scheduled event; skip if we never saw the schedule (torn history)
+      const step = ev.scheduledEventId ? steps.get(ev.scheduledEventId) : undefined;
+      if (!step) continue;
+      step.status = mapStepStatus(ev.type) ?? step.status;
+      if (ev.detail) step.detail = ev.detail;
+    }
+    return [...steps.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }
 
   // ---------------------------------------------------------------------------

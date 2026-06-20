@@ -31,6 +31,8 @@ export default function () {
   const resolve = {
     extensions: [".js", ".jsx", ".json", ".tsx", ".ts"],
     extensionAlias: { ".js": [".ts", ".tsx", ".js"], ".jsx": [".tsx", ".jsx"] },
+    // "@/..." resolves from the src root, mirroring the tsconfig paths mapping so IDE and build agree
+    alias: { "@": path.join(__dirname, "src") },
   };
 
   const clientConfig = {
@@ -118,7 +120,11 @@ export default function () {
     dependencies: ["client"],
     context: __dirname,
     target: "node",
-    externals: [nodeExternals({ importType: "module" })],
+    // node-commonjs (not module): externals load via createRequire(import.meta.url) -> require(), so a CJS dep's
+    // module.exports comes back directly. importType:"module" instead emits `import * as ns`, whose namespace lacks
+    // __esModule, so bundled CJS deps' __importDefault wraps it wrong and calls the namespace as a fn (axios's
+    // agent-base/debug graph crashed on load this way). The .cjs server bundle proves the graph is require-able.
+    externals: [nodeExternals({ importType: "node-commonjs" })],
     experiments: { outputModule: true },
     entry: "./src/server/mount.tsx",
     output: {
