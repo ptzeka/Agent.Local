@@ -1,0 +1,16 @@
+{
+  "name": "@agent-local/postgres",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone local Postgres + pgAdmin (deploy-only workspace): stock postgres with our config baked into the image, plus pgAdmin preconfigured to query it. Not part of the app lifecycle — own start/stop scripts.",
+  "scripts": {
+    "build": "docker compose build",
+    "docker:build": "docker compose build",
+    "start": "bash start.sh",
+    "stop": "bash stop.sh",
+    "ssh": "docker exec -it agent-local-postgres sh",
+    "healthcheck": "docker exec agent-local-postgres pg_isready -U agent -d agentlocal",
+    "logs": "docker compose logs -f",
+    "psql": "docker exec -it agent-local-postgres psql -U agent -d agentlocal"
+  }
+}

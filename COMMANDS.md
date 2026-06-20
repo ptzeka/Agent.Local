@@ -57,10 +57,13 @@ scripts/db.sh agent "SELECT session_id, json_extract(payload,'\$.goal') AS goal 
 scripts/db.sh host "PRAGMA wal_checkpoint(TRUNCATE);"
 
 # ── temporal (standalone workflow-engine server: src/temporalhost) ────────────
-# Docker runtime WITHOUT Desktop = colima (Linux VM + daemon) + docker CLI.
-colima start                            # bring the docker runtime up (once per session)
-colima stop                             # runtime down   | colima status | colima list
-brew services start colima              # optional: auto-start the runtime at login
+# Docker runtime WITHOUT Docker Desktop — pick the per-OS equivalent (both give a real `docker` CLI):
+#   macOS   = colima         (Lima Linux VM + daemon)
+#   Windows = Rancher Desktop (WSL2 backend, dockerd/moby engine) — colima/Lima do NOT run on Windows
+colima start                            # macOS: bring the docker runtime up (once per session)
+colima stop                             # macOS: runtime down   | colima status | colima list
+brew services start colima              # macOS: optional, auto-start the runtime at login
+# Windows: install once — winget install suse.RancherDesktop — then just leave it running (WSL2 required)
 #
 # temporalhost image = Temporal Server (postgres-backed) on gRPC :7233; UI :8233 (optional).
 npm run docker:build -w @agent-local/temporalhost   # build the image (after editing Dockerfile/config)

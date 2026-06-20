@@ -10,6 +10,7 @@ mkdir -p "$RUN_DIR"
 HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
 TEMPORAL_HEALTH_NAME="agent-local-temporalhost"
+TEMPORAL_PORT="${TEMPORAL_PORT:-7233}"
 WAIT_SECONDS=60
 
 # Bring the standalone Temporal server up before host/agent so the workflow engine is
@@ -32,13 +33,25 @@ ensure_temporal() {
     printf '.'; sleep 3; waited=$((waited + 3))
   done
   echo " up"
+  # Container health is internal (tctl inside the container); also ping the *published* gRPC port from
+  # the host so we confirm the 7233 mapping is actually reachable by the host/agent clients, not just
+  # healthy in-container. Best-effort to match the rest of ensure_temporal — a missed ping only warns.
+  printf '[start] pinging temporal gRPC on :%s' "$TEMPORAL_PORT"
+  waited=0
+  while ! (exec 3<>"/dev/tcp/localhost/$TEMPORAL_PORT") >/dev/null 2>&1; do
+    if [ "$waited" -ge 15 ]; then echo; echo "[start] WARN: temporal :$TEMPORAL_PORT not reachable from host — continuing"; return 0; fi
+    printf '.'; sleep 1; waited=$((waited + 1))
+  done
+  echo " reachable"
 }
 
 # poll a TCP port until something accepts connections, or give up after WAIT_SECONDS
 wait_for_port() {
   local name="$1" port="$2" pid="$3" waited=0
   printf '[start] waiting for %s on :%s' "$name" "$port"
-  while ! nc -z localhost "$port" >/dev/null 2>&1; do
+  # bash's /dev/tcp built-in instead of nc: nc isn't shipped with Git-for-Windows bash, and a TCP
+  # connect probe needs no external tool — opening the pseudo-device succeeds iff something is listening.
+  while ! (exec 3<>"/dev/tcp/localhost/$port") >/dev/null 2>&1; do
     if ! kill -0 "$pid" 2>/dev/null; then
       echo; echo "[start] ERROR: $name (pid $pid) exited before binding :$port — see $RUN_DIR/$name.log"
       tail -n 20 "$RUN_DIR/$name.log" || true
@@ -56,7 +69,7 @@ wait_for_port() {
 # poll a TCP port until nothing is listening, so a relaunch never races a dying process for the bind
 wait_for_port_free() {
   local name="$1" port="$2" waited=0
-  while nc -z localhost "$port" >/dev/null 2>&1; do
+  while (exec 3<>"/dev/tcp/localhost/$port") >/dev/null 2>&1; do
     if [ "$waited" -ge 15 ]; then
       echo "[start] ERROR: :$port ($name) still held after 15s — run scripts/stop.sh and retry"
       exit 1

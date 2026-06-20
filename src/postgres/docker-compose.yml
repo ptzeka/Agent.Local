@@ -1,0 +1,45 @@
+# Standalone local Postgres + pgAdmin for ad-hoc querying. NOT part of the app lifecycle (root npm start);
+# this workspace owns its own bring-up:  npm run start / npm run stop  (from src/postgres).
+services:
+  postgres:
+    build: .
+    image: agent-local-postgres:local
+    container_name: agent-local-postgres
+    # launch with the baked-in config (outside PGDATA); data dir still comes from the PGDATA env default.
+    command: ["postgres", "-c", "config_file=/etc/postgresql/postgresql.conf"]
+    environment:
+      POSTGRES_USER: "${POSTGRES_USER:-agent}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-agent}"
+      POSTGRES_DB: "${POSTGRES_DB:-agentlocal}"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-agent} -d ${POSTGRES_DB:-agentlocal}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  pgadmin:
+    image: dpage/pgadmin4:8
+    container_name: agent-local-pgadmin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "${PGADMIN_EMAIL:-admin@agent.local}"
+      PGADMIN_DEFAULT_PASSWORD: "${PGADMIN_PASSWORD:-admin}"
+      # single-user desktop mode: skip the login screen + master-password gate for frictionless local use.
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    volumes:
+      # auto-registers the postgres server on first boot so it is ready to query (password entered once).
+      - ./config/servers.json:/pgadmin4/servers.json:ro
+      - pgadmin:/var/lib/pgadmin
+
+volumes:
+  pgdata:
+  pgadmin:

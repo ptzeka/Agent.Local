@@ -3,9 +3,9 @@ import { connect } from "node:net";
 import type { ILogger } from "@agent-local/common";
 
 export interface HealthDeps {
-  // host:port of the workflow engine (Zeebe gateway / Temporal frontend). Reachability is a plain TCP connect:
-  // a completed handshake means the port is listening = online, regardless of gRPC/HTTP — Temporal has no HTTP
-  // health route, so "the socket opened" is the valid online test. Engine-neutral on purpose (the bus is the seam).
+  // host:port of the Temporal gRPC frontend. Reachability is a plain TCP connect: a completed handshake means the
+  // port is listening = online — Temporal has no HTTP health route, so "the socket opened" is the valid online test.
+  // Engine-neutral by transport (TCP), so a different engine endpoint drops in via env (the bus is the seam).
   engineAddress: string;
   // where the SEPARATE agent service lives; its own /healthz is the second leg of the composite
   agentBaseUrl: string;
@@ -18,8 +18,8 @@ export interface HealthDeps {
 // how long to wait on either leg before calling it down — kept short so a hung dependency doesn't stall the
 // page-load ping. neither probe ever throws; a timeout or refusal just reads as that leg being false.
 const PROBE_TIMEOUT_MS = 2000;
-// fallback gateway port when engineAddress carries no port (Zeebe gRPC gateway default)
-const DEFAULT_ENGINE_PORT = 26500;
+// fallback frontend port when engineAddress carries no port (Temporal gRPC frontend default)
+const DEFAULT_ENGINE_PORT = 7233;
 
 // composite READINESS for the host (/health/ready): ready only when BOTH the workflow engine is reachable AND the
 // separate agent service answers its own /healthz. Distinct from the host's /healthz liveness (process is up) —
@@ -61,7 +61,7 @@ function probeReachable(address: string, logger: ILogger): Promise<boolean> {
   });
 }
 
-// engineAddress is env-shaped ("localhost:26500" or "https://host:7233"); strip any scheme and split host:port
+// engineAddress is env-shaped ("localhost:7233" or "https://host:7233"); strip any scheme and split host:port
 function parseHostPort(address: string): { host: string; port: number } {
   const noScheme = address.replace(/^\w+:\/\//, "");
   const [host, port] = noScheme.split(":");

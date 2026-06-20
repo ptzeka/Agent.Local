@@ -21,7 +21,8 @@
     "src/workflow",
     "src/camundahost",
     "src/temporal",
-    "src/temporalhost"
+    "src/temporalhost",
+    "src/postgres"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

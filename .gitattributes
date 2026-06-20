@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Shell scripts must stay LF: bash chokes on CRLF (\r is read as part of the last token, e.g. `pipefail`)
+*.sh text eol=lf

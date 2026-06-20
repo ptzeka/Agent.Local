@@ -80,12 +80,12 @@ async function main(): Promise<void> {
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
   app.use(createWorksApi(orchestrator, jobs, logger));
   mountWorkflow(app, ctx);  // camunda bridge: /workflow/* routes + Zeebe client (publishes workflow.*)
-  // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its gateway)
+  // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as
-  // the Zeebe/Temporal SDK reads it (ZEEBE_ADDRESS for the gateway, TEMPORAL_ADDRESS for the frontend).
+  // the Temporal SDK reads it (TEMPORAL_ADDRESS for the gRPC frontend).
   app.use(createHealthApi({
-    engineAddress: process.env.ZEEBE_ADDRESS ?? process.env.TEMPORAL_ADDRESS ?? "localhost:26500",
+    engineAddress: process.env.TEMPORAL_ADDRESS ?? "localhost:7233",
     agentBaseUrl: settings.agent.baseUrl,
     // the readiness probe authenticates to the agent under the host's OWN service identity (same dispatch creds)
     getServiceToken: () => fetchServiceToken(settings.host.dispatch, logger),
