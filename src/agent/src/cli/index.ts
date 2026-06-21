@@ -10,10 +10,11 @@ import chalk from "chalk";
 import dotenv from "dotenv";
 
 import { AgentRuntime } from "../agent/runtime/agent-runtime.js";
+import { Container } from "@agent-local/common";
 import { Eventing } from "@agent-local/common/eventing";
 import { FileLogger } from "@agent-local/common/filelogger";
-import { ILogger } from "@agent-local/common/ilogger";
-import { openDatabase, type DatabaseHandle } from "@agent-local/common/db";
+import { openDatabase } from "@agent-local/common/db";
+import { LOGGER, DB } from "../server/container-tokens.js";
 import { resolveAgentDbFile } from "../agent/db-schema.js";
 import { loadAgentSettings } from "../server/appsettings.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
@@ -40,9 +41,10 @@ interface Bootstrap {
   sessionsDir: string;
   configPath: string;
   mcpConfigPath: string;
-  // agent.sqlite connection opened once here; schema is owned by `db init`, this only opens it
-  db: DatabaseHandle;
-  logger: ILogger;
+  // the one startup container: holds the process singletons (logger; the agent.sqlite handle opened once here,
+  // schema owned by `db init`). the CLI has no request scope, so the container IS the bootstrap singleton store
+  // — buildRuntime reads logger/db off it, the same handles the agent server resolves through req.container.
+  container: Container;
   // process-level cancellation root every runtime chains under
   rootSignal: AbortSignal;
   // hands the built runtime to the signal handlers, which exist before it does
@@ -58,7 +60,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   process.env.LOG_LEVEL = "debug";
   const boot = await bootstrap();
-  const logger = boot.logger;
+  const logger = boot.container.get(LOGGER);
   logger.debug("********** application start **********", { mode: args.run !== undefined ? "headless" : "interactive" });
 
   if (args.run !== undefined) {
@@ -97,6 +99,10 @@ async function bootstrap(): Promise<Bootstrap> {
   // runtimes are built later per run mode, so the handlers hold a slot the run mode fills via registerRuntime
   const root = new AbortController();
   const logger = new FileLogger();
+  // register the process singletons into the one container; buildRuntime resolves logger/db from it
+  const container = new Container();
+  container.set(LOGGER, logger);
+  container.set(DB, db);
   let activeRuntime: AgentRuntime | null = null;
   const registerRuntime = (runtime: AgentRuntime): void => {
     activeRuntime = runtime;
@@ -132,8 +138,7 @@ async function bootstrap(): Promise<Bootstrap> {
     sessionsDir,
     mcpConfigPath,
     configPath,
-    db,
-    logger,
+    container,
     rootSignal: root.signal,
     registerRuntime,
     shutdown,
@@ -153,7 +158,8 @@ function buildRuntime(
   sessionId?: string,
   streamOutput = false
 ): AgentRuntime {
-  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath, db } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
+  const db = boot.container.get(DB);
   const token = process.env.AGENT_API_TOKEN;
   const deps: AgentRuntimeDeps = {
     mcpConfigPath,
@@ -162,7 +168,7 @@ function buildRuntime(
     db,
     workspaceRoot: projectRoot,
     sandboxRoot,
-    logger: boot.logger,
+    logger: boot.container.get(LOGGER),
     credentials: token ? { token } : {},
     orchestratorRole: "orchestrator",
     parentSignal: boot.rootSignal,
@@ -177,7 +183,7 @@ function buildRuntime(
 async function runInteractive(boot: Bootstrap): Promise<void> {
   const { projectRoot, sandboxRoot, configPath } = boot;
 
-  const saved = await AgentRuntime.listSavedSessions(boot.db);
+  const saved = await AgentRuntime.listSavedSessions(boot.container.get(DB));
   const choice = await pickSession(saved);
 
   // no out-of-band status line: the REPL is the sole TTY writer, so a raw write would land in its pinned-prompt region

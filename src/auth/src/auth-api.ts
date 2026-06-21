@@ -3,15 +3,16 @@ import {
   signIdentity,
   verifyIdentity,
   createLocalKeyResolver,
+  TOKEN_EXCHANGE_GRANT,
   publicJwk,
   sealTicket,
   basicCredentials,
   SESSION_COOKIE_NAME,
   type ILogger,
-  type HostSettings,
 } from "@agent-local/common";
-import { UserRegistry } from "../user/userRegistry.js";
-import type { KeyRing } from "../user/keys.js";
+import { UserRegistry } from "./userRegistry.js";
+import type { KeyRing } from "./keys.js";
+import type { AuthSettings } from "./appsettings.js";
 
 // session lifetime: both the RS256 access token and the encrypted cookie ticket expire after this, so the
 // browser session and the agent-facing bearer go stale together.
@@ -21,23 +22,29 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 // service tokens (client-credentials) are short-lived: the agent fetches one per call and discards it
 const SERVICE_TOKEN_TTL = "15m";
 
-// RFC 8693 OAuth 2.0 Token Exchange grant: a subject_token under this grant yields an OBO token
-const TOKEN_EXCHANGE_GRANT = "urn:ietf:params:oauth:grant-type:token-exchange";
-
-// the host owns IAM: /api/login authenticates against the local UserRegistry, mints an RS256 access token, and
-// returns it ONLY inside an encrypted httpOnly cookie ticket (cookieKey seals it — "encrypt at response");
-// /.well-known/openid-configuration advertises the issuer + jwks + token endpoints so any standard OIDC/OAuth
-// client (jose's createRemoteJWKSet, Temporal's JWT authorizer) self-configures from one discovery URL.
-export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey: Uint8Array, logger: ILogger): Router {
+// the auth service owns IAM: /account/login authenticates against the local UserRegistry, mints an RS256 access
+// token, and returns it ONLY inside an encrypted httpOnly cookie ticket (cookieKey seals it — "encrypt at
+// response"); /.well-known/openid-configuration advertises the issuer + jwks + token endpoints so any standard
+// OIDC/OAuth client (jose's createRemoteJWKSet, Temporal's JWT authorizer) self-configures from one discovery URL.
+export function createAuthApi(
+  keys: KeyRing,
+  iam: AuthSettings["iam"],
+  cookieKey: Uint8Array,
+  logger: ILogger,
+  cookieDomain?: string,
+): Router {
   const router = Router();
   const users = new UserRegistry();
+  // shared cookie attributes for set and clear: they MUST match (domain/path/sameSite) or the browser keeps a
+  // stale cookie clearCookie can't target. domain widens it to a parent so the host reads it cross-subdomain.
+  const cookieOptions = { httpOnly: true as const, sameSite: "lax" as const, path: "/", ...(cookieDomain ? { domain: cookieDomain } : {}) };
   const jwtOptions = { issuer: iam?.issuerUrl || undefined, audience: iam?.audience || undefined, expiresIn: SESSION_TTL };
   // the active signer is the head of the ring; the whole ring is published as JWKs so a rotation (new head,
   // old key demoted) keeps verifying in-flight tokens. each token carries the kid of the key that signed it.
   const signer = keys[0];
   const jwksPromise = Promise.all(keys.map((k) => publicJwk(k.publicPem)));
   const signerKidPromise = jwksPromise.then((jwks) => jwks[0].kid);
-  // verify subject tokens against the whole ring (host verifying what it itself signed); reused across exchanges
+  // verify subject tokens against the whole ring (issuer verifying what it itself signed); reused across exchanges
   const subjectResolver = createLocalKeyResolver(keys.map((k) => k.publicPem));
 
   // base origin for the discovery URLs: the configured issuer when set (so discovery's issuer matches the `iss`
@@ -45,7 +52,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
   const configuredIssuer = (iam?.issuerUrl || "").replace(/\/$/, "");
   const originFor = (req: Request) => configuredIssuer || `${req.protocol}://${req.get("host")}`;
 
-  router.post("/api/login", async (req: Request, res: Response) => {
+  router.post("/account/login", async (req: Request, res: Response) => {
     const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
     const identity = users.verify(username ?? "", password ?? "");
     if (!identity) {
@@ -64,20 +71,20 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
     // browser; httpOnly keeps JS out of it, sameSite=lax + path=/ scope it to same-site navigations, and maxAge
     // mirrors the ticket's own exp so the browser drops it exactly when the host would reject it anyway.
     const ticket = await sealTicket({ accessToken, claims, authenticated: true }, cookieKey, SESSION_TTL);
-    res.cookie(SESSION_COOKIE_NAME, ticket, { httpOnly: true, sameSite: "lax", path: "/", maxAge: SESSION_TTL_MS });
-    logger.debug?.(`[host] issued session for ${identity.userName}`);
+    res.cookie(SESSION_COOKIE_NAME, ticket, { ...cookieOptions, maxAge: SESSION_TTL_MS });
+    logger.debug?.(`[auth] issued session for ${identity.userName}`);
     res.json({ user: identity });
   });
 
   // ends the session: clear the cookie so the next request opens no ticket and renders unauthenticated
-  router.post("/api/logout", (_req: Request, res: Response) => {
-    res.clearCookie(SESSION_COOKIE_NAME, { httpOnly: true, sameSite: "lax", path: "/" });
+  router.post("/account/logout", (_req: Request, res: Response) => {
+    res.clearCookie(SESSION_COOKIE_NAME, cookieOptions);
     res.json({ ok: true });
   });
 
   // "who am I": returns the current session's identity from the decrypted ticket (sessionMiddleware), so the
   // browser reads its own claims without the access token ever leaving httpOnly. 401 when no/expired session.
-  router.get("/api/me", (req: Request, res: Response) => {
+  router.get("/account/me", (req: Request, res: Response) => {
     const ticket = req.authTicket;
     if (!ticket?.authenticated) {
       res.status(401).json({ error: "no session" });
@@ -105,13 +112,13 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
 
     const { grant_type, subject_token } = (req.body ?? {}) as { grant_type?: string; subject_token?: string };
     if (grant_type === TOKEN_EXCHANGE_GRANT && subject_token) {
-      // verify the subject_token against the host's own keys; a bad/forged subject must not yield a delegated token.
-      // the two permission sets stay separate: subject's at top level, actor's under `act` — never merged.
+      // verify the subject_token against the auth service's own keys; a bad/forged subject must not yield a delegated
+      // token. the two permission sets stay separate: subject's at top level, actor's under `act` — never merged.
       let subject;
       try {
         subject = await verifyIdentity(subjectResolver, subject_token, jwtOptions);
       } catch (err) {
-        logger.warn?.(`[host] subject_token verification failed: ${String(err)}`);
+        logger.warn?.(`[auth] subject_token verification failed: ${String(err)}`);
         res.status(400).json({ error: "invalid subject_token" });
         return;
       }
@@ -127,7 +134,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
         },
         { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
       );
-      logger.debug?.(`[host] issued OBO token sub=${subject.userName} act=${actor.userName}`);
+      logger.debug?.(`[auth] issued OBO token sub=${subject.userName} act=${actor.userName}`);
       res.json({ token: oboToken });
       return;
     }
@@ -143,7 +150,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
       },
       { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
     );
-    logger.debug?.(`[host] issued service token for ${actor.userName}`);
+    logger.debug?.(`[auth] issued service token for ${actor.userName}`);
     res.json({ token });
   };
   // /connect/token is the standard, discovery-advertised token endpoint: client-credentials + token-exchange
@@ -174,9 +181,9 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
   });
 
   // privileged readback of the caller's own access token from the session ticket (already decrypted by
-  // sessionMiddleware). Gated by ACCESS_TOKEN_PERMISSION so the bearer is never echoed back to an ordinary
+  // sessionMiddleware). Gated by the auth.accesstoken permission so the bearer is never echoed back to an ordinary
   // session; returns it for callers that must present it to the agent directly.
-  router.get("/connect/accesstoken", (req: Request, res: Response) => {
+  router.get("/account/accesstoken", (req: Request, res: Response) => {
     const ticket = req.authTicket;
     if (!ticket?.authenticated) {
       res.status(401).json({ error: "no session" });
@@ -186,7 +193,7 @@ export function createAuthApi(keys: KeyRing, iam: HostSettings["iam"], cookieKey
       res.status(403).json({ error: "forbidden" });
       return;
     }
-    logger.debug?.(`[host] returned session access token to ${ticket.claims.userName}`);
+    logger.debug?.(`[auth] returned session access token to ${ticket.claims.userName}`);
     res.json({ accessToken: ticket.accessToken });
   });
 

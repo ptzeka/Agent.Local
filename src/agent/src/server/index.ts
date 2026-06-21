@@ -1,18 +1,16 @@
 import express from "express";
-import { Eventing, type ILogger } from "@agent-local/common";
+import { Container, Eventing, AccessTokenProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
 import { resolveAgentDbFile } from "../agent/db-schema.js";
 import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
-import { createReceiveApi } from "./comms/receiver.js";
+import { HttpJobReceiver } from "./comms/receiver.js";
 import { createSessionApi } from "./session-api.js";
 import { SessionRegistry } from "./session-registry.js";
 import { HttpResultSender } from "./comms/sender.js";
-import { configContextMiddleware } from "./middleware/config_context.js";
-import { loggerContextMiddleware } from "./middleware/logger_context.js";
-import { eventingContextMiddleware } from "./middleware/eventing_context.js";
+import { LOGGER, SERVER_CONFIG, DB, SESSION_STORE } from "./container-tokens.js";
+import { containerMiddleware } from "./middleware/container_context.js";
 import { userContextMiddleware } from "./middleware/user_context.js";
-import { runtimeContextMiddleware } from "./middleware/runtime_context.js";
 import { createJwksProvider } from "./auth/jwks.js";
 
 // console-backed ILogger: this service owns its process lifecycle, so it logs without FileLogger's filesystem
@@ -47,27 +45,40 @@ async function main(): Promise<void> {
       ? { tokenUrl: auth.tokenUrl, clientId: auth.clientId, clientSecret: auth.clientSecret }
       : undefined;
   if (!credentials) logger.warn?.("[agent-server] no client credentials configured — /receive posts will be unauthenticated");
-  new HttpResultSender(bus, settings.host.receiveUrl, logger, credentials).start();
+  // one token-cache store (process singleton): the webhook path refreshes its bearer only past expiry instead
+  // of minting one per post. registered under its clientId when configured; the sender passes that id to fetch.
+  const resultTokens = new AccessTokenProvider(logger);
+  if (credentials) resultTokens.register(credentials);
+  new HttpResultSender(bus, settings.host.receiveUrl, logger, resultTokens, credentials?.clientId).start();
 
   // order is load-bearing, mirroring the Sandbox/console chain: body parse, then context middleware
-  // config -> logger -> eventing -> user -> runtime (config first; the rest read req it seeds). healthz
-  // sits before user/runtime so a liveness probe never builds a runtime; the API router runs last so it
-  // finds the caller's runtime, bus and signal already resolved on req. runtime_context owns the
-  // per-principal runtime registry + construction (no separate manager) and retains no teardown handle:
-  // every runtime's parentSignal is root.signal, so the shutdown abort below cascades to release them.
+  // config -> logger -> eventing -> user (config first; the rest read req it seeds). healthz sits before
+  // user so a liveness probe stays cheap; the job receiver runs last so it finds config/logger/eventing
+  // already resolved on req. The receiver owns runtime construction (no separate manager) and retains no
+  // teardown handle: every runtime's parentSignal is root.signal, so the shutdown abort below releases them.
+  // the one startup container: every process singleton registered once here, then handed to each request by
+  // containerMiddleware (a reference, never rebuilt) so route handlers read them off req.container.get(handle).
+  const container = new Container();
+  container.set(LOGGER, logger);
+  container.set(SERVER_CONFIG, settings);
+  container.set(Eventing, bus);
+  container.set(DB, db);
+  container.set(SessionRegistry, sessions);
+  container.set(SESSION_STORE, sessionStore);
+  container.set(AccessTokenProvider, resultTokens);
+
   app.use(express.json());
-  app.use(configContextMiddleware(settings));
-  app.use(loggerContextMiddleware(logger));
-  app.use(eventingContextMiddleware(bus));
+  app.use(containerMiddleware(container));
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
   // the agent validates the bearer JWT against the host's JWKS, fetched from authorityUrl on first verify
   const getKey = createJwksProvider(settings.authentication.authorityUrl ?? "", logger);
   app.use(userContextMiddleware(getKey, sessions));
-  // session lifecycle mounts BEFORE the runtime middleware: minting/closing a session needs no runtime, and
-  // routing it through runtime_context would build a per-request runtime (and spurious session state) for it
+  // session lifecycle mounts BEFORE the job receiver: minting/closing a session needs no runtime, and routing
+  // it through the receiver would build a per-request runtime (and spurious session state) for it
   app.use(createSessionApi(sessions, sessionStore));
-  app.use(runtimeContextMiddleware({ signal: root.signal, db }));
-  app.use(createReceiveApi());
+  // the job receiver owns the turn lifecycle: it builds a runtime per request (off root.signal + the shared db),
+  // runs the turn, and drains it. config/logger/eventing/session are read off req by its express adapter.
+  app.use(new HttpJobReceiver(root.signal, db).routes());
 
   const port = Number(process.env.AGENT_PORT) || settings.port;
   const server = app.listen(port, () => logger.info(`[agent-server] listening on :${port}`));

@@ -3,14 +3,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-// the RS256 keypair the host signs JWTs with; publicPem is the half handed to other dependencies to verify
+// the RS256 keypair this service signs JWTs with; publicPem is the half handed to other dependencies to verify
 export interface KeyPair {
   privatePem: string;
   publicPem: string;
 }
 
-// the host's signing keys, newest first: index 0 mints new tokens, the rest stay published in the JWKS and
-// accepted on verify so tokens signed before a rotation keep validating until they expire.
+// the auth service's signing keys, newest first: index 0 mints new tokens, the rest stay published in the JWKS
+// and accepted on verify so tokens signed before a rotation keep validating until they expire.
 export type KeyRing = KeyPair[];
 
 // at most two keys live at once: the active signer plus one retiring key whose tokens are still in flight
@@ -18,7 +18,7 @@ const MAX_KEYS = 2;
 
 // load the key ring from disk, generating + persisting the primary keypair on first run so tokens survive
 // restarts. A second key (private.1.pem/public.1.pem) is picked up only if an operator stages one for a
-// rotation — never auto-generated. HOST_KEYS_DIR overrides the location.
+// rotation — never auto-generated. AUTH_KEYS_DIR overrides the location.
 export function loadOrCreateKeyRing(): KeyRing {
   const dir = resolveKeysDir();
   const ring: KeyRing = [];
@@ -47,7 +47,7 @@ export function loadOrCreateKeyRing(): KeyRing {
 }
 
 function resolveKeysDir(): string {
-  if (process.env.HOST_KEYS_DIR) return path.resolve(process.env.HOST_KEYS_DIR);
+  if (process.env.AUTH_KEYS_DIR) return path.resolve(process.env.AUTH_KEYS_DIR);
   return path.join(findPackageRoot(), "keys");
 }
 
@@ -56,7 +56,7 @@ function findPackageRoot(): string {
   for (;;) {
     if (fs.existsSync(path.join(cursor, "package.json"))) return cursor;
     const parent = path.dirname(cursor);
-    if (parent === cursor) throw new Error("host: could not locate package.json above the key loader");
+    if (parent === cursor) throw new Error("auth: could not locate package.json above the key loader");
     cursor = parent;
   }
 }

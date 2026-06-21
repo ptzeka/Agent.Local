@@ -1,27 +1,7 @@
-import { basicAuthHeader, type Eventing, type ILogger } from "@agent-local/common";
+import { type AccessTokenProvider, type Eventing, type ILogger, type ISender } from "@agent-local/common";
 import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type EventEnvelope } from "./contract.js";
 
-// the host's client-credentials for fetching its own agent:trigger bearer; omitted when unconfigured (dev)
-export interface ServiceCredentials {
-  tokenUrl: string;
-  clientId: string;
-  clientSecret: string;
-}
-
-// client-credentials grant against the host's own /connect/token; null when unconfigured so local dev still calls
-// unauthenticated. Shared so the dispatch path AND the readiness probe present the SAME short-lived service token.
-export async function fetchServiceToken(credentials: ServiceCredentials | undefined, logger: ILogger): Promise<string | null> {
-  if (!credentials) return null;
-  const { tokenUrl, clientId, clientSecret } = credentials;
-  const res = await fetch(tokenUrl, { method: "POST", headers: { authorization: basicAuthHeader(clientId, clientSecret) } });
-  if (!res.ok) {
-    logger.error?.(`[agent-client] token fetch ${tokenUrl} -> ${res.status}`);
-    return null;
-  }
-  return ((await res.json()) as { token?: string }).token ?? null;
-}
-
-// host -> agent SENDER: the orchestrator opens/closes a session per work unit, then this forwards workflow jobs
+// host -> agent SENDER: the work service opens/closes a session per work unit, then this forwards workflow jobs
 // to the agent service over HTTP. Transport is swappable (HTTP now, gRPC later) behind these interfaces; the
 // /events body is the same WORKFLOW_JOB event in envelope form, so the agent runs it as if it came off a bus.
 export interface AgentClient {
@@ -29,24 +9,23 @@ export interface AgentClient {
   closeSession(sessionId: string): Promise<void>;
 }
 
-export interface JobSender {
-  start(): void;
-}
-
-export class HttpJobSender implements JobSender, AgentClient {
+export class HttpJobSender implements ISender, AgentClient {
   constructor(
     private readonly bus: Eventing,
     private readonly baseUrl: string,
     private readonly logger: ILogger,
-    private readonly credentials?: ServiceCredentials,
+    private readonly tokens?: AccessTokenProvider,
+    private readonly clientId?: string,
   ) {}
 
-  // the session is created up front at trigger time, so dispatch no longer mints one: it reads the sessionId
-  // the engine seeded as a process variable off the job and forwards the job to the agent under it.
+  // bus binding: the session is created up front at trigger time, so this no longer mints one — it reads the
+  // sessionId the engine seeded as a process variable off the job, wraps the job as an envelope, and send()s it.
   start(): void {
     this.bus.subscribe(WORKFLOW_JOB, (event) => {
       const job = event.payload as unknown as WorkflowJobPayload;
-      void this.dispatch(job).catch((err) => {
+      const sessionId = String((job.variables ?? {}).sessionId ?? "");
+      const envelope: EventEnvelope = { eventType: WORKFLOW_JOB, payload: { ...job, sessionId } };
+      void this.send(envelope).catch((err) => {
         this.logger.error?.("[agent-client] dispatch failed", err);
         this.bus.publish(WORKFLOW_FAILED, {
           temporalId: job.temporalId,
@@ -72,19 +51,19 @@ export class HttpJobSender implements JobSender, AgentClient {
     }
   }
 
-  // the host presents its OWN agent:trigger service token (fetched per call); the agent validates the bearer.
-  // sessionId still rides as a header so the agent resolves the runtime bound to the work unit's session.
-  private async dispatch(job: WorkflowJobPayload): Promise<void> {
-    const sessionId = String((job.variables ?? {}).sessionId ?? "");
-    const envelope: EventEnvelope = { eventType: WORKFLOW_JOB, payload: { ...job, sessionId } };
+  // ISender: forward one event envelope to the agent's /events. the host presents its OWN agent:trigger service
+  // token (the agent validates the bearer); the work unit's sessionId rides as a header so the agent binds the
+  // runtime to that session. throws on non-2xx so start()'s catch can fail the workflow step.
+  async send(envelope: EventEnvelope): Promise<void> {
+    const sessionId = String((envelope.payload as { sessionId?: unknown })?.sessionId ?? "");
     const res = await this.post("/events", envelope, sessionId);
     if (!res.ok) throw new Error(`agent /events -> ${res.status}`);
   }
 
   private async post(path: string, body?: unknown, sessionId?: string): Promise<Response> {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    // fetch a fresh short-lived agent:trigger token per call and discard it; the agent gates on the bearer's claims
-    const token = await this.fetchToken();
+    // the cached agent:trigger bearer (refreshed only past expiry); null in unconfigured dev. the agent gates on its claims
+    const token = this.clientId ? await this.tokens?.getAccessTokenAsync(this.clientId) : undefined;
     if (token) headers.authorization = `Bearer ${token}`;
     if (sessionId) headers["x-session-id"] = sessionId;
     return fetch(`${this.baseUrl}${path}`, {
@@ -92,10 +71,5 @@ export class HttpJobSender implements JobSender, AgentClient {
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-  }
-
-  // per-call short-lived agent:trigger bearer via the shared client-credentials grant; null in unconfigured dev
-  private async fetchToken(): Promise<string | null> {
-    return fetchServiceToken(this.credentials, this.logger);
   }
 }

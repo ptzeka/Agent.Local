@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Clean dist, build all workspaces, then start the host (3011) and agent server (3020) in the background
-# and block until both ports are actually listening. PIDs/logs land in scripts/.run for stop.sh to use.
+# Clean dist, build all workspaces, then start the auth service (3015), host (3011) and agent server (3020) in
+# the background and block until every port is actually listening. PIDs/logs land in scripts/.run for stop.sh.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,6 +9,17 @@ mkdir -p "$RUN_DIR"
 
 HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
+AUTH_PORT="${AUTH_PORT:-3015}"
+
+# Node ignores the Windows Root store, so the self-signed *.peritze.com cert must be passed explicitly.
+NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-C:/www/host/certs/peritze.com.crt}"
+if [ -f "$NODE_EXTRA_CA_CERTS" ]; then
+  export NODE_EXTRA_CA_CERTS
+  echo "[start] NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS"
+else
+  echo "[start] WARN: NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS not found — HTTPS to peritze.com will fail to verify"
+  unset NODE_EXTRA_CA_CERTS
+fi
 TEMPORAL_HEALTH_NAME="agent-local-temporalhost"
 TEMPORAL_PORT="${TEMPORAL_PORT:-7233}"
 WAIT_SECONDS=60
@@ -84,6 +95,7 @@ echo "[start] stopping any running host/agent..."
 bash "$ROOT/scripts/stop.sh"
 wait_for_port_free host "$HOST_PORT"
 wait_for_port_free agent "$AGENT_PORT"
+wait_for_port_free auth "$AUTH_PORT"
 
 echo "[start] cleaning dist folders..."
 npm run clean --prefix "$ROOT"
@@ -108,12 +120,18 @@ npm run build --if-present --prefix "$ROOT" \
   -w @rxo/codeindex \
   -w @rxo/codemcp \
   -w @rxo/memomcp \
+  -w @agent-local/auth \
   -w @agent-local/host
 
 echo "[start] initializing databases (host.sqlite, agent.sqlite)..."
 npm run db:init --prefix "$ROOT"
 
 ensure_temporal
+
+echo "[start] launching auth service on :$AUTH_PORT..."
+AUTH_PORT="$AUTH_PORT" npm start --prefix "$ROOT" -w @agent-local/auth >"$RUN_DIR/auth.log" 2>&1 &
+AUTH_PID=$!
+echo "$AUTH_PID" >"$RUN_DIR/auth.pid"
 
 echo "[start] launching host on :$HOST_PORT..."
 PORT="$HOST_PORT" npm start --prefix "$ROOT" -w @agent-local/host >"$RUN_DIR/host.log" 2>&1 &
@@ -125,13 +143,15 @@ AGENT_PORT="$AGENT_PORT" npm run start:server --prefix "$ROOT" -w @agent-local/a
 AGENT_PID=$!
 echo "$AGENT_PID" >"$RUN_DIR/agent.pid"
 
+wait_for_port auth "$AUTH_PORT" "$AUTH_PID"
 wait_for_port host "$HOST_PORT" "$HOST_PID"
 wait_for_port agent "$AGENT_PORT" "$AGENT_PID"
 
-echo "[start] both up — host http://localhost:$HOST_PORT  agent http://localhost:$AGENT_PORT"
+echo "[start] all up — auth http://localhost:$AUTH_PORT  host http://localhost:$HOST_PORT  agent http://localhost:$AGENT_PORT"
 # print the full log dictionary, not just the two .run files: the REPL and Temporal server log elsewhere,
 # so a "where are the logs" question is answered once, here, at the end of every start
 echo "[start] logs (stop with scripts/stop.sh):"
+echo "  auth service           : $RUN_DIR/auth.log"
 echo "  host + Temporal worker : $RUN_DIR/host.log"
 echo "  agent server           : $RUN_DIR/agent.log"
 echo "  agent CLI / REPL       : $ROOT/logs/agent-<MDYYYY>.log   (override: AGENT_LOG_FILE)"

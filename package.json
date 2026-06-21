@@ -11,6 +11,7 @@
     "src/vectorstore",
     "src/fsmcp",
     "src/agent",
+    "src/auth",
     "src/codeindex",
     "src/codemcp",
     "src/memomcp",

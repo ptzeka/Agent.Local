@@ -12,32 +12,28 @@ interface Me {
 }
 
 // right-aligned auth area in the app bar: small-text greeting + Sign in / Profile / Sign out. Driven by the
-// host's /api/me (which decrypts the session cookie server-side), read client-side only so it renders nothing
-// on the server and first paint — keeping hydration in agreement — then fills in.
+// auth service's /account/me (which decrypts the session cookie server-side), read client-side only so it
+// renders nothing on the server and first paint — keeping hydration in agreement — then fills in.
 export default function UserMenu() {
-  const { basePath } = useApplicationContext();
+  const { basePath, $config } = useApplicationContext();
+  const authorityUrl = $config.get().authentication.authorityUrl;
   const prefix = basePath ? `/${basePath}` : "";
   const [me, setMe] = useState<Me | null>(null);
-  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/me")
+    // best-effort: if auth is unreachable we stay logged-out ("Sign in") rather than hiding the menu
+    void fetch(`${authorityUrl}/account/me`, { credentials: "include" })
       .then((r) => (r.ok ? (r.json() as Promise<Me>) : null))
-      .then((data) => {
-        if (cancelled) return;
-        setMe(data);
-        setLoaded(true);
-      });
+      .then((data) => { if (!cancelled) setMe(data); })
+      .catch(() => { if (!cancelled) setMe(null); });
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  if (!loaded) return null;
+  }, [authorityUrl]);
 
   const signOut = async (): Promise<void> => {
-    await fetch("/api/logout", { method: "POST" });
+    await fetch(`${authorityUrl}/account/logout`, { method: "POST", credentials: "include" });
     window.location.assign(`${prefix}/login`);
   };
 

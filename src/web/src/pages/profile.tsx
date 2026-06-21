@@ -23,17 +23,19 @@ interface Me {
   permissions: string[];
 }
 
-// shows the signed-in identity, read from the host's /api/me (which decrypts the session cookie server-side).
-// 401 means no/expired session -> render the signed-out state. Runs in an effect since it is a network read.
+// shows the signed-in identity, read from the auth service's /account/me (which decrypts the session cookie
+// server-side). 401 means no/expired session -> render the signed-out state. Runs in an effect since it is a
+// network read; credentials:"include" sends the cross-origin session cookie to the auth service.
 export default function ProfilePage() {
-  const { basePath } = useApplicationContext();
+  const { basePath, $config } = useApplicationContext();
+  const authorityUrl = $config.get().authentication.authorityUrl;
   const loginHref = `${basePath ? `/${basePath}` : ""}/login`;
   const [me, setMe] = useState<Me | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void fetch("/api/me")
+    void fetch(`${authorityUrl}/account/me`, { credentials: "include" })
       .then((r) => (r.ok ? (r.json() as Promise<Me>) : null))
       .then((data) => {
         if (cancelled) return;
@@ -43,10 +45,10 @@ export default function ProfilePage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authorityUrl]);
 
   const signOut = async (): Promise<void> => {
-    await fetch("/api/logout", { method: "POST" });
+    await fetch(`${authorityUrl}/account/logout`, { method: "POST", credentials: "include" });
     window.location.assign(loginHref);
   };
 

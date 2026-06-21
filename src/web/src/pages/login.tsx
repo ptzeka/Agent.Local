@@ -12,11 +12,13 @@ import type IPage from "./IPage";
 // page contract — consumed by PageMenu + routeConfig so nav and routing derive from one source
 export const Page: IPage = { pageName: "login", displayLabel: "Sign in" };
 
-// LOCAL credential login: posts to the host's /api/login, which sets the encrypted httpOnly session cookie.
-// No token ever touches JS — on success we hard-navigate so the host re-renders the SSR shell with the
-// now-hydrated session (the cookie rides the same-origin navigation automatically).
+// LOCAL credential login: posts to the auth service's /account/login, which sets the encrypted httpOnly session
+// cookie (Domain=.peritze.com so the host reads it cross-subdomain). No token ever touches JS — on success we
+// hard-navigate so the host re-renders the SSR shell with the now-hydrated session. credentials:"include" lets
+// the cross-origin auth response set the cookie.
 export default function LoginPage() {
-  const { basePath } = useApplicationContext();
+  const { basePath, $config } = useApplicationContext();
+  const authorityUrl = $config.get().authentication.authorityUrl;
   const profileHref = `${basePath ? `/${basePath}` : ""}/profile`;
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -25,8 +27,9 @@ export default function LoginPage() {
   const submit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
     setError(null);
-    const res = await fetch("/api/login", {
+    const res = await fetch(`${authorityUrl}/account/login`, {
       method: "POST",
+      credentials: "include",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username, password }),
     });

@@ -12,12 +12,13 @@ Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
 
 ## Logs: where to find them
 
-`npm start` runs host + agent in the background and redirects each process's stdout/stderr to a file under
-`scripts/.run/` (PIDs land next to them as `*.pid`). The agent REPL/CLI logs elsewhere because it owns the
-terminal. When debugging traffic, read these first:
+`npm start` runs the auth service + host + agent in the background and redirects each process's stdout/stderr to
+a file under `scripts/.run/` (PIDs land next to them as `*.pid`). The agent REPL/CLI logs elsewhere because it
+owns the terminal. When debugging traffic, read these first:
 
 | Source | Location | Notes |
 |---|---|---|
+| Auth **service** (`/account/*`, `/connect/token`, JWKS) | `scripts/.run/auth.log` | console-backed logger; all `[auth]` lines — login, token issuance, JWKS verification |
 | Host (incl. Temporal **worker**) | `scripts/.run/host.log` | host stdout; the Temporal worker runs in-process, so its activation/workflow logs are here too |
 | Agent **server** (`/events`, `/receive`, webhooks) | `scripts/.run/agent.log` | console-backed logger; all `[agent-server]` lines |
 | Agent **CLI / REPL** | `logs/agent-<MDYYYY>.log` | `FileLogger`, out-of-band so the REPL prompt stays clean; new file per day; override path with `AGENT_LOG_FILE` |

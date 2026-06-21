@@ -8,6 +8,7 @@ RUN_DIR="$ROOT/scripts/.run"
 
 HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
+AUTH_PORT="${AUTH_PORT:-3015}"
 
 # kill the process tree rooted at a recorded pidfile, then remove the file
 stop_pidfile() {
@@ -47,8 +48,10 @@ stop_port() {
 
 stop_pidfile host
 stop_pidfile agent
+stop_pidfile auth
 stop_port host "$HOST_PORT"
 stop_port agent "$AGENT_PORT"
+stop_port auth "$AUTH_PORT"
 
 # Temporal is stateful infra (its postgres holds workflow history), so it is left
 # running across host/agent restarts by default — start.sh calls this script first,

@@ -17,10 +17,10 @@ import {
   type WorkflowCompletedPayload,
   type WorkflowFailedPayload,
   type WorkflowStatusPayload,
-} from "./events.js";
-import type { JobRecord, JobStatus } from "./jobs/job-registry.js";
-import type { JobRegistry } from "./jobs/job-registry.js";
-import type { AgentClient } from "./comms/sender.js";
+} from "../events.js";
+import type { JobRecord, JobStatus } from "../jobs/job-registry.js";
+import type { JobRegistry } from "../jobs/job-registry.js";
+import type { AgentClient } from "../comms/sender.js";
 
 // the SINGLE place that maps the engine's authoritative status (Temporal's describe, or `missing` when it holds no
 // such execution) onto the host lifecycle: the status to fold plus the human description the row shows. Returns
@@ -46,7 +46,7 @@ export function resolveEngineStatus(
 // owns the work unit's lifecycle: the join no single engine holds. trigger() provisions it up front (mint
 // ids -> open the agent session -> command the start), then the bus updaters fold each engine event back
 // onto the registry. Couples to the engines ONLY through the bus, except ctx.jobs which IS the host's state.
-export class Orchestrator {
+export class WorkService {
   constructor(
     private readonly bus: Eventing,
     private readonly jobs: JobRegistry,

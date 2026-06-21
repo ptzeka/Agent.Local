@@ -7,4 +7,7 @@ export * from "./ilogger.js";
 export * from "./filelogger.js";
 export * from "./appsettings.js";
 export * from "./event-envelope.js";
+export * from "./comms.js";
 export * from "./jwt.js";
+export * from "./access-token-provider.js";
+export * from "./access-token-validator.js";

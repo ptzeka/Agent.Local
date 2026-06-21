@@ -1,20 +1,19 @@
 import express from "express";
-import { Eventing, sessionKey, createLocalKeyResolver, type ILogger } from "@agent-local/common";
+import { Eventing, sessionKey, AccessTokenProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
 import { resolveHostDbFile } from "./jobs/db-schema.js";
 import { mount as mountWorkflow, WORKFLOW_TEMPLATES } from "@agent-local/temporal";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
 import { loadAppSettings } from "./appsettings.js";
-import { createReceiveApi } from "./comms/receiver.js";
-import { createAuthApi } from "./api/auth.js";
+import { HttpEventReceiver } from "./comms/receiver.js";
 import { createWorksApi } from "./api/works.js";
 import { sessionMiddleware, resolveUserFromRequest } from "./user/session.js";
 import { userContextMiddleware, requirePermission } from "./user/userContext.js";
-import { HttpJobSender, fetchServiceToken } from "./comms/sender.js";
-import { Orchestrator } from "./orchestrator.js";
+import { createJwksProvider } from "./user/jwks.js";
+import { HttpJobSender } from "./comms/sender.js";
+import { WorkService } from "./services/work-service.js";
 import { JobRegistry } from "./jobs/job-registry.js";
-import { loadOrCreateKeyRing } from "./user/keys.js";
 import { createHealthApi } from "./health.js";
 
 const DEFAULT_PORT = 3011;
@@ -27,26 +26,17 @@ const logger: ILogger = {
   debug: (message, ...args) => console.debug(message, ...args),
 };
 
-// composition root: one bus + one root signal. The agent now runs as a SEPARATE service, so it is wired
-// over HTTP (comms/sender posts jobs, comms/receiver takes answers) instead of mounted in-process; workflow and
-// web still mount on the bus. Order is load-bearing: the receiver route and the workflow publisher must be
-// in place before web, whose SSR catch-all (app.get(/.*/)) would otherwise shadow /receive and /workflow.
 async function main(): Promise<void> {
+  // cancellation token
   const root = new AbortController();
+  // event bus
   const bus = new Eventing();
   const app = express();
-  const settings = loadAppSettings();
-  // host-owned services added to the mount container; the job registry is the work-unit store features query
+  const settings = loadAppSettings();  
   const jobs = new JobRegistry();
-  // host owns IAM: load (or first-run generate) the RS256 key ring so /api/login can sign tokens
-  const keys = loadOrCreateKeyRing();
-  // the key that seals/opens the session cookie ticket; local-only secret for now (see appsettings host.session)
   if (!settings.host.session?.secret) logger.warn?.("[host] no host.session.secret — session cookie uses an insecure dev key");
   const cookieKey = sessionKey(settings.host.session?.secret ?? "agent-local-insecure-dev-session-secret");
-  // open the host DB connection at startup; `db init` owns the schema, this only opens it for injection.
-  // the file comes from appsettings (host.db.file), overridable by HOST_DB_FILE for ops
   const db = openDatabase(resolveHostDbFile(settings.host.db?.file));
-  // resolveUser lets the web SSR hydrate identity from the session this process decrypts (sessionMiddleware)
   const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs, db, resolveUser: resolveUserFromRequest };
 
   app.use(express.json());
@@ -55,21 +45,25 @@ async function main(): Promise<void> {
     res.json({ status: "ok" });
   });
 
-  // verify-key resolver + JWT options so the host validates bearers it itself signed (no JWKS round-trip)
-  const getKey = createLocalKeyResolver(keys.map((k) => k.publicPem));
+  // verify bearers against the auth service's JWKS (auth is the issuer); options pin the issuer/audience the
+  // token must carry. authority is the same issuerUrl auth stamps, so its discovery/jwks live under it.
+  const getKey = createJwksProvider(settings.host.iam?.issuerUrl || "", logger);
   const verifyOptions = { issuer: settings.host.iam?.issuerUrl || undefined, audience: settings.host.iam?.audience || undefined };
 
   app.use(sessionMiddleware(cookieKey));                            // decrypt the session cookie ONCE -> req.authTicket
   app.use(userContextMiddleware(getKey, verifyOptions, logger));    // resolve identity: bearer (verified) over ticket
-  app.use(createAuthApi(keys, settings.host.iam, cookieKey, logger)); // /api/login + /.well-known/openid-configuration(/jwks) + /connect/token
-  app.use(createReceiveApi(bus, logger));                           // POST /receive -> republish onto the bus
+  app.use(new HttpEventReceiver(bus, logger).routes());            // POST /receive -> republish onto the bus
   // the host calls the agent under its OWN service identity (client-credentials -> agent:trigger), so dispatch
-  // never depends on the caller's token and no JWT rides a process variable
-  const sender = new HttpJobSender(bus, settings.agent.baseUrl, logger, settings.host.dispatch);
+  // never depends on the caller's token and no JWT rides a process variable. one cached provider, shared by the
+  // dispatch path and the readiness probe so both present the SAME bearer and refresh it only past expiry.
+  const dispatchTokens = new AccessTokenProvider(logger);
+  if (settings.host.dispatch) dispatchTokens.register(settings.host.dispatch);
+  const dispatchClientId = settings.host.dispatch?.clientId;
+  const sender = new HttpJobSender(bus, settings.agent.baseUrl, logger, dispatchTokens, dispatchClientId);
   sender.start();                                                   // workflow.job -> HTTP -> agent service
-  // the orchestrator owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs
-  const orchestrator = new Orchestrator(bus, jobs, sender, logger);
-  orchestrator.start();
+  // the work service owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs
+  const workService = new WorkService(bus, jobs, sender, logger);
+  workService.start();
   // gate the whole /workflow surface on the caller's session: reads need workflow:read, writes workflow:write;
   // liveness (/workflow/healthz) stays public. Mounted before the routes so it covers the engine routes.
   app.use("/workflow", (req, res, next) => {
@@ -81,7 +75,7 @@ async function main(): Promise<void> {
   const temporal = mountWorkflow(app, ctx);  // /workflow/* routes + Temporal client (publishes workflow.*)
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
-  app.use(createWorksApi(orchestrator, jobs, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
+  app.use(createWorksApi(workService, jobs, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
   // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as
@@ -89,8 +83,8 @@ async function main(): Promise<void> {
   app.use(createHealthApi({
     engineAddress: process.env.TEMPORAL_ADDRESS ?? "localhost:7233",
     agentBaseUrl: settings.agent.baseUrl,
-    // the readiness probe authenticates to the agent under the host's OWN service identity (same dispatch creds)
-    getServiceToken: () => fetchServiceToken(settings.host.dispatch, logger),
+    // the readiness probe authenticates to the agent under the host's OWN service identity (same cached provider)
+    getServiceToken: () => (dispatchClientId ? dispatchTokens.getAccessTokenAsync(dispatchClientId) : Promise.resolve(null)),
     logger,
   }));
   mountWeb(app, ctx);       // React SSR: /static, /public, then the SSR catch-all (last)

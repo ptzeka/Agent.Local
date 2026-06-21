@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { verifyIdentity, bearerToken, type JwtKeyResolver } from "@agent-local/common";
-import { SESSION_HEADER } from "./runtime_context.js";
+import { LOGGER, SERVER_CONFIG } from "../container-tokens.js";
+import { SESSION_HEADER } from "./session-header.js";
 import type { SessionRegistry } from "../session-registry.js";
 
 // the principal that called this service. host -> agent is service-to-service, so the identity is the
@@ -30,7 +31,7 @@ declare global {
 // `authentication.required` is false (staged) — the host stub. With required on, none-of-the-above is 401.
 export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionRegistry) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const auth = req.serverConfig.authentication;
+    const auth = req.container.get(SERVER_CONFIG).authentication;
     const presented = bearerToken(req.headers.authorization);
 
     // authorityUrl present => validate as a host-issued RS256 JWT; issuer must match the authority
@@ -51,7 +52,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
         next();
         return;
       } catch (err) {
-        req.logger?.warn?.(`[agent-server] token verification failed: ${String(err)}`);
+        req.container.get(LOGGER).warn?.(`[agent-server] token verification failed: ${String(err)}`);
       }
     }
 

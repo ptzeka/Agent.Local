@@ -5,13 +5,13 @@ import type { WorkflowTemplate, WorkflowStep } from "@agent-local/temporal";
 import { requirePermission } from "../user/userContext.js";
 import type { JobRegistry, JobStatus } from "../jobs/job-registry.js";
 import { readStatusCodes } from "../jobs/db-schema.js";
-import type { Orchestrator } from "../orchestrator.js";
+import type { WorkService } from "../services/work-service.js";
 
 // the user-scoped work API: the host BFF resource over the work-unit registry. Every route is gated AND scoped
 // to the caller's identity (req.userContext.userInfo.sub, set by userContextMiddleware) so a user only ever
 // sees or stops their OWN works. "save" is just create for now (edit deferred); create runs the trigger flow.
 export function createWorksApi(
-  orchestrator: Orchestrator,
+  workService: WorkService,
   jobs: JobRegistry,
   db: DatabaseHandle,
   workflows: WorkflowTemplate[],
@@ -63,7 +63,7 @@ export function createWorksApi(
     // released session — once cleaned it is fully settled and no longer pinged.
     for (const work of works) {
       if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
-        orchestrator.requestReconcile(work.jobId);
+        workService.requestReconcile(work.jobId);
       }
     }
     res.json({ works });
@@ -80,7 +80,7 @@ export function createWorksApi(
     // record, the fold lands async (bus-pure) so the next read shows it — orphaned/failed workflows surface as
     // `stopped`, and a stopped work with cleanup still pending (sessionId set) gets its released session closed.
     if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
-      orchestrator.requestReconcile(work.jobId);
+      workService.requestReconcile(work.jobId);
     }
     // step history: the engine's reconstructed per-step status, folded in so the detail view renders it from one
     // call. only once the work actually started (temporalId set) does the engine hold a history to read.
@@ -91,17 +91,17 @@ export function createWorksApi(
   // create: spin up a work owned by the caller (camunda instance -> agent session -> first step). 202 + workId.
   router.post("/api/works", requirePermission("workflow:write"), (req: Request, res: Response) => {
     const workflowId = String((req.body ?? {}).workflowId ?? "");
-    orchestrator
+    workService
       .trigger(workflowId, owner(req))
       .then((workId) => res.status(202).json({ workId }))
       .catch((err) => res.status(503).json({ error: String(err) }));
   });
 
   // stop: cancel the caller's work (camunda cancel + agent session close), record `stopped` with a reason.
-  // 404 when the work isn't the caller's (orchestrator.stop returns null), so stop can't reach across owners.
+  // 404 when the work isn't the caller's (workService.stop returns null), so stop can't reach across owners.
   router.post("/api/works/:workId/stop", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const reason = String((req.body ?? {}).reason ?? "stopped by user");
-    const work = await orchestrator.stop(req.params.workId, owner(req), reason);
+    const work = await workService.stop(req.params.workId, owner(req), reason);
     if (!work) {
       res.status(404).json({ error: "unknown work" });
       return;
@@ -113,7 +113,7 @@ export function createWorksApi(
   // continue: pick a stopped work back up — re-execute its last step via engine Reset. 404 when not the caller's,
   // 409 when the work is not `stopped` (a clean completed work is done; a running one the engine refuses anyway).
   router.post("/api/works/:workId/continue", requirePermission("workflow:write"), async (req: Request, res: Response) => {
-    const result = await orchestrator.continue(req.params.workId, owner(req));
+    const result = await workService.continue(req.params.workId, owner(req));
     if (result === null) {
       res.status(404).json({ error: "unknown work" });
       return;
@@ -130,7 +130,7 @@ export function createWorksApi(
   // after it). 404 when not the caller's. The UI only offers this on a settled work; a live run the engine refuses,
   // which the worker logs — the host has already optimistically set `running`, healed by reconcile on next refresh.
   router.post("/api/works/:workId/steps/:stepId/rerun", requirePermission("workflow:write"), async (req: Request, res: Response) => {
-    const work = await orchestrator.rerunStep(req.params.workId, owner(req), req.params.stepId);
+    const work = await workService.rerunStep(req.params.workId, owner(req), req.params.stepId);
     if (!work) {
       res.status(404).json({ error: "unknown work" });
       return;
@@ -144,7 +144,7 @@ export function createWorksApi(
   router.post("/api/works/:workId/inject", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const body = req.body ?? {};
     const variables = (body.variables ?? {}) as Record<string, unknown>;
-    const result = await orchestrator.inject(req.params.workId, owner(req), variables, {
+    const result = await workService.inject(req.params.workId, owner(req), variables, {
       scopeKey: typeof body.scopeKey === "string" ? body.scopeKey : undefined,
       local: typeof body.local === "boolean" ? body.local : undefined,
     });
@@ -168,7 +168,7 @@ export function createWorksApi(
       res.status(400).json({ error: "jobKey required" });
       return;
     }
-    const work = await orchestrator.retryStep(req.params.workId, owner(req), jobKey, {
+    const work = await workService.retryStep(req.params.workId, owner(req), jobKey, {
       incidentKey: typeof body.incidentKey === "string" ? body.incidentKey : undefined,
       retries: typeof body.retries === "number" ? body.retries : undefined,
     });
