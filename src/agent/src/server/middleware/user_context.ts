@@ -15,6 +15,9 @@ export interface IRequestUserContext {
   accessToken: string | null;
   userInfo: IRequestUserInfo | null;
   permissions: string[];
+  // true ONLY when identity came from a verified JWT; a session-capability or staged stub caller is not, so a
+  // route that attributes work to a client (the job receiver) can refuse to trust serviceId without it.
+  authenticated: boolean;
 }
 
 declare global {
@@ -48,6 +51,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
           accessToken: presented,
           userInfo: { serviceId: claims.sub },
           permissions: claims.permissions,
+          authenticated: true,
         };
         next();
         return;
@@ -56,13 +60,14 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
       }
     }
 
-    // session-as-capability: a live session was minted by an authorized create, so its id authorizes follow-on calls (/events) without re-presenting a token
+    // session-as-capability: a live session was minted by an authorized create, so its id authorizes follow-on calls without re-presenting a token (the job receiver still demands a JWT)
     const sessionId = req.header(SESSION_HEADER)?.trim();
     if (sessionId && sessions.get(sessionId)) {
       req.userContext = {
         accessToken: null,
         userInfo: { serviceId: sessionId },
         permissions: ["agent:trigger"],
+        authenticated: false,
       };
       next();
       return;
@@ -77,6 +82,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
       accessToken: presented,
       userInfo: { serviceId: "host" },
       permissions: ["agent:trigger"],
+      authenticated: false,
     };
     next();
   };

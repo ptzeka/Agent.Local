@@ -12,7 +12,7 @@ import { type SessionStore } from "../agent/session/session-store.js";
 export function createSessionApi(sessions: SessionRegistry, store: SessionStore): Router {
   const router = Router();
 
-  // the minted session is persisted here (not in the runtime) so the first /events can resume it by id;
+  // the minted session is persisted here (not in the runtime) so the first /receive can resume it by id;
   // the in-memory registry stays the capability check, the store row the resumable state
   router.post("/session/create", async (req: Request, res: Response) => {
     if (!req.userContext?.permissions?.includes("agent:trigger")) {

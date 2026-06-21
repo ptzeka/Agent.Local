@@ -1,4 +1,5 @@
-import { token, type ILogger } from "@agent-local/common";
+import { token } from "@agent-local/common/container";
+import type { ILogger } from "@agent-local/common/ilogger";
 import type { DatabaseHandle } from "@agent-local/common/db";
 import type { AgentServerSettings } from "./appsettings.js";
 import type { SessionStore } from "../agent/session/session-store.js";

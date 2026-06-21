@@ -2350,6 +2350,82 @@ schema applied by a separate migrate job (server `CMD` ≠ `autosetup`), `defaul
 registered explicitly, history surviving a server teardown — while `npm run docker:up
 -w @agent-local/temporalhost` still runs the bundled-DB dev stack unchanged.
 
+### M7-12 · Neutralize the agent comms contract — symmetric `/receive`, thin transport adapters — `~1d` · P1
+The host↔agent seam today speaks the workflow engine's vocabulary on the wire: the
+agent's inbound route is `POST /events` carrying a `{ eventType, payload }` envelope
+whose only accepted type is `WORKFLOW_JOB`, and the answer echoes `temporalId`/`jobKey`
+back ([comms/contract.ts](src/agent/src/server/comms/contract.ts),
+[comms/receiver.ts](src/agent/src/server/comms/receiver.ts#L58-L65)). The agent should
+not know what a "temporal" is. Worse, the receiver is a **fat** class — it terminates
+HTTP *and* builds the runtime *and* runs the turn inline ([receiver.ts:52-72](src/agent/src/server/comms/receiver.ts#L52-L72)),
+so transport and execution are fused. Split them and neutralize the contract so the
+wire is engine-agnostic and the agent stays a thin host over the runtime (per the
+host-agnostic direction: transport is a host, the runtime never knows about HTTP).
+
+**Symmetric peers.** Both host and agent expose `POST /receive` (HTTP + JWT) and each
+has a Sender that POSTs to the other's `/receive`. No `/events`, no event-typed
+envelope on the wire — each `/receive` is side-specific, so there is nothing to
+discriminate (agent's always gets an `ExecutionRequest`, host's always an
+`ExecutionResult`). POST the body directly.
+
+**Three roles, not one.** `HttpReceiver` (transport only: route + JWT + parse + map to
+one internal bus event) → `Runner` (subscribes, builds the per-job runtime, runs the
+turn, publishes a result event — the relocated `receive()` body) → `HttpSender`
+(subscribes, POSTs `ExecutionResult`). The internal `Eventing` bus **stays** — it is
+exactly the seam the Receiver converts *into*; the wire payloads are the HTTP contract,
+the bus events the internal contract, and they may differ (the Receiver enriches the
+event with `source`/`createdAt` so the Runner/Sender never touch the JWT).
+
+**Neutral correlation.** `sessionId` (on the `x-session-id` header) is the routing key
+the host maps back to `workId` via its own table; `runId` is host-supplied, opaque to
+the agent, echoed on the result (host may use its workflow run id). `temporalId`/`jobKey`
+leave the agent entirely — engine routing becomes host-private state keyed by
+`sessionId`.
+- [x] Wire contract (replaces `WORKFLOW_JOB`/`AGENT_RESULT` envelopes):
+      `ExecutionRequest { runId, input }` inbound (sessionId off the header),
+      `ExecutionResult { sessionId, runId, source, createdAt, result, outcome }`
+      outbound. `outcome` stays the turn verdict so the host fails a step without
+      sniffing the text. → `comms/contract.ts` on both sides (the host mirrors the
+      shapes; the bus events `EXECUTION_REQUESTED`/`EXECUTION_RESULT` are the agent's
+      internal contract, distinct from the wire).
+- [x] `HttpReceiver`: renamed `/events` → `/receive`; parses `ExecutionRequest`, lifts
+      `sessionId` from the header and `source` from `req.userContext.userInfo.serviceId`
+      (= verified `claims.sub`), stamps `createdAt`, publishes ONE `EXECUTION_REQUESTED`,
+      ACKs 202. No runtime construction in this class. → `comms/receiver.ts`.
+- [x] `ExecutionRunner`: subscribes `EXECUTION_REQUESTED`, builds the per-job runtime
+      (the relocated `buildForJob`), runs the turn, publishes `EXECUTION_RESULT`, drains
+      the runtime. Runtime construction lives here now, off the transport class. →
+      `comms/runner.ts`, wired in `server/index.ts`.
+- [x] `HttpResultSender`: subscribes `EXECUTION_RESULT`, POSTs `ExecutionResult` to the
+      host's `/receive` (existing `settings.host.receiveUrl`); keeps the cached-bearer
+      JWT attach. → `comms/sender.ts`.
+- [x] Enforce JWT on the job path so `source` is reliable: `/receive` rejects 401 when
+      `authentication.required` and the caller is not token-verified. Added
+      `authenticated` to `IRequestUserContext` (true only on the verified-JWT branch) so
+      the session-capability/stub paths can't be mistaken for a client id. →
+      `middleware/user_context.ts`, gate in `comms/receiver.ts`.
+- [x] Mirror the host side: its inbound stays `POST /receive`, its Sender now POSTs an
+      `ExecutionRequest` to the agent's `/receive`; the host translates at the boundary
+      (`runId` = its `temporalId` == `workId`) so the engine vocabulary stays on its own
+      bus. → `src/host/src/comms/{sender,receiver,contract}.ts`, `events.ts`
+      (`AgentResultPayload` drops dead `jobKey`, gains `outcome`).
+- [ ] OBO seam (depends on M2-9): once `sub` becomes the end user and `act.sub` the
+      dispatching service, re-point `source` to `act.sub` so "who sent it" stays the
+      actor — leave a code note at the lift site so the meaning doesn't silently flip.
+- [x] Tests: a request missing a verified bearer is 401 (no token-less accept on
+      `/receive`); a valid request publishes one internal event and ACKs 202 without
+      running a turn in the route; the published event carries `source == claims.sub` and
+      the echoed `runId`, with no `temporalId`/`jobKey`/`eventType`. → 3 tests in
+      `tests/server/receiver.test.ts` (host translation covered by `tsc`; a host runtime
+      test is blocked on jose/ESM in the host's `userContext` chain — noted, not built).
+
+**Done when:** the host POSTs an `ExecutionRequest` to the agent's `/receive`, the
+Receiver maps it to a bus event (no runtime work in the HTTP class), the Runner executes
+and the Sender POSTs an `ExecutionResult { sessionId, runId, source, createdAt, result,
+outcome }` to the host's `/receive` — with no engine vocabulary (`temporalId`/`jobKey`/
+`eventType`) anywhere on the wire and JWT enforced both directions. ✅ DONE (OBO
+`source`→`act.sub` re-point deferred to M2-9) — _by ptzeka_
+
 ---
 
 ## M8 — Frontend epic (React console + API)

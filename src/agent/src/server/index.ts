@@ -4,7 +4,8 @@ import { openDatabase } from "@agent-local/common/db";
 import { resolveAgentDbFile } from "../agent/db-schema.js";
 import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
-import { HttpJobReceiver } from "./comms/receiver.js";
+import { HttpReceiver } from "./comms/receiver.js";
+import { ExecutionRunner } from "./comms/runner.js";
 import { createSessionApi } from "./session-api.js";
 import { SessionRegistry } from "./session-registry.js";
 import { HttpResultSender } from "./comms/sender.js";
@@ -34,7 +35,7 @@ async function main(): Promise<void> {
   const db = openDatabase(resolveAgentDbFile(settings.db?.file));
   // the agent owns the sessions it mints; lives across requests for the process, so it is built once here
   const sessions = new SessionRegistry();
-  // session-create persists the minted session to agent.sqlite so /events can resume it; shares the one db handle
+  // session-create persists the minted session to agent.sqlite so /receive can resume it; shares the one db handle
   const sessionStore = SessionStore.create(db);
 
   // wire the agent's client-credentials only when fully configured; otherwise the sender posts unauthenticated,
@@ -53,9 +54,9 @@ async function main(): Promise<void> {
 
   // order is load-bearing, mirroring the Sandbox/console chain: body parse, then context middleware
   // config -> logger -> eventing -> user (config first; the rest read req it seeds). healthz sits before
-  // user so a liveness probe stays cheap; the job receiver runs last so it finds config/logger/eventing
-  // already resolved on req. The receiver owns runtime construction (no separate manager) and retains no
-  // teardown handle: every runtime's parentSignal is root.signal, so the shutdown abort below releases them.
+  // user so a liveness probe stays cheap; the receiver runs last so it finds config/logger/eventing already
+  // resolved on req. The runner (not the receiver) owns runtime construction and retains no teardown handle:
+  // every runtime's parentSignal is root.signal, so the shutdown abort below releases them.
   // the one startup container: every process singleton registered once here, then handed to each request by
   // containerMiddleware (a reference, never rebuilt) so route handlers read them off req.container.get(handle).
   const container = new Container();
@@ -76,9 +77,11 @@ async function main(): Promise<void> {
   // session lifecycle mounts BEFORE the job receiver: minting/closing a session needs no runtime, and routing
   // it through the receiver would build a per-request runtime (and spurious session state) for it
   app.use(createSessionApi(sessions, sessionStore));
-  // the job receiver owns the turn lifecycle: it builds a runtime per request (off root.signal + the shared db),
-  // runs the turn, and drains it. config/logger/eventing/session are read off req by its express adapter.
-  app.use(new HttpJobReceiver(root.signal, db).routes());
+  // the runner owns the turn lifecycle off the bus: it builds a runtime per queued request (off root.signal +
+  // the shared db), runs the turn, and drains it. the receiver is pure transport — it parses /receive, stamps
+  // provenance, and publishes onto the bus the runner consumes; the sender POSTs the result back out.
+  new ExecutionRunner(root.signal, db, settings, logger, bus).start();
+  app.use(new HttpReceiver().routes());
 
   const port = Number(process.env.AGENT_PORT) || settings.port;
   const server = app.listen(port, () => logger.info(`[agent-server] listening on :${port}`));

@@ -11,8 +11,8 @@
 
 # clear all
 scripts/clear-codeindex.sh
-# rancher docker init
-rdctl start
+# rancher docker init — docker (moby) engine only, no Kubernetes cluster (temporalhost just needs `docker`)
+rdctl start --container-engine.name=moby --kubernetes.enabled=false
 
 # Unblock-File .\scripts\publish-codeindex.ps1
 

@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { DbSettings } from "@agent-local/common";
+import type { DbSettings } from "@agent-local/common/appsettings";
 
 // the agent service owns its own runtime config (no shared/global appsettings); the file sits beside this
 // loader under src/server and is read by fs so it stays editable without a rebuild, in both tsx and dist runs.

@@ -1,9 +1,9 @@
-import { type AccessTokenProvider, type Eventing, type ILogger, type EventEnvelope, type ISender } from "@agent-local/common";
-import { AGENT_RESULT } from "./contract.js";
+import { type AccessTokenProvider, type Eventing, type ILogger } from "@agent-local/common";
+import { EXECUTION_RESULT, type ExecutionResult } from "./contract.js";
 
-// agent -> host SENDER: forwards a finished turn back to the host. The transport is swappable (HTTP webhook
-// now, gRPC later); the body is the SAME event in envelope form, so the host receiver just republishes it.
-export class HttpResultSender implements ISender {
+// agent -> host SENDER: the bus->HTTP adapter. Subscribes to finished runs and POSTs the neutral ExecutionResult
+// to the host's /receive. Transport is swappable (HTTP webhook now, gRPC later); it speaks no engine vocabulary.
+export class HttpResultSender {
   constructor(
     private readonly bus: Eventing,
     private readonly receiveUrl: string,
@@ -12,22 +12,22 @@ export class HttpResultSender implements ISender {
     private readonly clientId?: string,
   ) {}
 
-  // bus binding: every finished turn (agent.result) is wrapped as an envelope and send()s to the host webhook
+  // bus binding: every finished run is POSTed to the host webhook
   start(): void {
-    this.bus.subscribe(AGENT_RESULT, (event) => {
-      void this.send({ eventType: AGENT_RESULT, payload: event.payload }).catch((err) =>
+    this.bus.subscribe(EXECUTION_RESULT, (event) => {
+      void this.send(event.payload as unknown as ExecutionResult).catch((err) =>
         this.logger.error?.("[agent-server] webhook post failed", err),
       );
     });
   }
 
-  // ISender: POST one event envelope to the host's /receive. the cached service bearer (refreshed only past
-  // expiry) is null when unconfigured so local dev still posts. throws on non-2xx so start()'s catch logs it.
-  async send(envelope: EventEnvelope): Promise<void> {
+  // POST one ExecutionResult to the host's /receive. the cached service bearer (refreshed only past expiry) is
+  // null when unconfigured so local dev still posts. throws on non-2xx so start()'s catch logs it.
+  async send(result: ExecutionResult): Promise<void> {
     const headers: Record<string, string> = { "content-type": "application/json" };
     const token = this.clientId ? await this.tokens?.getAccessTokenAsync(this.clientId) : undefined;
     if (token) headers.authorization = `Bearer ${token}`;
-    const res = await fetch(this.receiveUrl, { method: "POST", headers, body: JSON.stringify(envelope) });
+    const res = await fetch(this.receiveUrl, { method: "POST", headers, body: JSON.stringify(result) });
     if (!res.ok) throw new Error(`webhook ${this.receiveUrl} -> ${res.status}`);
   }
 }

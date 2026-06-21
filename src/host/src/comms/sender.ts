@@ -1,15 +1,21 @@
-import { type AccessTokenProvider, type Eventing, type ILogger, type ISender } from "@agent-local/common";
-import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type EventEnvelope } from "./contract.js";
+import { type AccessTokenProvider, type Eventing, type ILogger } from "@agent-local/common";
+import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type ExecutionRequest } from "./contract.js";
 
 // host -> agent SENDER: the work service opens/closes a session per work unit, then this forwards workflow jobs
-// to the agent service over HTTP. Transport is swappable (HTTP now, gRPC later) behind these interfaces; the
-// /events body is the same WORKFLOW_JOB event in envelope form, so the agent runs it as if it came off a bus.
+// to the agent service over HTTP. Transport is swappable (HTTP now, gRPC later) behind these interfaces. It
+// translates the engine's job into a neutral ExecutionRequest — runId carries the host's temporalId (== workId)
+// opaquely, so the agent's reply round-trips back to THIS work via the runId it echoes.
 export interface AgentClient {
   createSession(workspaceId: string, workId: string): Promise<string>;
   closeSession(sessionId: string): Promise<void>;
 }
 
-export class HttpJobSender implements ISender, AgentClient {
+// the job carries the instruction in a variable; accept the common spellings
+function promptFor(variables: Record<string, unknown>): string {
+  return String(variables.prompt ?? variables.input ?? variables.task ?? "").trim();
+}
+
+export class HttpJobSender implements AgentClient {
   constructor(
     private readonly bus: Eventing,
     private readonly baseUrl: string,
@@ -18,14 +24,14 @@ export class HttpJobSender implements ISender, AgentClient {
     private readonly clientId?: string,
   ) {}
 
-  // bus binding: the session is created up front at trigger time, so this no longer mints one — it reads the
-  // sessionId the engine seeded as a process variable off the job, wraps the job as an envelope, and send()s it.
+  // bus binding: translate each engine job into a neutral ExecutionRequest and POST it to the agent's /receive
   start(): void {
     this.bus.subscribe(WORKFLOW_JOB, (event) => {
       const job = event.payload as unknown as WorkflowJobPayload;
-      const sessionId = String((job.variables ?? {}).sessionId ?? "");
-      const envelope: EventEnvelope = { eventType: WORKFLOW_JOB, payload: { ...job, sessionId } };
-      void this.send(envelope).catch((err) => {
+      const variables = job.variables ?? {};
+      const sessionId = String(variables.sessionId ?? "");
+      const request: ExecutionRequest = { runId: job.temporalId, input: promptFor(variables) };
+      void this.dispatch(request, sessionId).catch((err) => {
         this.logger.error?.("[agent-client] dispatch failed", err);
         this.bus.publish(WORKFLOW_FAILED, {
           temporalId: job.temporalId,
@@ -51,13 +57,12 @@ export class HttpJobSender implements ISender, AgentClient {
     }
   }
 
-  // ISender: forward one event envelope to the agent's /events. the host presents its OWN agent:trigger service
-  // token (the agent validates the bearer); the work unit's sessionId rides as a header so the agent binds the
-  // runtime to that session. throws on non-2xx so start()'s catch can fail the workflow step.
-  async send(envelope: EventEnvelope): Promise<void> {
-    const sessionId = String((envelope.payload as { sessionId?: unknown })?.sessionId ?? "");
-    const res = await this.post("/events", envelope, sessionId);
-    if (!res.ok) throw new Error(`agent /events -> ${res.status}`);
+  // POST one execution request to the agent's /receive. the host presents its OWN agent:trigger service token
+  // (the agent validates the bearer); the work unit's sessionId rides as a header so the agent binds the runtime
+  // to that session. throws on non-2xx so start()'s catch can fail the workflow step.
+  private async dispatch(request: ExecutionRequest, sessionId: string): Promise<void> {
+    const res = await this.post("/receive", request, sessionId);
+    if (!res.ok) throw new Error(`agent /receive -> ${res.status}`);
   }
 
   private async post(path: string, body?: unknown, sessionId?: string): Promise<Response> {

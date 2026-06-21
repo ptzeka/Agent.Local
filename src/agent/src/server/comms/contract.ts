@@ -1,30 +1,38 @@
-// the agent worker's own view of the bus seam. The bus carries untyped payloads, so the listener owns
-// the shapes it consumes and emits — it does NOT import a shared contract (engines couple only through
-// the bus, never through each other). The workflow engine always initiates: the worker reacts to workflow.*
-// and reports back as agent.result / workflow.failed; it never starts a process.
+// the agent's host-agnostic execution contract. The agent never learns which engine drove a run: the wire
+// carries a neutral request/result, and `runId` is opaque (echoed, never interpreted) so the host alone routes
+// the answer back to its own work unit. No `eventType` envelope, no `temporalId`/`jobKey` — that vocabulary is
+// host-private. The HTTP payloads are the wire contract; the bus events below are the internal one (they differ:
+// the receiver enriches the request with who/when before the runner sees it).
 
-// inbound: the workflow job this worker runs (published by the workflow mount)
-export const WORKFLOW_JOB = "workflow.job";
-// inbound: instance lifecycle, used to finalize the per-instance agent session
-export const WORKFLOW_COMPLETED = "workflow.completed";
-export const WORKFLOW_FAILED = "workflow.failed";
-// outbound: the agent's answer, consumed by the workflow mount to complete the workflow job
-export const AGENT_RESULT = "agent.result";
+// internal bus: the receiver translates an inbound HTTP request into this for the runner to execute
+export const EXECUTION_REQUESTED = "execution.requested";
+// internal bus: the runner publishes this finished turn for the sender to POST back to the host
+export const EXECUTION_RESULT = "execution.result";
 
-// the workflow job payload the worker reads off the bus; temporalId is the engine instance id the answer routes back to
-export interface WorkflowJob {
-  temporalId: string;
-  jobKey: string;
-  jobType: string;
-  variables: Record<string, unknown>;
+// inbound wire payload (POST /receive). sessionId rides the x-session-id header, not the body, so it doubles
+// as the session-binding the runtime resumes against.
+export interface ExecutionRequest {
+  runId: string;
+  input: string;
 }
 
-export interface WorkflowCompleted {
-  temporalId: string;
+// the runner's bus event: the request plus the provenance the receiver stamped (source from the JWT, createdAt
+// from the clock) so the runner carries them straight onto the result without re-reading the request context.
+export interface ExecutionRequested {
+  sessionId: string;
+  runId: string;
+  source: string;
+  createdAt: string;
+  input: string;
 }
 
-export interface WorkflowFailed {
-  temporalId: string;
-  jobKey?: string;
-  error: string;
+// outbound wire payload (POST host /receive) and the EXECUTION_RESULT bus event — the finished turn. outcome is
+// the turn's own verdict so the host fails a step on a non-satisfied turn without sniffing the text.
+export interface ExecutionResult {
+  sessionId: string;
+  runId: string;
+  source: string;
+  createdAt: string;
+  result: string;
+  outcome: string;
 }

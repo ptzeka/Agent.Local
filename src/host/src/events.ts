@@ -129,13 +129,13 @@ export interface WorkflowStatusPayload {
   missing?: boolean;
 }
 
-// jobKey is the host's correlation key for completing the camunda job. The agent's session is its own
-// local knowledge (host gives jobKey -> agent creates/associates a session -> replies jobKey done), so it
-// is deliberately NOT part of this payload.
+// the agent's finished turn, translated from the neutral wire result at the host receiver. temporalId (== workId)
+// is the key the workflow mount reports the result on; outcome is the turn's verdict so a step can fail on a
+// non-satisfied turn. The agent never learns the temporalId — the host maps it back from the echoed runId.
 export interface AgentResultPayload {
   temporalId: string;
-  jobKey: string;
   result: unknown;
+  outcome?: string;
 }
 
 // maps each event name to its payload so publishers/subscribers stay in lockstep across workspaces

@@ -1,32 +1,37 @@
 import { Router, type Request, type Response } from "express";
-import type { Eventing, ILogger, IReceiver, EventEnvelope } from "@agent-local/common";
+import type { Eventing, ILogger } from "@agent-local/common";
 import { requirePermission } from "../user/userContext.js";
+import { AGENT_RESULT, type ExecutionResult } from "./contract.js";
 
-// agent -> host RECEIVER: the agent service posts finished turns here (its webhook target). receive() republishes
-// the SAME event onto the host bus so the existing workflow path (agent.result -> completeJob) runs unchanged;
-// routes() is the gated express adapter that calls it. needs no per-request context, so IReceiver's Ctx stays void.
-export class HttpEventReceiver implements IReceiver {
+// agent -> host RECEIVER: the agent service POSTs finished runs here (its webhook target). It translates the
+// neutral ExecutionResult back into the host's engine vocabulary — runId is the temporalId the workflow path
+// routes on — and republishes agent.result onto the bus so the existing completion path runs unchanged.
+export class HttpEventReceiver {
   constructor(
     private readonly bus: Eventing,
     private readonly logger: ILogger,
   ) {}
 
-  // republish the peer's event onto the local bus — HTTP is a pure bridge, the swap point is the envelope
-  async receive(envelope: EventEnvelope): Promise<void> {
-    this.bus.publish(envelope.eventType, (envelope.payload ?? {}) as Record<string, unknown>);
-    this.logger.debug?.(`[host] /receive republished ${envelope.eventType}`);
+  // map the neutral result onto the host bus: runId == temporalId == workId, the key the workflow mount reports on
+  async receive(result: ExecutionResult): Promise<void> {
+    this.bus.publish(AGENT_RESULT, {
+      temporalId: result.runId,
+      result: result.result,
+      outcome: result.outcome,
+    });
+    this.logger.debug?.(`[host] /receive routed run ${result.runId} (${result.outcome})`);
   }
 
-  // gated: the agent must present a bearer carrying host:callback, so an unauthenticated caller can't inject events
+  // gated: the agent must present a bearer carrying host:callback, so an unauthenticated caller can't inject results
   routes(): Router {
     const router = Router();
     router.post("/receive", requirePermission("host:callback"), (req: Request, res: Response) => {
-      const envelope = req.body as EventEnvelope;
-      if (!envelope?.eventType) {
-        res.status(400).json({ error: "missing eventType" });
+      const result = req.body as ExecutionResult;
+      if (!result?.runId) {
+        res.status(400).json({ error: "runId is required" });
         return;
       }
-      void this.receive(envelope).catch((err) => this.logger.error?.("[host] receive failed", err));
+      void this.receive(result).catch((err) => this.logger.error?.("[host] receive failed", err));
       res.status(202).json({ accepted: true });
     });
     return router;
