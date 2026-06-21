@@ -54,7 +54,7 @@ export function createAuthApi(
 
   router.post("/account/login", async (req: Request, res: Response) => {
     const { username, password } = (req.body ?? {}) as { username?: string; password?: string };
-    const identity = users.verify(username ?? "", password ?? "");
+    const identity = await users.verify(username ?? "", password ?? "");
     if (!identity) {
       res.status(401).json({ error: "invalid credentials" });
       return;
@@ -104,7 +104,7 @@ export function createAuthApi(
       res.status(401).json({ error: "missing basic credentials" });
       return;
     }
-    const actor = users.verify(creds.username, creds.password);
+    const actor = await users.verify(creds.username, creds.password);
     if (!actor) {
       res.status(401).json({ error: "invalid credentials" });
       return;

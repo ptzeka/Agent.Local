@@ -2539,6 +2539,39 @@ and Continue on a step re-runs from exactly that step with its original inputs.
 sourced from `/api/jobs`, rows update live as work units change state, and Cancel
 stops a running work unit and its Camunda instance.
 
+### M8-6 · User chat popup on a work item (standalone CLI session) — `~2d` · P2
+A user-driven chat against a work item's workspace, separate from the workflow's
+own session but sharing its `workspaceId`, so the user can inspect/modify the
+work's files conversationally. Persisted as `userCliSessionId` on the job; it
+outlives the workflow run. Concurrency with a live workflow session is left to
+the user (no read-only/blocking gate).
+
+> **Context 2026-06-21:** no live event stream exists today — the SSE bus bridge
+> was removed (M8-2, 2026-06-19) and the agent-side streaming transport (M4-1,
+> `POST /sessions/:id/dispatch` SSE) is unbuilt. So the chat is request/response;
+> live token streaming is a follow-up gated on re-adding SSE/WS + M1-11b.
+
+- [ ] `JobRecord.userCliSessionId: string | null` (`src/host/src/jobs/job-registry.ts`)
+      + the SQLite jobs repo column (M3-H); defaults null, set lazily on first chat open.
+- [ ] Mint-or-resume: host calls the existing `/session/create` with the job's
+      OWN `workspaceId` (idempotent `WorkspaceRegistry` → shared folder), stores the
+      returned id as `userCliSessionId`. No new session-mint path.
+- [ ] Agent interactive turn route (`src/agent/src/server/comms/`): resume by
+      `sessionId` (`SessionMiddleware`) + `dispatchAsync(message)`, return the reply
+      request/response. The conversational sibling of `runJob` — NOT workflow-job
+      shaped. Live token streaming deferred to SSE re-add (M4-1/M8-2) + M1-11b.
+- [ ] Host works API: `POST /api/works/:id/chat` (lazily mints `userCliSessionId`,
+      proxies the message to the agent route), gated by `requirePermission` +
+      cookie identity like the other works routes.
+- [ ] Console: a chat "[ > ]" action on the jobs table (M8-4) opening the popup.
+- [ ] Lifecycle: `Orchestrator.complete`/`finalizeStop` close ONLY the workflow
+      `sessionId`, never `userCliSessionId` — dropped by explicit close/retention.
+
+**Done when:** from the jobs table a user opens a chat popup on a work item, sends
+a message, and the agent answers operating on that work's workspace via a persisted
+standalone `userCliSessionId` that survives the workflow completing.
+**Depends on:** M8-4 (jobs table), M3-H (jobs→SQLite), M4-1/M1-11b (live stream, follow-up only).
+
 ---
 
 ## Open decisions — track, don't drift
