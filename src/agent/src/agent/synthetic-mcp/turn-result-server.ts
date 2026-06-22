@@ -7,7 +7,7 @@ import type { ToolContext } from "./types.js";
 
 export const TURN_RESULT_SERVER_NAME = "turnresult";
 
-// mounted only on dispatched turns (gated by the structuredResult flag); when no sink is bound the handler
+// mounted only when a role whitelists it (the workflow-orchestrator role); when no sink is bound the handler
 // returns its "not available" error rather than silently dropping the verdict
 export function createTurnResultLocalMcp(toolCtx: ToolContext): LocalMcp {
   const tools: LocalTool[] = createReportResultTools().map((tool) => ({

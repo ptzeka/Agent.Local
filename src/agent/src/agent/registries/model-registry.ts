@@ -22,6 +22,9 @@ export class ModelRegistry {
       case "project":
         return PROJECT_CONTEXT;
       case "orchestrator":
+      // dispatched-run twin of orchestrator: same prompt, whose guarded "Structured result" section self-activates
+      // because this role always has report_result mounted (its model whitelists turnresult)
+      case "workflow-orchestrator":
         return ORCHESTRATOR_SYSTEM_PROMPT;
       case "executor":
         return EXECUTOR_SYSTEM_PROMPT;

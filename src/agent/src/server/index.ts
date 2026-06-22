@@ -6,6 +6,9 @@ import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
 import { HttpReceiver } from "./comms/receiver.js";
 import { ExecutionRunner } from "./comms/runner.js";
+import { RuntimeBuilder } from "./comms/runtime-builder.js";
+import { SseQueue } from "./comms/sse-queue.js";
+import { SseReceiver } from "./comms/ssereceiver.js";
 import { createSessionApi } from "./session-api.js";
 import { SessionRegistry } from "./session-registry.js";
 import { HttpResultSender } from "./comms/sender.js";
@@ -77,10 +80,16 @@ async function main(): Promise<void> {
   // session lifecycle mounts BEFORE the job receiver: minting/closing a session needs no runtime, and routing
   // it through the receiver would build a per-request runtime (and spurious session state) for it
   app.use(createSessionApi(sessions, sessionStore));
-  // the runner owns the turn lifecycle off the bus: it builds a runtime per queued request (off root.signal +
-  // the shared db), runs the turn, and drains it. the receiver is pure transport — it parses /receive, stamps
-  // provenance, and publishes onto the bus the runner consumes; the sender POSTs the result back out.
-  new ExecutionRunner(root.signal, db, settings, logger, bus).start();
+  // one shared runtime builder (off root.signal + the shared db) and the live-connection registry the SSE read
+  // half and the runner both speak: a live session routes input to its persistent runtime, a one-shot job builds
+  // and drains. The SSE route mounts before the receiver — opening a stream needs no /receive turn.
+  const runtimeBuilder = new RuntimeBuilder(root.signal, db, settings, logger);
+  const sseQueue = new SseQueue();
+  app.use(new SseReceiver(sessions, sseQueue, runtimeBuilder).routes());
+  // the runner owns input routing off the bus: it injects into a live SSE runtime, or builds a runtime per queued
+  // job, runs the turn, and drains it. the receiver is pure transport — it parses /receive, stamps provenance, and
+  // publishes onto the bus the runner consumes; the sender POSTs the one-shot result back out.
+  new ExecutionRunner(root.signal, runtimeBuilder, sseQueue, logger, bus).start();
   app.use(new HttpReceiver().routes());
 
   const port = Number(process.env.AGENT_PORT) || settings.port;

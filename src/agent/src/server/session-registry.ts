@@ -7,6 +7,9 @@ export interface SessionRecord {
   sessionId: string;
   workspaceId: string;
   workId: string;
+  // the end-user this session belongs to, when the host opened it for one (cli sessions). undefined for a job
+  // session, which is owned by the workflow, not a user. The cli stream route matches the caller against this.
+  userId?: string;
 }
 
 // owns the agent's session ids and their binding to the host's work unit
@@ -14,9 +17,10 @@ export interface SessionRecord {
 export class SessionRegistry {
   private readonly byId = new Map<string, SessionRecord>();
 
-  // mints a fresh session bound to the host's work unit; the workspace folder derives from workspaceId
-  public create(workspaceId: string, workId: string): SessionRecord {
-    const record: SessionRecord = { sessionId: randomUUID(), workspaceId, workId };
+  // mints a fresh session bound to the host's work unit; the workspace folder derives from workspaceId. userId is
+  // set only for user-facing (cli) sessions, so the stream route can bind the connection to its owner.
+  public create(workspaceId: string, workId: string, userId?: string): SessionRecord {
+    const record: SessionRecord = { sessionId: randomUUID(), workspaceId, workId, userId };
     this.byId.set(record.sessionId, record);
     return record;
   }

@@ -1,9 +1,9 @@
 import { Orchestrator } from "../../runners/orchestrator.js";
 import { McpRegistryToken, OrchestratorToken } from "../tokens.js";
-import type { IMiddleware, RuntimeContext } from "../types.js";
+import type { AgentRuntimeDeps, IMiddleware, RuntimeContext } from "../types.js";
 
 export interface OrchestratorMiddlewareParams {
-  role: "orchestrator" | "executor";
+  role: AgentRuntimeDeps["orchestratorRole"];
 }
 
 // builds the one stateless Orchestrator; it takes its runtime DI handle per turn via RunnerContext, not here

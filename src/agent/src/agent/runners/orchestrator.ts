@@ -16,7 +16,7 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
-import { createTurnResultLocalMcp } from "../synthetic-mcp/turn-result-server.js";
+import { createTurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
 import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
@@ -97,8 +97,9 @@ export class Orchestrator {
 
     // dispatched runs require a structured verdict: rebind turnresult to this turn's sink so report_result lands here.
     // minted regardless so the post-round check is uniform; only registered (advertised) when structured mode is on.
-    // the executor reports to its parent, not a workflow, so it never enforces report_result even under dispatch.
-    const structuredMode = ctx.runtime.isStructuredResultEnabled() && this.role !== "executor";
+    // structured mode IS "is turnresult mounted" — driven solely by the role's whitelist (only workflow-orchestrator
+    // lists it), like the executor/memomcp seams. the executor reports to its parent, not a workflow, so it's excluded.
+    const structuredMode = !!mcpRegistry.getClient(TURN_RESULT_SERVER_NAME) && this.role !== "executor";
     const resultSink = new TurnResultCapture();
     if (structuredMode) {
       mcpRegistry.registerClient(

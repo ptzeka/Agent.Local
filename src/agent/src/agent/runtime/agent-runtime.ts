@@ -121,7 +121,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       runtimeSignal: this.scope.signal,
       // seed the lifetime-stable bus so a rebuild chains under the host rather than orphaning subscribers
       eventing: this.events,
-      structuredResult: this.deps.structuredResult ?? false,
     } as RuntimeContext;
 
     await this.runPipeline(ctx, 0);
@@ -458,10 +457,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
   isStreamOutputEnabled(): boolean {
     return this.deps.streamOutput ?? false;
-  }
-
-  isStructuredResultEnabled(): boolean {
-    return this.deps.structuredResult ?? false;
   }
 
   // the container-owned token tally (own + delegated subtree); read across the ChildRuntime boundary so a

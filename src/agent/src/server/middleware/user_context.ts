@@ -4,11 +4,14 @@ import { LOGGER, SERVER_CONFIG } from "../container-tokens.js";
 import { SESSION_HEADER } from "./session-header.js";
 import type { SessionRegistry } from "../session-registry.js";
 
-// the principal that called this service. host -> agent is service-to-service, so the identity is the
-// calling SERVICE, not an end user; the shape mirrors the Sandbox/console req.userContext so the wiring
-// downstream (routes reading req.userContext) is unchanged whether or not enforcement is on.
+// the principal that called this service. host -> agent is service-to-service, so the actor is always the
+// calling SERVICE (serviceId). On an OBO (RFC 8693) call the service is acting FOR a user, whose verified
+// identity rides the token's subject and is surfaced as userId; userId is undefined for a plain service token
+// (a job). The shape mirrors the Sandbox/console req.userContext so downstream wiring is unchanged.
 export interface IRequestUserInfo {
   serviceId: string;
+  // the end user the call is on behalf of, from the OBO token's subject; undefined for a plain service token
+  userId?: string;
 }
 
 export interface IRequestUserContext {
@@ -41,15 +44,21 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
     if (accessToken && auth.authorityUrl) {
       try {
         const claims = await verifyIdentity(getKey, accessToken, { issuer: auth.authorityUrl });
-        // a verified caller still needs the scope to talk to the agent at all; without it the token is valid
-        // but unauthorized, so reject rather than fall through to the stub principal
-        if (!claims.permissions.includes("agent:trigger")) {
+        // OBO (act present): the SUBJECT is the user, the ACTOR is the calling service — so the service scope is
+        // the actor's and the user identity is the subject. plain service token (no act): the subject IS the
+        // service and the scope is top-level. Either way the CALLING SERVICE must carry agent:trigger, else the
+        // token is valid but unauthorized — reject rather than fall through to the stub principal.
+        const servicePermissions = claims.act ? claims.act.permissions : claims.permissions;
+        if (!servicePermissions.includes("agent:trigger")) {
           res.status(403).json({ error: "forbidden" });
           return;
         }
         req.userContext = {
           accessToken: accessToken,
-          userInfo: { serviceId: claims.sub },
+          userInfo: {
+            serviceId: claims.act ? claims.act.sub : claims.sub,
+            userId: claims.act ? claims.sub : undefined,
+          },
           permissions: claims.permissions,
           authenticated: true,
         };

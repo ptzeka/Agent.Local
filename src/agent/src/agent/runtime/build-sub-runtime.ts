@@ -30,9 +30,9 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     parentSignal: refs.parentSignal ?? deps.parentSignal,
     // a sub-run has no live renderer of its own; it reports through the executor bridge, so it stays collect-only
     streamOutput: false,
-    // structured result is the top-level turn's contract with the workflow; a sub-session answers its PARENT, not
-    // a workflow, so it must not be forced through report_result (which it has no turnresult mount for anyway)
-    structuredResult: false,
+    // a sub-session answers its PARENT, not a workflow, so it never runs as workflow-orchestrator (which would
+    // mount report_result and force a verdict envelope it has no caller for) — pin it to the plain orchestrator role
+    orchestratorRole: "orchestrator",
   };
   return new AgentRuntime(childDeps)
     .add(new ContainerMiddleware())
@@ -54,11 +54,11 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     )
     // standing context seeds the child's fresh conversation, so it rides the conversation step, not the session step
     .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
-    .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
-    .add(new OrchestratorMiddleware({ role: deps.orchestratorRole }))
+    .add(new McpRegistryMiddleware({ role: childDeps.orchestratorRole }))
+    .add(new OrchestratorMiddleware({ role: childDeps.orchestratorRole }))
     .add(new MetricsRegistryMiddleware())
     .add(new RunnerPipelineMiddleware())
-    .add(new ContextMiddleware({ roleName: deps.orchestratorRole, includeSubSessions: false }))
+    .add(new ContextMiddleware({ roleName: childDeps.orchestratorRole, includeSubSessions: false }))
     .add(new InputInboxMiddleware())
     .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }));
 }

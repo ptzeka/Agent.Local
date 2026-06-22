@@ -124,9 +124,9 @@ export class McpRegistryMiddleware implements IMiddleware {
           }).setTimeout(serverTimeout));
           break;
         case TURN_RESULT_SERVER_NAME:
-          // mount only on dispatched runs; left declared-but-unmounted (skipped) for interactive CLI. the live
-          // sink is rebound per turn in the orchestrator — this build-time mount just makes the snapshot honest.
-          if (!ctx.structuredResult) break;
+          // whitelisting it IS the opt-in: only the workflow-orchestrator role lists turnresult, so interactive
+          // roles never mount it. the live sink is rebound per turn in the orchestrator — this build-time mount
+          // just makes the snapshot honest (and its presence is what the runner reads to enter structured mode).
           registry.registerClient(createTurnResultLocalMcp({
             session,
             workspace,

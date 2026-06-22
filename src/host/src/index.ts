@@ -8,6 +8,7 @@ import { type MountContext } from "./mount.js";
 import { loadAppSettings } from "./appsettings.js";
 import { HttpEventReceiver } from "./comms/receiver.js";
 import { createWorksApi } from "./api/works.js";
+import { createAgentCliApi } from "./api/agent-cli.js";
 import { sessionMiddleware, resolveUserFromRequest } from "./user/session.js";
 import { userContextMiddleware, requirePermission } from "./user/userContext.js";
 import { createJwksProvider } from "./user/jwks.js";
@@ -76,6 +77,9 @@ async function main(): Promise<void> {
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
   app.use(createWorksApi(workService, works, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
+  // interactive agent CLI over a work item: owner-gated PUT (provision cli session) + GET (SSE proxy) + POST
+  // (input). The host proxies to the agent under its own service token; the cookie never leaves the host.
+  app.use(createAgentCliApi(works, sender, logger));
   // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as

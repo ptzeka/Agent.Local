@@ -136,6 +136,25 @@ export class WorkStore {
     return this.get(workId);
   }
 
+  // the work's interactive CLI session (work_agent_session kind='cli'), independent of the kind='job' workflow
+  // session joined into WorkRecord; null until a cli stream is opened. One per work via the (work_id, kind) key.
+  public async getCliSessionId(workId: string): Promise<string | null> {
+    const row = this.db
+      .prepare("SELECT session_id FROM work_agent_session WHERE work_id = ? AND kind = 'cli'")
+      .get(workId) as { session_id: string } | undefined;
+    return row?.session_id ?? null;
+  }
+
+  // idempotent bind of the work's cli session: upserts on (work_id, kind='cli') so a re-init reuses the row
+  public async setCliSessionId(workId: string, sessionId: string): Promise<void> {
+    this.db
+      .prepare(
+        "INSERT INTO work_agent_session (session_id, work_id, kind, created_at) VALUES (?, ?, 'cli', ?) " +
+          "ON CONFLICT (work_id, kind) DO UPDATE SET session_id = excluded.session_id",
+      )
+      .run(sessionId, workId, new Date().toISOString());
+  }
+
   // one kind=job session per work: a non-null id upserts on the (work_id, kind) unique key; null releases it
   private upsertSession(workId: string, sessionId: string | null, now: string): void {
     if (sessionId === null) {

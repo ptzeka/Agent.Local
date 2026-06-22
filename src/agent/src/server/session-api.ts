@@ -19,12 +19,17 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore)
       res.status(403).json({ error: "forbidden" });
       return;
     }
-    const { workspaceId, workId } = (req.body ?? {}) as { workspaceId?: string; workId?: string };
+    const { workspaceId, workId, userId } = (req.body ?? {}) as {
+      workspaceId?: string;
+      workId?: string;
+      // present for a user-facing (cli) session; absent for a job session owned by the workflow
+      userId?: string;
+    };
     if (!workspaceId || !workId) {
       res.status(400).json({ error: "workspaceId and workId are required" });
       return;
     }
-    const record = sessions.create(workspaceId, workId);
+    const record = sessions.create(workspaceId, workId, userId);
     try {
       const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID() });
       await store.save(session);

@@ -82,6 +82,5 @@ export function makeContext(overrides: Record<string, unknown> = {}): RuntimeCon
     runtimeSignal: (overrides.runtimeSignal as AbortSignal) ?? new AbortController().signal,
     logger: overrides.logger as RuntimeContext["logger"],
     eventing: overrides.eventing as RuntimeContext["eventing"],
-    structuredResult: (overrides.structuredResult as boolean) ?? false,
   };
 }

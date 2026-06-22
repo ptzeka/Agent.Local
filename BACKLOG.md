@@ -2610,47 +2610,51 @@ durable transcript + reload-on-open; the stream is the live overlay).
 > via the `HttpResultSender` webhook; it surfaces on the stream. CQRS over the existing comms: the
 > envelope commands, the SSE projects. `sender → receiver → live sse session`.
 
-The one real new capability is a **persistent interactive runtime** + a **connection queue**. Today
-`ExecutionRunner.run` builds a runtime per `EXECUTION_REQUESTED`, runs one turn, and drains it. Interactive
-needs the runtime to live under the session lease across many inputs, and its events fanned out to the
-attached SSE connections: `runner → connection queue (per sessionId) → connection.send`.
+The one real new capability is a **runtime per SSE connection** + a **connection registry**. Previously
+`ExecutionRunner.run` built a runtime per `EXECUTION_REQUESTED`, ran one turn, and drained it. Interactive
+keeps the runtime alive for the connection's lifetime and injects each input into it; its event stream is
+projected to chat frames on the connection: `runner → live runtime (by sessionId) → SSE connection`.
+
+> **Built 2026-06-22 — runtime-per-connection, queue membership is the discriminator.** Resolved during
+> build: the runtime is built in the SSE route (one per connection), not under a session `kind` lease, and
+> torn down (`stopTurnLoop` + `shutdown drain`) on disconnect. The runner needs no `kind` switch — it asks
+> `SseQueue.has(sessionId)`: a live connection ⇒ `runtime.injectInput(...)`, else the one-shot job path.
+> The `/receive` receiver is therefore **unchanged**. Payload is **chat frames reusing `ChatMessage`** (
+> `{role:"assistant", content}`), as named SSE events: `delta` (streamed), `message` (full, non-streaming
+> models), `end` (closes a streamed message), `turn` (busy indicator), `ready`. Endpoint names landed as
+> agent `GET /ssereceive/:sessionId` and host `PUT/GET /api/agent/cli/:workId` (+ `/input`). `Last-Event-ID`
+> replay/ring-buffer is **deferred** (reconnect re-attaches; M8-6 `AgentConversation` is the durable record).
 
 Sub-stories:
 
-- [ ] **M8-7a · Persistent session runtime** (agent): under a `kind=cli` lease, keep the runtime alive
-      across turns (lease + turn loop + input inbox) rather than build-one-turn-drain. `closeSession`
-      (existing `/session/close`) drains it; the runtime is event-sourced already
-      (`runtime.getEvents()` / `injectInput`), so this is lifetime, not new runtime code.
-- [ ] **M8-7b · Connection queue** (agent, in-memory): `Map<sessionId, Set<SseConnection>>` — (1) holds
-      live connections per session, (2) fans each runtime event out to all of them, (3) keeps a small
-      per-session ring buffer so a reconnect with `Last-Event-ID` replays the gap. Prune a connection on
-      its disconnect; drop the session entry on `closeSession`. Process-singleton like `SessionRegistry`.
-- [ ] **M8-7c · SSE read route** (agent): `GET /sse/:sessionId` — validates the connection by **service
-      JWT (`agent:trigger`) + the `sessionId` being live in `SessionRegistry`** (the agent's whole notion
-      of "access to session" — user→session ownership was already gated at the host proxy, M8-7e; the
-      agent never learns the user). Registers the connection in the queue, replays the buffered tail on
-      `Last-Event-ID`, then streams the taxonomy. Pure read. `text/event-stream`, `no-cache`,
-      `flushHeaders()`, excluded from any response compression.
-- [ ] **M8-7c2 · Runner sink discriminator** (agent): switch `ExecutionRunner` on session kind — the SSE
-      (`kind=cli`) branch subscribes `runtime.getEvents()` and pushes EACH event to the queue by
-      `sessionId` for the whole turn (intermediate deltas/tool-calls, not just the final message); the
-      `kind=job` branch keeps the one-shot `EXECUTION_RESULT` → `HttpResultSender` webhook unchanged. Same
-      runner, two sinks: `runner → if sse → queue by sessionId`, else → webhook.
-- [ ] **M8-7d · Receiver routes to inbox** (agent): the existing `/receive` envelope, when its
-      `x-session-id` names a live `kind=cli` session, delivers the input to that session's inbox (a turn
-      on the persistent runtime) instead of the one-shot path. No wire change, no new route — the
-      `EXECUTION_REQUESTED` discriminator is the live-session lookup.
-- [ ] **M8-7e · Host SSE proxy** (host): `GET /api/works/:workId/cli` — `requirePermission` + cookie
-      owner-gate (`work.userId === owner(req)`, like the rest of `works.ts`), resolve the work's
-      `kind=cli` `AgentSession`, open the upstream agent `GET /sse/:sessionId` with a minted
-      `agent:trigger` token, and pipe it to the browser response. `:keep-alive` heartbeat (~15s);
-      excluded from compression.
-- [ ] **M8-7f · Teardown contract** (host): on browser disconnect (`res.on("close")`)
-      `AbortController.abort()` the upstream fetch so the agent prunes the connection and can release the
-      lease — no leaked live sessions; on upstream end/error, end the browser response.
-- [ ] **M8-7g · Input proxy** (host): `POST /api/works/:workId/cli/input` — same owner gate, forwards to
-      the agent via the existing `HttpJobSender` send path (`/receive` + `x-session-id`, fresh per-turn
-      `runId`), 202. The browser's write half; SSE (M8-7e) is the read half.
+- [x] **M8-7a · Runtime per connection** (agent): the SSE route builds a streaming runtime
+      (`RuntimeBuilder`, `streamOutput:true`), starts its turn loop, and drains it on disconnect. Shared
+      `RuntimeBuilder` extracted from `ExecutionRunner.buildForJob`. *(`src/agent/src/server/comms/runtime-builder.ts`, `ssereceiver.ts`)*
+- [x] **M8-7b · Connection registry** (agent, in-memory): `SseQueue` — `Map<sessionId, SseConnection>`
+      ({res, runtime}); `register`/`get`/`has`/`deregister`. One connection per session (second attach
+      409s). Ring buffer / `Last-Event-ID` deferred. *(`src/agent/src/server/comms/sse-queue.ts`)*
+- [x] **M8-7c · SSE read route** (agent): `GET /ssereceive/:sessionId` — validates **service `agent:trigger`
+      (the OBO token's actor) + live `SessionRegistry` session + the verified OBO subject (`userId`) matching
+      the session's bound owner**. Projects `getEvents()` → `ChatMessage` frames; `text/event-stream`,
+      `no-cache`, `flushHeaders()`, `:keep-alive` (15s).
+- [x] **M8-7c3 · OBO user binding** (agent + host): the user rides the token, not a header. The session is
+      bound to `userId` at create (`SessionRegistry`/`/session/create`); the host exchanges the caller's
+      cookie subject token for an OBO bearer (`getAccessTokenWithActorAsync` — `sub`=user, `act`=host) on
+      stream open; `userContextMiddleware` surfaces the actor as `serviceId` and the subject as `userId`
+      (`IRequestUserInfo.userId`), and the route matches it. No spoofable `x-user-id` header.
+- [x] **M8-7c2 · Runner discriminator** (agent): `ExecutionRunner` asks `SseQueue.has(sessionId)` — live
+      ⇒ `injectInput` into the connection's runtime; else the one-shot `EXECUTION_RESULT` → webhook path,
+      unchanged. *(`src/agent/src/server/comms/runner.ts`)*
+- [x] **M8-7d · Receiver unchanged** (agent): `/receive` keeps publishing `EXECUTION_REQUESTED`; the
+      live-session lookup moved to the runner, so no receiver change was needed.
+- [x] **M8-7e · Host SSE proxy** (host): `GET /api/agent/cli/:workId` — `requirePermission` + cookie
+      owner-gate, resolve the work's `kind=cli` session, open the upstream agent `GET /ssereceive/...` with
+      a minted `agent:trigger` token, pipe with backpressure. `PUT /api/agent/cli/:workId` provisions the
+      session idempotently (host-side reuse). *(`src/host/src/api/agent-cli.ts`, `comms/sender.ts`, `work/work-store.ts`)*
+- [x] **M8-7f · Teardown contract**: browser `res.on("close")` → `AbortController.abort()` the upstream;
+      agent `req.on("close")` → `stopTurnLoop` + `shutdown drain` + deregister. No leaked live sessions.
+- [x] **M8-7g · Input proxy** (host): `POST /api/agent/cli/:workId/input` — owner gate → `sender.sendInput`
+      (`/receive` + `x-session-id`, fresh `runId`), 202.
 - [ ] **M8-7h · Client SSE consumer** (web): read the stream with native **`EventSource`** (
       `withCredentials: true` so the host cookie rides — no header injection, no axios; axios has no
       browser SSE streaming), rendering each event off `onmessage`/`addEventListener`. The connection IS
