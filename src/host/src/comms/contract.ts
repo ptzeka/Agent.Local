@@ -10,11 +10,19 @@ export interface ExecutionRequest {
   input: string;
 }
 
+// the common response envelope mirrored from the agent's wire (couple by shape, no shared module). status is the
+// parseable verdict the workflow gates on; input echoes the dispatched prompt; result is the agent's structured payload.
+export interface TurnResponse {
+  status: "success" | "fail";
+  input: string;
+  result: unknown;
+}
+
 export interface ExecutionResult {
   sessionId: string;
   runId: string;
   source: string;
   createdAt: string;
-  result: string;
+  result: TurnResponse;
   outcome: string;
 }

@@ -100,7 +100,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp", "turnresult"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     },

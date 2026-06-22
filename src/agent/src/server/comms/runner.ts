@@ -3,6 +3,7 @@ import path from "node:path";
 import type { DatabaseHandle } from "@agent-local/common/db";
 import { Eventing, type ILogger } from "@agent-local/common";
 import { buildRuntime, type AgentRuntime, type AgentRuntimeDeps } from "../../runtime.js";
+import type { RunResult } from "../../agent/runners/orchestrator.js";
 import { findProjectRoot, moduleDir, resolveSandboxRoot, resolveSessionsDir } from "../../paths.js";
 import { loadModelsFile, type RuntimeConfig } from "../../agent/registries/index.js";
 import { readMcpServerDefs } from "../../agent/runtime/middleware/external-mcp.js";
@@ -12,6 +13,7 @@ import {
   EXECUTION_RESULT,
   type ExecutionRequested,
   type ExecutionResult,
+  type TurnResponse,
 } from "./contract.js";
 
 // the execution worker, off the transport. It subscribes to the receiver's internal event, owns the whole turn
@@ -49,7 +51,7 @@ export class ExecutionRunner {
         runId: requested.runId,
         source: requested.source,
         createdAt: requested.createdAt,
-        result: result.finalMessage.content,
+        result: this.toEnvelope(requested.input, result),
         outcome: result.outcome,
       };
       this.bus.publish(EXECUTION_RESULT, { ...answer });
@@ -59,6 +61,20 @@ export class ExecutionRunner {
         .shutdown({ mode: "drain", timeoutMs: 30_000 })
         .catch((err) => this.logger.error?.("[agent-server] runtime close failed", err));
     }
+  }
+
+  // shapes the finished turn into the common response envelope. A turn that called report_result carries its
+  // structured verdict through; one that didn't (capped, system-failed, or a model that skipped the tool) gets a
+  // fallback derived from the loop outcome — fail unless the loop itself settled satisfied, so doubt fails closed.
+  private toEnvelope(input: string, result: RunResult): TurnResponse {
+    if (result.reported) {
+      return { status: result.reported.status, input, result: result.reported.result };
+    }
+    return {
+      status: result.outcome === "satisfied" ? "success" : "fail",
+      input,
+      result: { message: result.finalMessage.content, outcome: result.outcome },
+    };
   }
 
   // builds the per-job runtime bound to its session, resuming off disk. Paths are env-overridable; streamOutput
@@ -87,6 +103,8 @@ export class ExecutionRunner {
       parentSignal: this.signal,
       eventing: this.bus,
       streamOutput: false,
+      // dispatched runs answer a workflow, so require the structured report_result envelope (mounts turnresult)
+      structuredResult: true,
     };
     this.logger.debug?.(`[agent-server] building runtime for session ${sessionId}`);
     return buildRuntime(runtimeDeps, sessionId).build();

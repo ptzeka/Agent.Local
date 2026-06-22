@@ -313,48 +313,6 @@ message as-is. (Input-side overflow is M1-8; this is the output side.)
 - [ ] Test: a fake provider returning a `max_tokens` stop then a clean finish
       yields one coherent assistant message, not a truncated turn.
 
-### M1-13 · Required-field presence check at the client — `~0.5d` · P1
-Scope deliberately minimal: the client checks ONLY that a tool's declared
-`required` keys are present; the servers throw the rest. Value-level validation
-already lives server-side and stays there — fsmcp Zod-parses every arg
-(`fsmcp/src/server.ts` L46 `schema.parse`, errors caught into `isError` at L165),
-so types/enums/bounds/required are all enforced for free; the synthetic LocalMcp
-tools (dispatch/subsessions/excel) hand-read `args.x ?? default` and keep their
-own value guards (e.g. the non-empty `intent` check). The gap the client closes
-is uniform PRESENCE: synthetic tools never parse their hand-written schema, so
-`required`/`enum` there are advisory, and a missing field yields a tool-specific
-string (`[dispatch-error] intent is required`) instead of one recoverable error.
-Every tool already carries `inputSchema` on its `ToolDescriptor` and
-`ScopedToolClient` already resolves `name → { client, toolTail }` before dispatch
-(L30-39), so the `required` array is in hand at the choke point. Lands as the
-**VALIDATE layer of the ToolPort (MR-1)**, not a new chokepoint.
-- [x] Required-presence ONLY: read the resolved tool's `inputSchema.required`,
-      verify each key exists in `args`, before `client.callTool`. No ajv, no
-      type/enum/pattern engine (none of our schemas use `pattern`/regex anyway,
-      and one conditional-required case — codemcp `repository`, "REQUIRED when
-      auto-detection failed" — is runtime-only and must be left to the tool). A
-      ~20-line key walk, not a schema library. → `missingRequired()` helper in
-      `scoped-tool-client.ts`.
-- [x] Corrective error on a missing key: `{ isError: true, content }` naming the
-      absent field(s) (reuse the `ScopedToolClient` corrective-error pattern) so
-      the loop re-plans and re-emits — never throw.
-- [x] Presence ≠ non-empty: `required` only checks the key exists, so
-      `intent: ""` passes here by design — empty/whitespace is a VALUE problem
-      the server keeps rejecting (dispatch keeps its `if (!intent)` guard). Do
-      NOT fold value checks into the client.
-- [x] Leave server-side validation untouched: fsmcp's Zod parse and the
-      synthetic value guards stay. dispatch's `if (!intent)` doubles as the
-      empty-string value guard, so it stays as-is (it is the value arm).
-- [x] Tests: a dispatch with `intent` absent is rejected at the client with a
-      field-named error (not the old string) and never reaches the executor; a
-      present-but-empty `intent` still falls through to the server's existing
-      guard; a fully-valid call passes untouched. → 6 tests in
-      `tests/scoped-tool-client.test.ts`.
-
-**Done when:** a tool call missing a `required` key returns one uniform
-field-named corrective error from the client and the mutation never runs, while
-all value-level validation (types, enums, empty-string) stays server-side. ✅ DONE
-
 ---
 
 ## M2 — Identity & policy (≈ 2 weeks) — *policy-as-artifact decided*
@@ -2389,82 +2347,6 @@ schema applied by a separate migrate job (server `CMD` ≠ `autosetup`), `defaul
 registered explicitly, history surviving a server teardown — while `npm run docker:up
 -w @agent-local/temporalhost` still runs the bundled-DB dev stack unchanged.
 
-### M7-12 · Neutralize the agent comms contract — symmetric `/receive`, thin transport adapters — `~1d` · P1
-The host↔agent seam today speaks the workflow engine's vocabulary on the wire: the
-agent's inbound route is `POST /events` carrying a `{ eventType, payload }` envelope
-whose only accepted type is `WORKFLOW_JOB`, and the answer echoes `temporalId`/`jobKey`
-back ([comms/contract.ts](src/agent/src/server/comms/contract.ts),
-[comms/receiver.ts](src/agent/src/server/comms/receiver.ts#L58-L65)). The agent should
-not know what a "temporal" is. Worse, the receiver is a **fat** class — it terminates
-HTTP *and* builds the runtime *and* runs the turn inline ([receiver.ts:52-72](src/agent/src/server/comms/receiver.ts#L52-L72)),
-so transport and execution are fused. Split them and neutralize the contract so the
-wire is engine-agnostic and the agent stays a thin host over the runtime (per the
-host-agnostic direction: transport is a host, the runtime never knows about HTTP).
-
-**Symmetric peers.** Both host and agent expose `POST /receive` (HTTP + JWT) and each
-has a Sender that POSTs to the other's `/receive`. No `/events`, no event-typed
-envelope on the wire — each `/receive` is side-specific, so there is nothing to
-discriminate (agent's always gets an `ExecutionRequest`, host's always an
-`ExecutionResult`). POST the body directly.
-
-**Three roles, not one.** `HttpReceiver` (transport only: route + JWT + parse + map to
-one internal bus event) → `Runner` (subscribes, builds the per-job runtime, runs the
-turn, publishes a result event — the relocated `receive()` body) → `HttpSender`
-(subscribes, POSTs `ExecutionResult`). The internal `Eventing` bus **stays** — it is
-exactly the seam the Receiver converts *into*; the wire payloads are the HTTP contract,
-the bus events the internal contract, and they may differ (the Receiver enriches the
-event with `source`/`createdAt` so the Runner/Sender never touch the JWT).
-
-**Neutral correlation.** `sessionId` (on the `x-session-id` header) is the routing key
-the host maps back to `workId` via its own table; `runId` is host-supplied, opaque to
-the agent, echoed on the result (host may use its workflow run id). `temporalId`/`jobKey`
-leave the agent entirely — engine routing becomes host-private state keyed by
-`sessionId`.
-- [x] Wire contract (replaces `WORKFLOW_JOB`/`AGENT_RESULT` envelopes):
-      `ExecutionRequest { runId, input }` inbound (sessionId off the header),
-      `ExecutionResult { sessionId, runId, source, createdAt, result, outcome }`
-      outbound. `outcome` stays the turn verdict so the host fails a step without
-      sniffing the text. → `comms/contract.ts` on both sides (the host mirrors the
-      shapes; the bus events `EXECUTION_REQUESTED`/`EXECUTION_RESULT` are the agent's
-      internal contract, distinct from the wire).
-- [x] `HttpReceiver`: renamed `/events` → `/receive`; parses `ExecutionRequest`, lifts
-      `sessionId` from the header and `source` from `req.userContext.userInfo.serviceId`
-      (= verified `claims.sub`), stamps `createdAt`, publishes ONE `EXECUTION_REQUESTED`,
-      ACKs 202. No runtime construction in this class. → `comms/receiver.ts`.
-- [x] `ExecutionRunner`: subscribes `EXECUTION_REQUESTED`, builds the per-job runtime
-      (the relocated `buildForJob`), runs the turn, publishes `EXECUTION_RESULT`, drains
-      the runtime. Runtime construction lives here now, off the transport class. →
-      `comms/runner.ts`, wired in `server/index.ts`.
-- [x] `HttpResultSender`: subscribes `EXECUTION_RESULT`, POSTs `ExecutionResult` to the
-      host's `/receive` (existing `settings.host.receiveUrl`); keeps the cached-bearer
-      JWT attach. → `comms/sender.ts`.
-- [x] Enforce JWT on the job path so `source` is reliable: `/receive` rejects 401 when
-      `authentication.required` and the caller is not token-verified. Added
-      `authenticated` to `IRequestUserContext` (true only on the verified-JWT branch) so
-      the session-capability/stub paths can't be mistaken for a client id. →
-      `middleware/user_context.ts`, gate in `comms/receiver.ts`.
-- [x] Mirror the host side: its inbound stays `POST /receive`, its Sender now POSTs an
-      `ExecutionRequest` to the agent's `/receive`; the host translates at the boundary
-      (`runId` = its `temporalId` == `workId`) so the engine vocabulary stays on its own
-      bus. → `src/host/src/comms/{sender,receiver,contract}.ts`, `events.ts`
-      (`AgentResultPayload` drops dead `jobKey`, gains `outcome`).
-- [ ] OBO seam (depends on M2-9): once `sub` becomes the end user and `act.sub` the
-      dispatching service, re-point `source` to `act.sub` so "who sent it" stays the
-      actor — leave a code note at the lift site so the meaning doesn't silently flip.
-- [x] Tests: a request missing a verified bearer is 401 (no token-less accept on
-      `/receive`); a valid request publishes one internal event and ACKs 202 without
-      running a turn in the route; the published event carries `source == claims.sub` and
-      the echoed `runId`, with no `temporalId`/`jobKey`/`eventType`. → 3 tests in
-      `tests/server/receiver.test.ts` (host translation covered by `tsc`; a host runtime
-      test is blocked on jose/ESM in the host's `userContext` chain — noted, not built).
-
-**Done when:** the host POSTs an `ExecutionRequest` to the agent's `/receive`, the
-Receiver maps it to a bus event (no runtime work in the HTTP class), the Runner executes
-and the Sender POSTs an `ExecutionResult { sessionId, runId, source, createdAt, result,
-outcome }` to the host's `/receive` — with no engine vocabulary (`temporalId`/`jobKey`/
-`eventType`) anywhere on the wire and JWT enforced both directions. ✅ DONE (OBO
-`source`→`act.sub` re-point deferred to M2-9) — _by ptzeka_
-
 ---
 
 ## M8 — Frontend epic (React console + API)
@@ -2501,24 +2383,6 @@ invariant — the UI can start a *process*, never dispatch the agent directly.
 Depends on: M4-1 (SSE transport + runner-event payloads), M7-1 (process
 control surface + the express host to mount on), M7-3 (the bus root to stream
 from).
-
-### M8-1 · React + express scaffold (sandbox conventions) — `~2d` · P1
-- [x] New workspace `@agent-local/web` (`src/web`): React 19 + react-router 7 +
-      **MUI**, **Webpack 5 + Babel**, three bundles (client / standalone server /
-      `mount` library) via `webpack.dev.mjs` / `webpack.prod.mjs`. No Vite. *(2026-06-17)*
-- [x] Streaming SSR (`renderToPipeableStream`) server (`src/web/src/server/`),
-      mountable into the host via `mount(app, ctx)` (the host imports the ESM
-      `dist/server/mount.js` library + co-located static assets). *(2026-06-17)*
-- [x] Startup scripts: `dev` (concurrent webpack watch + nodemon), `build`,
-      `start`, `clean`. *(2026-06-17)*
-- [x] Minimal shell — MUI-themed layout, one react-router 7 route, hello page, a
-      health badge hitting `GET /healthz`. No feature views yet (M8-3). *(2026-06-17)*
-- [ ] `/api` tunnel + `webpack serve` dev-proxy parity — deferred to M8-2 (no API
-      to tunnel to yet).
-
-**Done when:** ~~…~~ — **met 2026-06-17**: web builds all bundles, the co-hosted
-`@agent-local/host` SSR-renders the React shell at `/`, serves `/static/app.js`
-(200), and the health badge reads the live host `/healthz`. Verified end to end.
 
 ### M8-2 · Express API (OpenAPI) + bus→browser bridge — `~2d` · P1
 A thin BFF on the express host, layered over the existing endpoints, **described
@@ -2723,6 +2587,85 @@ while open, polling stops on close), and the session survives the workflow compl
 **Depends on:** M8-4 (works table), M3-H (jobs/sessions→SQLite), M7-12 (symmetric `/receive`, done).
 Follow-up: live streaming (re-add SSE/WS + M1-11b) — retires the poll; event-sourced conversation;
 migrate the workflow `Work.sessionId` to reference `AgentSession` (retire the column as truth).
+
+---
+
+### M8-7 · Live CLI stream — SSE receive over the existing send envelope — `~2.5d` · P2
+Promote M8-6's poll-for-now chat to a **live stream**: the agent pushes its event taxonomy as it happens
+instead of the UI refetching `AgentConversation`. Retires the M8-6 poll (M8-6d/M8-6b stay as the
+durable transcript + reload-on-open; the stream is the live overlay).
+
+> **Decided 2026-06-21 — trust boundary, not transport, is the design.** The browser talks ONLY to the
+> host (cookie, same origin); the host ↔ agent link stays service-to-service (`agent:trigger` JWT,
+> `user_context.ts` unchanged). The cookie NEVER reaches the agent — it can't be sent cross-origin and
+> can't be decrypted there anyway. So the host is a **streaming reverse proxy**: it terminates the
+> cookie-authed browser request, owner-gates it, and pipes an upstream agent SSE it opens with a minted
+> service token. The agent stays a **pure executor that knows only its `sessionId`** (M7-6 preserved) —
+> no `userId` on the agent session, no cookie path into the agent.
+>
+> **Send envelope unchanged; only receive becomes SSE.** Keep the symmetric `/receive` write path
+> wholesale (M7-12): host → agent `POST /receive` (`ExecutionRequest` + `x-session-id`) is still how
+> input enters. The change is the receiver's *behavior* — it routes the envelope into a LIVE session's
+> input inbox and ACKs 202, instead of spawning a one-shot drain runtime. The result no longer returns
+> via the `HttpResultSender` webhook; it surfaces on the stream. CQRS over the existing comms: the
+> envelope commands, the SSE projects. `sender → receiver → live sse session`.
+
+The one real new capability is a **persistent interactive runtime** + a **connection queue**. Today
+`ExecutionRunner.run` builds a runtime per `EXECUTION_REQUESTED`, runs one turn, and drains it. Interactive
+needs the runtime to live under the session lease across many inputs, and its events fanned out to the
+attached SSE connections: `runner → connection queue (per sessionId) → connection.send`.
+
+Sub-stories:
+
+- [ ] **M8-7a · Persistent session runtime** (agent): under a `kind=cli` lease, keep the runtime alive
+      across turns (lease + turn loop + input inbox) rather than build-one-turn-drain. `closeSession`
+      (existing `/session/close`) drains it; the runtime is event-sourced already
+      (`runtime.getEvents()` / `injectInput`), so this is lifetime, not new runtime code.
+- [ ] **M8-7b · Connection queue** (agent, in-memory): `Map<sessionId, Set<SseConnection>>` — (1) holds
+      live connections per session, (2) fans each runtime event out to all of them, (3) keeps a small
+      per-session ring buffer so a reconnect with `Last-Event-ID` replays the gap. Prune a connection on
+      its disconnect; drop the session entry on `closeSession`. Process-singleton like `SessionRegistry`.
+- [ ] **M8-7c · SSE read route** (agent): `GET /sse/:sessionId` — validates the connection by **service
+      JWT (`agent:trigger`) + the `sessionId` being live in `SessionRegistry`** (the agent's whole notion
+      of "access to session" — user→session ownership was already gated at the host proxy, M8-7e; the
+      agent never learns the user). Registers the connection in the queue, replays the buffered tail on
+      `Last-Event-ID`, then streams the taxonomy. Pure read. `text/event-stream`, `no-cache`,
+      `flushHeaders()`, excluded from any response compression.
+- [ ] **M8-7c2 · Runner sink discriminator** (agent): switch `ExecutionRunner` on session kind — the SSE
+      (`kind=cli`) branch subscribes `runtime.getEvents()` and pushes EACH event to the queue by
+      `sessionId` for the whole turn (intermediate deltas/tool-calls, not just the final message); the
+      `kind=job` branch keeps the one-shot `EXECUTION_RESULT` → `HttpResultSender` webhook unchanged. Same
+      runner, two sinks: `runner → if sse → queue by sessionId`, else → webhook.
+- [ ] **M8-7d · Receiver routes to inbox** (agent): the existing `/receive` envelope, when its
+      `x-session-id` names a live `kind=cli` session, delivers the input to that session's inbox (a turn
+      on the persistent runtime) instead of the one-shot path. No wire change, no new route — the
+      `EXECUTION_REQUESTED` discriminator is the live-session lookup.
+- [ ] **M8-7e · Host SSE proxy** (host): `GET /api/works/:workId/cli` — `requirePermission` + cookie
+      owner-gate (`work.userId === owner(req)`, like the rest of `works.ts`), resolve the work's
+      `kind=cli` `AgentSession`, open the upstream agent `GET /sse/:sessionId` with a minted
+      `agent:trigger` token, and pipe it to the browser response. `:keep-alive` heartbeat (~15s);
+      excluded from compression.
+- [ ] **M8-7f · Teardown contract** (host): on browser disconnect (`res.on("close")`)
+      `AbortController.abort()` the upstream fetch so the agent prunes the connection and can release the
+      lease — no leaked live sessions; on upstream end/error, end the browser response.
+- [ ] **M8-7g · Input proxy** (host): `POST /api/works/:workId/cli/input` — same owner gate, forwards to
+      the agent via the existing `HttpJobSender` send path (`/receive` + `x-session-id`, fresh per-turn
+      `runId`), 202. The browser's write half; SSE (M8-7e) is the read half.
+- [ ] **M8-7h · Client SSE consumer** (web): read the stream with native **`EventSource`** (
+      `withCredentials: true` so the host cookie rides — no header injection, no axios; axios has no
+      browser SSE streaming), rendering each event off `onmessage`/`addEventListener`. The connection IS
+      the subscription — no poll loop, no manual re-subscribe (retires the M8-6 client poll); auto-reconnect
+      with `Last-Event-ID` resumes off the M8-7b ring buffer. Input still posts via axios (M8-7g). Renders
+      the shared event taxonomy — reuse, don't redefine (M8-3).
+
+**Done when:** from an open CLI view a user types input that proxies host → agent over the unchanged
+send envelope, and the agent's events stream back live over `GET /sse/:sessionId`, piped through the
+host to the browser; the cookie never leaves the host, the agent never learns the user, and closing the
+browser tab tears the upstream stream and lease down. The M8-6 poll is removed; `AgentConversation`
+remains the durable transcript reloaded on open.
+**Depends on:** M8-6 (`kind=cli` `AgentSession` + chat surface), M7-12 (symmetric `/receive`, done),
+M7-8 (host cookie identity, done). Follow-up: event-sourced `AgentConversation` written from the same
+stream the SSE projects (one source for live + durable).
 
 ---
 

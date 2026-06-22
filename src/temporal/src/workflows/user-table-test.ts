@@ -33,9 +33,16 @@ export interface UserTableTestArgs {
 }
 
 // the agent answers each dispatched step with this signal — TemporalClient.reportResult sends name "agentResult".
-// outcome is the turn's verdict (satisfied | awaiting-input | capped | failed); a missing outcome (older agents)
-// is treated as satisfied so the round-trip stays backward compatible.
+// result is the common response envelope { status, input, result }; outcome is the loop's own verdict (kept as a
+// backstop). The step gates on envelope.status — the parseable ANSWER channel, distinct from "did the turn run".
 export const agentResultSignal = defineSignal<[{ result: unknown; outcome?: string }]>("agentResult");
+
+// the agent's structured response envelope as it lands on the signal; result is the model-supplied structured payload
+interface TurnResponseEnvelope {
+  status?: unknown;
+  input?: unknown;
+  result?: unknown;
+}
 // operator intervention: merge variables onto the running workflow — TemporalClient.setVariables sends "inject"
 export const injectSignal = defineSignal<[Record<string, unknown>]>("inject");
 
@@ -67,14 +74,19 @@ function createStepRunner(args: UserTableTestArgs): (prompt: string) => Promise<
     await dispatchAgentTask({ workId: args.workId, sessionId: args.sessionId, prompt });
     await condition(() => results.length >= awaited);
     const answer = results[awaited - 1];
-    // a missing outcome (older agent) is treated as satisfied to keep the round-trip backward compatible
-    if (answer.outcome !== undefined && answer.outcome !== "satisfied") {
+    // gate on the structured envelope's status — the parseable ANSWER, so a true-but-negative verify (e.g. row
+    // missing) fails the step even though the turn ran honestly. FAIL CLOSED: a "fail" verdict OR a missing/
+    // malformed envelope throws — the opposite bias to the evaluator's fail-open, since a verify gate must not
+    // pass on doubt. The agent always sends an envelope (the dispatch boundary synthesizes one as a fallback).
+    const envelope = answer.result as TurnResponseEnvelope | undefined;
+    if (envelope?.status !== "success") {
       throw ApplicationFailure.nonRetryable(
-        `step ${awaited} did not complete (outcome: ${answer.outcome}): ${String(answer.result)}`,
+        `step ${awaited} reported status "${String(envelope?.status)}" ` +
+          `(outcome: ${answer.outcome ?? "n/a"}): ${JSON.stringify(envelope?.result ?? answer.result)}`,
         "AgentStepFailed",
       );
     }
-    return answer.result;
+    return envelope.result;
   };
 }
 

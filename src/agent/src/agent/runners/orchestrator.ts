@@ -16,6 +16,9 @@ import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
 import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
+import { createTurnResultLocalMcp } from "../synthetic-mcp/turn-result-server.js";
+import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
+import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
@@ -33,6 +36,9 @@ export interface RunResult {
   // "satisfied" accepted, "awaiting-input" ended on a clarification question (no work done — distinct so headless can't read it as success),
   // "capped" hit the iteration bound, "failed" judged unrecoverable; drives the headless exit code
   outcome: "satisfied" | "awaiting-input" | "capped" | "failed";
+  // the agent's structured verdict from report_result on a dispatched turn; absent when the tool wasn't mounted
+  // or wasn't called (interactive, capped, or system-failed turns) — the dispatch boundary fills a fallback then
+  reported?: ReportedTurnResult;
 }
 
 // narrow contract satisfied structurally by Orchestrator, so the manager stays decoupled and construction acyclic
@@ -87,6 +93,23 @@ export class Orchestrator {
         signal: ctx.signal,
       };
       mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
+    }
+
+    // dispatched runs require a structured verdict: rebind turnresult to this turn's sink so report_result lands here.
+    // minted regardless so the post-round check is uniform; only registered (advertised) when structured mode is on.
+    // the executor reports to its parent, not a workflow, so it never enforces report_result even under dispatch.
+    const structuredMode = ctx.runtime.isStructuredResultEnabled() && this.role !== "executor";
+    const resultSink = new TurnResultCapture();
+    if (structuredMode) {
+      mcpRegistry.registerClient(
+        createTurnResultLocalMcp({
+          session,
+          workspace,
+          sandboxRoot: mcpRegistry.sandboxRoot,
+          signal: ctx.signal,
+          resultSink,
+        })
+      );
     }
 
     // built after the subsessions rebind so the scoped client sees the live mounts
@@ -259,6 +282,23 @@ export class Orchestrator {
           };
         }
 
+        // Structured mode: a prose answer that skipped report_result has no parseable verdict, so it must not
+        // settle as satisfied (that reopens the M5-9 gap). Nudge for the mandated call and keep going; if the
+        // model never complies the cap trips, which the dispatch boundary maps to a fail envelope (fails closed).
+        if (structuredMode) {
+          const nudge: ChatMessage = {
+            role: "user",
+            content:
+              `You answered without calling report_result. You MUST finish by calling report_result ` +
+              `with the final status ("success"/"fail") and a structured result. ` +
+              `The request for THIS turn is exactly: «${turnRequest}»`,
+          };
+          conversation.append(nudge);
+          workingMessages.push(nudge);
+          await conversation.flush();
+          continue;
+        }
+
         // Orchestrator: gate through the evaluator, unless config disables it — capable models self-verify, so the
         // first tool-free answer settles as satisfied on their own word (the guard rail is for weaker models).
         if (!config.orchestration.evaluatorEnabled) {
@@ -340,6 +380,14 @@ export class Orchestrator {
       conversation.append(...toolMessages);
       workingMessages.push(...toolMessages);
 
+      // report_result is the mandated terminal action on a dispatched turn: once it lands, end the turn with the
+      // structured verdict — its status drives the outcome, so a "fail" verdict fails the step even though the
+      // agent answered honestly (the M5-9 gap: a true-but-negative answer must not bank as satisfied).
+      const reported = resultSink.value;
+      if (reported) {
+        return this.finalizeReported(reported, turnRequest, iteration, tracker.count, conversation, turnEvents);
+      }
+
       // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
       if (this.role !== "executor" && config.orchestration.evaluatorEnabled && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
@@ -391,6 +439,35 @@ export class Orchestrator {
   }
 
   // --------------------------------------------------------------------------
+
+  // ends a dispatched turn on the agent's report_result: the final conversation line IS the verdict envelope
+  // (single JSON line) so the record is self-describing, and outcome mirrors status so the existing step gate
+  // fails closed on a "fail" verdict without parsing prose. `reported` rides RunResult for the typed wire envelope.
+  private async finalizeReported(
+    reported: ReportedTurnResult,
+    input: string,
+    iterations: number,
+    dispatches: number,
+    conversation: Conversation,
+    events: Eventing
+  ): Promise<RunResult> {
+    const envelope = { status: reported.status, input, result: reported.result };
+    const finalMessage: ChatMessage = { role: "assistant", content: JSON.stringify(envelope) };
+    conversation.append(finalMessage);
+    events.publish(OrchestratorEventTypes.MESSAGE, {
+      iteration: iterations,
+      content: finalMessage.content,
+      toolCallCount: 0,
+    });
+    await conversation.flush();
+    return {
+      finalMessage,
+      iterations,
+      dispatches,
+      outcome: reported.status === "success" ? "satisfied" : "failed",
+      reported,
+    };
+  }
 
   // records a system-failure notice and returns outcome "failed" so the caller stops trying
   private async failTurn(

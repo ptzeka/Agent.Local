@@ -4,4 +4,13 @@ export {
   getExcelToolDescriptors,
 } from "./excel-tools/excel-tools.js";
 export { createSubSessionTools } from "./subsessions-tools/subsessions.js";
-export type { RichToolResult, SyntheticMcp, TurnBindable, ToolContext } from "./types.js";
+export { createReportResultTools, REPORT_RESULT_TOOL, TurnResultCapture } from "./turn-result-tools.js";
+export { createTurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "./turn-result-server.js";
+export type {
+  ReportedTurnResult,
+  RichToolResult,
+  SyntheticMcp,
+  TurnBindable,
+  TurnResultSink,
+  ToolContext,
+} from "./types.js";

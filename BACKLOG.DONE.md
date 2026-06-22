@@ -14,6 +14,169 @@ Newest milestones first.
 
 ---
 
+## M8 — Frontend epic (React console + API)
+
+Completed slices of the M8 frontend epic (see [BACKLOG.md](BACKLOG.md) for the open
+M8-2…M8-6 sequence).
+
+### M8-1 · React + express scaffold (sandbox conventions) — `~2d` · P1
+- [x] New workspace `@agent-local/web` (`src/web`): React 19 + react-router 7 +
+      **MUI**, **Webpack 5 + Babel**, three bundles (client / standalone server /
+      `mount` library) via `webpack.dev.mjs` / `webpack.prod.mjs`. No Vite. *(2026-06-17)*
+- [x] Streaming SSR (`renderToPipeableStream`) server (`src/web/src/server/`),
+      mountable into the host via `mount(app, ctx)` (the host imports the ESM
+      `dist/server/mount.js` library + co-located static assets). *(2026-06-17)*
+- [x] Startup scripts: `dev` (concurrent webpack watch + nodemon), `build`,
+      `start`, `clean`. *(2026-06-17)*
+- [x] Minimal shell — MUI-themed layout, one react-router 7 route, hello page, a
+      health badge hitting `GET /healthz`. No feature views yet (M8-3). *(2026-06-17)*
+- [ ] `/api` tunnel + `webpack serve` dev-proxy parity — deferred to M8-2 (no API
+      to tunnel to yet).
+
+**Done when:** ~~…~~ — **met 2026-06-17**: web builds all bundles, the co-hosted
+`@agent-local/host` SSR-renders the React shell at `/`, serves `/static/app.js`
+(200), and the health badge reads the live host `/healthz`. Verified end to end.
+
+_created 2026-06-17 · updated 2026-06-17 · by Periklis Tzeka_
+
+---
+
+## M7 — Workflow engine & host
+
+Completed slices of the M7 milestone (see [BACKLOG.md](BACKLOG.md) for the open
+M7 sequence).
+
+### M7-12 · Neutralize the agent comms contract — symmetric `/receive`, thin transport adapters — `~1d` · P1
+The host↔agent seam today speaks the workflow engine's vocabulary on the wire: the
+agent's inbound route is `POST /events` carrying a `{ eventType, payload }` envelope
+whose only accepted type is `WORKFLOW_JOB`, and the answer echoes `temporalId`/`jobKey`
+back ([comms/contract.ts](src/agent/src/server/comms/contract.ts),
+[comms/receiver.ts](src/agent/src/server/comms/receiver.ts#L58-L65)). The agent should
+not know what a "temporal" is. Worse, the receiver is a **fat** class — it terminates
+HTTP *and* builds the runtime *and* runs the turn inline ([receiver.ts:52-72](src/agent/src/server/comms/receiver.ts#L52-L72)),
+so transport and execution are fused. Split them and neutralize the contract so the
+wire is engine-agnostic and the agent stays a thin host over the runtime (per the
+host-agnostic direction: transport is a host, the runtime never knows about HTTP).
+
+**Symmetric peers.** Both host and agent expose `POST /receive` (HTTP + JWT) and each
+has a Sender that POSTs to the other's `/receive`. No `/events`, no event-typed
+envelope on the wire — each `/receive` is side-specific, so there is nothing to
+discriminate (agent's always gets an `ExecutionRequest`, host's always an
+`ExecutionResult`). POST the body directly.
+
+**Three roles, not one.** `HttpReceiver` (transport only: route + JWT + parse + map to
+one internal bus event) → `Runner` (subscribes, builds the per-job runtime, runs the
+turn, publishes a result event — the relocated `receive()` body) → `HttpSender`
+(subscribes, POSTs `ExecutionResult`). The internal `Eventing` bus **stays** — it is
+exactly the seam the Receiver converts *into*; the wire payloads are the HTTP contract,
+the bus events the internal contract, and they may differ (the Receiver enriches the
+event with `source`/`createdAt` so the Runner/Sender never touch the JWT).
+
+**Neutral correlation.** `sessionId` (on the `x-session-id` header) is the routing key
+the host maps back to `workId` via its own table; `runId` is host-supplied, opaque to
+the agent, echoed on the result (host may use its workflow run id). `temporalId`/`jobKey`
+leave the agent entirely — engine routing becomes host-private state keyed by
+`sessionId`.
+- [x] Wire contract (replaces `WORKFLOW_JOB`/`AGENT_RESULT` envelopes):
+      `ExecutionRequest { runId, input }` inbound (sessionId off the header),
+      `ExecutionResult { sessionId, runId, source, createdAt, result, outcome }`
+      outbound. `outcome` stays the turn verdict so the host fails a step without
+      sniffing the text. → `comms/contract.ts` on both sides (the host mirrors the
+      shapes; the bus events `EXECUTION_REQUESTED`/`EXECUTION_RESULT` are the agent's
+      internal contract, distinct from the wire).
+- [x] `HttpReceiver`: renamed `/events` → `/receive`; parses `ExecutionRequest`, lifts
+      `sessionId` from the header and `source` from `req.userContext.userInfo.serviceId`
+      (= verified `claims.sub`), stamps `createdAt`, publishes ONE `EXECUTION_REQUESTED`,
+      ACKs 202. No runtime construction in this class. → `comms/receiver.ts`.
+- [x] `ExecutionRunner`: subscribes `EXECUTION_REQUESTED`, builds the per-job runtime
+      (the relocated `buildForJob`), runs the turn, publishes `EXECUTION_RESULT`, drains
+      the runtime. Runtime construction lives here now, off the transport class. →
+      `comms/runner.ts`, wired in `server/index.ts`.
+- [x] `HttpResultSender`: subscribes `EXECUTION_RESULT`, POSTs `ExecutionResult` to the
+      host's `/receive` (existing `settings.host.receiveUrl`); keeps the cached-bearer
+      JWT attach. → `comms/sender.ts`.
+- [x] Enforce JWT on the job path so `source` is reliable: `/receive` rejects 401 when
+      `authentication.required` and the caller is not token-verified. Added
+      `authenticated` to `IRequestUserContext` (true only on the verified-JWT branch) so
+      the session-capability/stub paths can't be mistaken for a client id. →
+      `middleware/user_context.ts`, gate in `comms/receiver.ts`.
+- [x] Mirror the host side: its inbound stays `POST /receive`, its Sender now POSTs an
+      `ExecutionRequest` to the agent's `/receive`; the host translates at the boundary
+      (`runId` = its `temporalId` == `workId`) so the engine vocabulary stays on its own
+      bus. → `src/host/src/comms/{sender,receiver,contract}.ts`, `events.ts`
+      (`AgentResultPayload` drops dead `jobKey`, gains `outcome`).
+- [ ] OBO seam (depends on M2-9): once `sub` becomes the end user and `act.sub` the
+      dispatching service, re-point `source` to `act.sub` so "who sent it" stays the
+      actor — leave a code note at the lift site so the meaning doesn't silently flip.
+- [x] Tests: a request missing a verified bearer is 401 (no token-less accept on
+      `/receive`); a valid request publishes one internal event and ACKs 202 without
+      running a turn in the route; the published event carries `source == claims.sub` and
+      the echoed `runId`, with no `temporalId`/`jobKey`/`eventType`. → 3 tests in
+      `tests/server/receiver.test.ts` (host translation covered by `tsc`; a host runtime
+      test is blocked on jose/ESM in the host's `userContext` chain — noted, not built).
+
+**Done when:** the host POSTs an `ExecutionRequest` to the agent's `/receive`, the
+Receiver maps it to a bus event (no runtime work in the HTTP class), the Runner executes
+and the Sender POSTs an `ExecutionResult { sessionId, runId, source, createdAt, result,
+outcome }` to the host's `/receive` — with no engine vocabulary (`temporalId`/`jobKey`/
+`eventType`) anywhere on the wire and JWT enforced both directions. ✅ DONE (OBO
+`source`→`act.sub` re-point deferred to M2-9) — _by ptzeka_
+
+_created 2026-06-21 · updated 2026-06-21 · by ptzeka_
+
+---
+
+## M1 — Loop reliability & cost
+
+Completed slices of the M1 milestone (see [BACKLOG.md](BACKLOG.md) for the open
+M1 sequence and the M1-4 prompt-cache slices below).
+
+### M1-13 · Required-field presence check at the client — `~0.5d` · P1
+Scope deliberately minimal: the client checks ONLY that a tool's declared
+`required` keys are present; the servers throw the rest. Value-level validation
+already lives server-side and stays there — fsmcp Zod-parses every arg
+(`fsmcp/src/server.ts` L46 `schema.parse`, errors caught into `isError` at L165),
+so types/enums/bounds/required are all enforced for free; the synthetic LocalMcp
+tools (dispatch/subsessions/excel) hand-read `args.x ?? default` and keep their
+own value guards (e.g. the non-empty `intent` check). The gap the client closes
+is uniform PRESENCE: synthetic tools never parse their hand-written schema, so
+`required`/`enum` there are advisory, and a missing field yields a tool-specific
+string (`[dispatch-error] intent is required`) instead of one recoverable error.
+Every tool already carries `inputSchema` on its `ToolDescriptor` and
+`ScopedToolClient` already resolves `name → { client, toolTail }` before dispatch
+(L30-39), so the `required` array is in hand at the choke point. Lands as the
+**VALIDATE layer of the ToolPort (MR-1)**, not a new chokepoint.
+- [x] Required-presence ONLY: read the resolved tool's `inputSchema.required`,
+      verify each key exists in `args`, before `client.callTool`. No ajv, no
+      type/enum/pattern engine (none of our schemas use `pattern`/regex anyway,
+      and one conditional-required case — codemcp `repository`, "REQUIRED when
+      auto-detection failed" — is runtime-only and must be left to the tool). A
+      ~20-line key walk, not a schema library. → `missingRequired()` helper in
+      `scoped-tool-client.ts`.
+- [x] Corrective error on a missing key: `{ isError: true, content }` naming the
+      absent field(s) (reuse the `ScopedToolClient` corrective-error pattern) so
+      the loop re-plans and re-emits — never throw.
+- [x] Presence ≠ non-empty: `required` only checks the key exists, so
+      `intent: ""` passes here by design — empty/whitespace is a VALUE problem
+      the server keeps rejecting (dispatch keeps its `if (!intent)` guard). Do
+      NOT fold value checks into the client.
+- [x] Leave server-side validation untouched: fsmcp's Zod parse and the
+      synthetic value guards stay. dispatch's `if (!intent)` doubles as the
+      empty-string value guard, so it stays as-is (it is the value arm).
+- [x] Tests: a dispatch with `intent` absent is rejected at the client with a
+      field-named error (not the old string) and never reaches the executor; a
+      present-but-empty `intent` still falls through to the server's existing
+      guard; a fully-valid call passes untouched. → 6 tests in
+      `tests/scoped-tool-client.test.ts`.
+
+**Done when:** a tool call missing a `required` key returns one uniform
+field-named corrective error from the client and the mutation never runs, while
+all value-level validation (types, enums, empty-string) stays server-side. ✅ DONE
+
+_created 2026-06-15 · updated 2026-06-15 · by Periklis Tzeka_
+
+---
+
 ## MR — Unified runtime refactor
 
 Completed slices of the MR milestone (see [BACKLOG.md](BACKLOG.md) for the open

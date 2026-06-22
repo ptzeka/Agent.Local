@@ -4,6 +4,7 @@ import type { ModelRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY_SERVER_NAME } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
+import { createTurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
 import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
@@ -115,6 +116,18 @@ export class McpRegistryMiddleware implements IMiddleware {
           break;
         case SUBSESSIONS_SERVER_NAME:
           registry.registerClient(createSubsessionsLocalMcp({
+            session,
+            workspace,
+            sandboxRoot,
+            coordinator: undefined,
+            signal: undefined,
+          }).setTimeout(serverTimeout));
+          break;
+        case TURN_RESULT_SERVER_NAME:
+          // mount only on dispatched runs; left declared-but-unmounted (skipped) for interactive CLI. the live
+          // sink is rebound per turn in the orchestrator — this build-time mount just makes the snapshot honest.
+          if (!ctx.structuredResult) break;
+          registry.registerClient(createTurnResultLocalMcp({
             session,
             workspace,
             sandboxRoot,

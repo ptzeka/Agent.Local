@@ -30,7 +30,11 @@ describe("userTableTestWorkflow", () => {
     const dispatchAgentTask = jest.fn(async (input: DispatchAgentTaskInput) => {
       dispatched.push(input);
       const handle = env.client.workflow.getHandle(input.workId);
-      await handle.signal(agentResultSignal, { result: `answered: ${input.prompt.slice(0, 16)}` });
+      // play the agent's structured envelope: every step succeeds, so status "success" carries the step forward
+      await handle.signal(agentResultSignal, {
+        result: { status: "success", input: input.prompt, result: { note: input.prompt.slice(0, 16) } },
+        outcome: "satisfied",
+      });
     });
 
     const worker = await Worker.create({
@@ -65,7 +69,11 @@ describe("userTableTestWorkflow", () => {
       dispatched.push(input);
       const handle = env.client.workflow.getHandle(input.workId);
       await handle.signal(agentResultSignal, {
-        result: "SYSTEM-FAILURE: failed to complete request — executor produced no tool call",
+        result: {
+          status: "fail",
+          input: input.prompt,
+          result: { detail: "executor produced no tool call" },
+        },
         outcome: "failed",
       });
     });
@@ -90,7 +98,7 @@ describe("userTableTestWorkflow", () => {
       .catch((err: unknown) => err as Error & { cause?: Error });
 
     expect(failure).not.toBeNull();
-    expect((failure?.cause as Error)?.message).toMatch(/outcome: failed/);
+    expect((failure?.cause as Error)?.message).toMatch(/reported status "fail"/);
 
     // only the first step dispatched; the failure short-circuits the rest
     expect(dispatched).toHaveLength(1);
@@ -112,8 +120,18 @@ describe("userTableTestWorkflow", () => {
       await handle.signal(
         agentResultSignal,
         verifying
-          ? { result: "row userId=55, userName=foxmulder is missing", outcome: "failed" }
-          : { result: `answered: ${input.prompt.slice(0, 16)}`, outcome: "satisfied" },
+          ? {
+              result: {
+                status: "fail",
+                input: input.prompt,
+                result: { detail: "row userId=55, userName=foxmulder is missing" },
+              },
+              outcome: "failed",
+            }
+          : {
+              result: { status: "success", input: input.prompt, result: {} },
+              outcome: "satisfied",
+            },
       );
     });
 
@@ -136,8 +154,8 @@ describe("userTableTestWorkflow", () => {
       .catch((err: unknown) => err as Error & { cause?: Error });
 
     expect(failure).not.toBeNull();
-    // step 4 (the third dispatched prompt) is the verify that fails
-    expect((failure?.cause as Error)?.message).toMatch(/step 3 did not complete \(outcome: failed\)/);
+    // step 4 (the third dispatched prompt) is the verify that fails — gated on the envelope's "fail" status
+    expect((failure?.cause as Error)?.message).toMatch(/step 3 reported status "fail"/);
     expect(dispatched).toHaveLength(3);
     expect(dispatched[1].prompt).toContain("userId=88, userName=danaskully");
     expect(dispatched[2].prompt).toContain("userId=55 and userName=foxmulder");

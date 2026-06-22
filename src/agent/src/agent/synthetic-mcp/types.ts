@@ -7,6 +7,18 @@ import type { SubSessionCoordinator } from "../runners/subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
 
+// the agent's self-reported turn verdict: status is the parseable answer channel (distinct from the loop's
+// outcome), result is the model-supplied structured payload. The runtime wraps these into the wire envelope.
+export interface ReportedTurnResult {
+  readonly status: "success" | "fail";
+  readonly result: unknown;
+}
+
+// turn-scoped capture seam for the report_result tool; the orchestrator reads it to terminate the turn
+export interface TurnResultSink {
+  set(reported: ReportedTurnResult): void;
+}
+
 // only the fields tools actually need: tools are pure result-returning functions, side effects stay in the server layer
 export interface ToolContext {
   readonly session: Session;
@@ -14,6 +26,8 @@ export interface ToolContext {
   readonly sandboxRoot: string;
   readonly coordinator?: SubSessionCoordinator;
   readonly signal?: AbortSignal;
+  // present only on dispatched (non-interactive) turns: where report_result hands its structured verdict back
+  readonly resultSink?: TurnResultSink;
 }
 
 // the server fires this event after the MCP response is sent, so the tool returns it instead of calling emit

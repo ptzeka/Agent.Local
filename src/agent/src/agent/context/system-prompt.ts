@@ -89,6 +89,17 @@ Completion gate:
   Only SATISFIED ends the turn, so do not stop early — keep working until
   the request is actually fulfilled.
 
+Structured result (ONLY when the \`report_result\` tool is listed above):
+  This run requires a machine-readable result, so it overrides PHASE 3 and the
+  EVALUATOR gate. Instead of ending with a plain prose message, finish by
+  calling \`report_result\` exactly once as your FINAL action:
+    - status: "success" if the request/condition holds, "fail" if it does not.
+      For a verify/assert request, status is the ANSWER (condition false =>
+      "fail"), NOT merely whether you ran the check.
+    - result: a JSON object capturing the structured outcome.
+  The report_result call IS your result — do not also answer in prose. If this
+  tool is NOT listed above, ignore this section and follow PHASE 3 normally.
+
 Sub-sessions (delegating autonomous work — FIRE AND FORGET):
   When some self-contained sub-goal can proceed on its own, you may delegate
   it to a SUB-SESSION instead of doing every step yourself:

@@ -25,6 +25,8 @@ export interface AgentRuntimeQueryable {
   getEvents(): Eventing;
   // true only for a host with a live incremental renderer (interactive REPL); off → collect-then-emit
   isStreamOutputEnabled(): boolean;
+  // true on dispatched runs that mount report_result and require a structured verdict envelope
+  isStructuredResultEnabled(): boolean;
 }
 
 export interface AgentRuntimeDeps {
@@ -44,6 +46,9 @@ export interface AgentRuntimeDeps {
   eventing?: Eventing;
   // opt-in live token streaming; only the interactive host sets it, sub-runtimes leave it off (collect-only)
   streamOutput?: boolean;
+  // opt-in structured turn responses: dispatched (non-interactive) runs require the agent to finish via the
+  // report_result tool so the caller gets a parseable verdict envelope; interactive CLI leaves it off
+  structuredResult?: boolean;
 }
 
 export interface RuntimeContext {
@@ -60,6 +65,8 @@ export interface RuntimeContext {
   readonly runtimeSignal: AbortSignal;
   // chained under the host's by EventingMiddleware; steps and the orchestrator publish here
   eventing: Eventing | undefined;
+  // dispatched runs set this so McpRegistryMiddleware mounts the report_result (turnresult) server
+  readonly structuredResult: boolean;
 }
 
 // return without calling next to short-circuit (e.g. fatal auth failure); mutate ctx then call next to continue

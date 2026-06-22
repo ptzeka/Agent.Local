@@ -26,13 +26,22 @@ export interface ExecutionRequested {
   input: string;
 }
 
-// outbound wire payload (POST host /receive) and the EXECUTION_RESULT bus event — the finished turn. outcome is
-// the turn's own verdict so the host fails a step on a non-satisfied turn without sniffing the text.
+// the common response envelope every finished turn carries: status is the parseable verdict the caller gates on,
+// input echoes the dispatched prompt, result is the agent's structured payload. Produced by the report_result tool
+// on a dispatched run; the dispatch boundary synthesizes a fallback envelope for turns that didn't report one.
+export interface TurnResponse {
+  status: "success" | "fail";
+  input: string;
+  result: unknown;
+}
+
+// outbound wire payload (POST host /receive) and the EXECUTION_RESULT bus event — the finished turn. result is the
+// structured envelope; outcome is the loop's own verdict, kept so the host can gate without re-deriving from status.
 export interface ExecutionResult {
   sessionId: string;
   runId: string;
   source: string;
   createdAt: string;
-  result: string;
+  result: TurnResponse;
   outcome: string;
 }

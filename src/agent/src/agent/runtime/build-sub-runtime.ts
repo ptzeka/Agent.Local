@@ -30,6 +30,9 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     parentSignal: refs.parentSignal ?? deps.parentSignal,
     // a sub-run has no live renderer of its own; it reports through the executor bridge, so it stays collect-only
     streamOutput: false,
+    // structured result is the top-level turn's contract with the workflow; a sub-session answers its PARENT, not
+    // a workflow, so it must not be forced through report_result (which it has no turnresult mount for anyway)
+    structuredResult: false,
   };
   return new AgentRuntime(childDeps)
     .add(new ContainerMiddleware())
