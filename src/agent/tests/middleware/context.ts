@@ -2,7 +2,7 @@ import type { McpClientRegistry } from "../../src/agent/registries/mcp-registry.
 import type { RuntimeContext } from "../../src/agent/runtime/types.js";
 import { Container, type Token } from "@agent-local/common/container";
 import { openDatabase, ensureSchema, type DatabaseHandle } from "@agent-local/common/db";
-import { AGENT_SCHEMA } from "../../src/agent/db-schema.js";
+import { AGENT_SCHEMA } from "../../src/db/db-schema.js";
 import {
   ConfigurationToken,
   ProvidersToken,

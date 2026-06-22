@@ -13,8 +13,8 @@
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
-    "db:init": "node dist/db-init.js",
-    "db:init:dev": "tsx src/db-init.ts",
+    "db:init": "node dist/db/db-init.js",
+    "db:init:dev": "tsx src/db/db-init.ts",
     "test": "jest",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },

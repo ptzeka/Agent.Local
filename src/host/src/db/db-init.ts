@@ -1,5 +1,5 @@
 import type { ILogger } from "@agent-local/common";
-import { ensureHostDb, resolveHostDbFile } from "./jobs/db-schema.js";
+import { ensureHostDb, resolveHostDbFile } from "./db-schema.js";
 
 // explicit `db init` command: brings host.sqlite up to schema, then exits. Run once before launching the
 // host (start.sh calls it) rather than on every process boot, so a serving process never races schema work.

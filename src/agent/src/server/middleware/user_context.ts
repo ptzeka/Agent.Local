@@ -35,12 +35,12 @@ declare global {
 export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionRegistry) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const auth = req.container.get(SERVER_CONFIG).authentication;
-    const presented = bearerToken(req.headers.authorization);
+    const accessToken = bearerToken(req.headers.authorization);
 
     // authorityUrl present => validate as a host-issued RS256 JWT; issuer must match the authority
-    if (presented && auth.authorityUrl) {
+    if (accessToken && auth.authorityUrl) {
       try {
-        const claims = await verifyIdentity(getKey, presented, { issuer: auth.authorityUrl });
+        const claims = await verifyIdentity(getKey, accessToken, { issuer: auth.authorityUrl });
         // a verified caller still needs the scope to talk to the agent at all; without it the token is valid
         // but unauthorized, so reject rather than fall through to the stub principal
         if (!claims.permissions.includes("agent:trigger")) {
@@ -48,7 +48,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
           return;
         }
         req.userContext = {
-          accessToken: presented,
+          accessToken: accessToken,
           userInfo: { serviceId: claims.sub },
           permissions: claims.permissions,
           authenticated: true,
@@ -79,7 +79,7 @@ export function userContextMiddleware(getKey: JwtKeyResolver, sessions: SessionR
     }
 
     req.userContext = {
-      accessToken: presented,
+      accessToken,
       userInfo: { serviceId: "host" },
       permissions: ["agent:trigger"],
       authenticated: false,

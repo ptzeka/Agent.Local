@@ -3,16 +3,16 @@ import type { ILogger } from "@agent-local/common";
 import type { DatabaseHandle } from "@agent-local/common/db";
 import type { WorkflowTemplate, WorkflowStep } from "@agent-local/temporal";
 import { requirePermission } from "../user/userContext.js";
-import type { JobRegistry, JobStatus } from "../jobs/job-registry.js";
-import { readStatusCodes } from "../jobs/db-schema.js";
+import type { WorkStore, WorkStatus } from "../work/work-store.js";
+import { readStatusCodes } from "../db/db-schema.js";
 import type { WorkService } from "../services/work-service.js";
 
-// the user-scoped work API: the host BFF resource over the work-unit registry. Every route is gated AND scoped
+// the user-scoped work API: the host BFF resource over the work-unit store. Every route is gated AND scoped
 // to the caller's identity (req.userContext.userInfo.sub, set by userContextMiddleware) so a user only ever
 // sees or stops their OWN works. "save" is just create for now (edit deferred); create runs the trigger flow.
 export function createWorksApi(
   workService: WorkService,
-  jobs: JobRegistry,
+  works: WorkStore,
   db: DatabaseHandle,
   workflows: WorkflowTemplate[],
   logger: ILogger,
@@ -56,22 +56,22 @@ export function createWorksApi(
 
   // search: the caller's works, optionally narrowed by ?status=. newest-first (registry sorts).
   router.get("/api/works", requirePermission("workflow:read"), async (req: Request, res: Response) => {
-    const status = typeof req.query.status === "string" ? (req.query.status as JobStatus) : undefined;
-    const works = await jobs.search({ userId: owner(req), status });
+    const status = typeof req.query.status === "string" ? (req.query.status as WorkStatus) : undefined;
+    const results = await works.search({ userId: owner(req), status });
     // poll-time reconcile: kick a bus-pure describe for each unsettled work so a NEXT poll reflects engine truth.
     // a `stopped` work is included only while its cleanup is pending (sessionId set), so reconcile closes the
     // released session — once cleaned it is fully settled and no longer pinged.
-    for (const work of works) {
+    for (const work of results) {
       if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
-        workService.requestReconcile(work.jobId);
+        workService.requestReconcile(work.workId);
       }
     }
-    res.json({ works });
+    res.json({ works: results });
   });
 
   // get: one work's current state by workId; 404 unless it exists AND belongs to the caller (no leak of ids)
   router.get("/api/works/:workId", requirePermission("workflow:read"), async (req: Request, res: Response) => {
-    const work = await jobs.get(req.params.workId);
+    const work = await works.get(req.params.workId);
     if (!work || work.userId !== owner(req)) {
       res.status(404).json({ error: "unknown work" });
       return;
@@ -80,11 +80,11 @@ export function createWorksApi(
     // record, the fold lands async (bus-pure) so the next read shows it — orphaned/failed workflows surface as
     // `stopped`, and a stopped work with cleanup still pending (sessionId set) gets its released session closed.
     if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
-      workService.requestReconcile(work.jobId);
+      workService.requestReconcile(work.workId);
     }
     // step history: the engine's reconstructed per-step status, folded in so the detail view renders it from one
     // call. only once the work actually started (temporalId set) does the engine hold a history to read.
-    const { steps, error: stepsError } = work.temporalId ? await safeSteps(work.jobId) : { steps: [], error: null };
+    const { steps, error: stepsError } = work.temporalId ? await safeSteps(work.workId) : { steps: [], error: null };
     res.json({ work, steps, stepsError });
   });
 
@@ -106,7 +106,7 @@ export function createWorksApi(
       res.status(404).json({ error: "unknown work" });
       return;
     }
-    logger.debug?.(`[host] stopped work ${work.jobId}: ${reason}`);
+    logger.debug?.(`[host] stopped work ${work.workId}: ${reason}`);
     res.json({ work });
   });
 
@@ -122,7 +122,7 @@ export function createWorksApi(
       res.status(409).json({ error: "work is not stopped" });
       return;
     }
-    logger.debug?.(`[host] continued (reset) work ${result.jobId}`);
+    logger.debug?.(`[host] continued (reset) work ${result.workId}`);
     res.status(202).json({ work: result });
   });
 
@@ -135,7 +135,7 @@ export function createWorksApi(
       res.status(404).json({ error: "unknown work" });
       return;
     }
-    logger.debug?.(`[host] rerun work ${work.jobId} from step ${req.params.stepId}`);
+    logger.debug?.(`[host] rerun work ${work.workId} from step ${req.params.stepId}`);
     res.status(202).json({ work });
   });
 

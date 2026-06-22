@@ -3,17 +3,19 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { openDatabase, ensureSchema, type SchemaSpec, type DatabaseHandle } from "@agent-local/common/db";
 import type { ILogger } from "@agent-local/common";
-import { JOB_STATUS_CODES, type StatusCode, type StatusTone } from "./job-status.js";
+import { WORK_STATUS_CODES, type StatusCode, type StatusTone } from "../work/work-status.js";
 
-// the host DB target schema (host.sqlite). The repository swap onto these tables is M3-H; dbup only ensures
-// the shape exists at startup so the table is ready the moment the repository lands.
+// the host DB target schema (host.sqlite). The work store reads/writes these tables (M3-H); dbup ensures the
+// shape exists at startup. A work is normalized across three tables: `work` holds the unit's own state, while
+// agent sessions and the temporal run are split into children so a work can carry many sessions and per-engine
+// metadata can grow without widening the core row.
 export const HOST_SCHEMA: SchemaSpec = {
   tables: [
     {
-      // the status-code lookup: an FK domain so a job row can never carry an unknown status, AND the catalog the
+      // the status-code lookup: an FK domain so a work row can never carry an unknown status, AND the catalog the
       // /api/works/statuscodes endpoint serves. Carries label + presentation tone + action flags so the UI is
       // fully data-driven. SQLite has no boolean, so the flags are 0/1 INTEGER columns.
-      name: "job_status",
+      name: "work_status",
       columns: [
         "status TEXT PRIMARY KEY",
         "label TEXT NOT NULL",
@@ -24,7 +26,7 @@ export const HOST_SCHEMA: SchemaSpec = {
       ],
       lookup: {
         conflictColumns: ["status"],
-        rows: JOB_STATUS_CODES.map((s) => ({
+        rows: WORK_STATUS_CODES.map((s) => ({
           status: s.status,
           label: s.label,
           tone: s.tone,
@@ -35,24 +37,53 @@ export const HOST_SCHEMA: SchemaSpec = {
       },
     },
     {
-      name: "jobs",
-      // current-state row per work unit, keyed by owner+job so a query can never cross users (M3 design rule)
+      name: "work",
+      // current-state row per work unit, keyed by owner+work so a query can never cross users (M3 design rule).
+      // session_id/temporal_id are NOT here — they are normalized out to work_agent_session / work_temporal;
+      // `step` is the descriptive "where we are" (it absorbed the old status_description: stop/failure reasons too).
       columns: [
         "user_id TEXT NOT NULL",
-        "job_id TEXT NOT NULL",
+        "work_id TEXT NOT NULL",
         "workflow_id TEXT",
         "workspace_id TEXT",
         "status TEXT NOT NULL",
         "step TEXT",
-        "session_id TEXT",
-        "temporal_id TEXT",
-        "status_description TEXT",
         "created_at TEXT NOT NULL",
         "updated_at TEXT NOT NULL",
-        "PRIMARY KEY (user_id, job_id)",
+        "PRIMARY KEY (user_id, work_id)",
       ],
-      foreignKeys: [{ column: "status", references: "job_status", refColumn: "status" }],
-      indexes: [{ name: "idx_jobs_user_status", columns: "user_id, status" }],
+      foreignKeys: [{ column: "status", references: "work_status", refColumn: "status" }],
+      // work_id is unique on its own (a uuid) — declared so the child tables below can FK to it despite the
+      // composite owner+work PK; the user scope still gates every read at the query layer.
+      indexes: [
+        { name: "idx_work_user_status", columns: "user_id, status" },
+        { name: "idx_work_work_id", columns: "work_id", unique: true },
+      ],
+    },
+    {
+      // the agent sessions a work owns, split out of work.session_id so a work can have more than one: kind=job
+      // is the workflow's own session (exactly one per work, enforced below); kind=cli is a standalone user chat.
+      name: "work_agent_session",
+      columns: [
+        "session_id TEXT PRIMARY KEY",
+        "work_id TEXT NOT NULL",
+        "kind TEXT NOT NULL CHECK (kind IN ('job', 'cli'))",
+        "created_at TEXT NOT NULL",
+      ],
+      foreignKeys: [{ column: "work_id", references: "work", refColumn: "work_id" }],
+      // one session per (work, kind): a work has at most one kind=job session and one kind=cli session
+      indexes: [{ name: "idx_work_agent_session_work_kind", columns: "work_id, kind", unique: true }],
+    },
+    {
+      // the temporal run backing a work, split out of work.temporal_id so engine-specific metadata can grow
+      // here without widening work; 1:1 with the work (work_id PK), populated once the instance starts.
+      name: "work_temporal",
+      columns: [
+        "work_id TEXT PRIMARY KEY",
+        "temporal_id TEXT NOT NULL",
+        "created_at TEXT NOT NULL",
+      ],
+      foreignKeys: [{ column: "work_id", references: "work", refColumn: "work_id" }],
     },
   ],
 };
@@ -69,7 +100,7 @@ export function resolveHostDbFile(configured?: string): string {
 // const). Maps the 0/1 INTEGER flags back to booleans so the wire shape matches StatusCode.
 export function readStatusCodes(db: DatabaseHandle): StatusCode[] {
   const rows = db
-    .prepare("SELECT status, label, tone, terminal, stoppable, continuable FROM job_status")
+    .prepare("SELECT status, label, tone, terminal, stoppable, continuable FROM work_status")
     .all() as Array<{ status: string; label: string; tone: string; terminal: number; stoppable: number; continuable: number }>;
   return rows.map((r) => ({
     status: r.status,
@@ -85,17 +116,7 @@ export function readStatusCodes(db: DatabaseHandle): StatusCode[] {
 export function ensureHostDb(logger?: ILogger): DatabaseHandle {
   const db = openDatabase(resolveHostDbFile());
   ensureSchema(db, HOST_SCHEMA, { logger });
-  migrateRetiredStatuses(db);
   return db;
-}
-
-// one-shot fold of the retired 7-status codes onto the 4 that replaced them (see job-status.ts): done/complete are
-// the clean end -> `completed`; stuck/cancelled were the recoverable/stop ends -> `stopped`. The jobs.status FK
-// forces the order — remap the job rows onto the survivors FIRST, then drop the now-unreferenced catalog rows.
-function migrateRetiredStatuses(db: DatabaseHandle): void {
-  db.prepare("UPDATE jobs SET status = 'completed' WHERE status IN ('done', 'complete')").run();
-  db.prepare("UPDATE jobs SET status = 'stopped' WHERE status IN ('stuck', 'cancelled')").run();
-  db.prepare("DELETE FROM job_status WHERE status IN ('done', 'complete', 'stuck', 'cancelled')").run();
 }
 
 function findPackageRoot(): string {

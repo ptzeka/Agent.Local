@@ -14,7 +14,7 @@ export const userTableTestTemplate: WorkflowTemplate = {
 };
 
 // start args = the work-unit ids the host seeds at trigger; step 1 "gathers" them into the workflow state.
-// the OWNER is the host's principal (JobRegistry keyed by userId), NOT an engine variable — the engine stays
+// the OWNER is the host's principal (WorkStore keyed by userId), NOT an engine variable — the engine stays
 // user-agnostic (M7-9), so no userId/identity rides into the workflow here.
 export interface UserTableTestArgs {
   workId: string;

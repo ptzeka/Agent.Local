@@ -1,7 +1,7 @@
 import express from "express";
 import { Eventing, sessionKey, AccessTokenProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
-import { resolveHostDbFile } from "./jobs/db-schema.js";
+import { resolveHostDbFile } from "./db/db-schema.js";
 import { mount as mountWorkflow, WORKFLOW_TEMPLATES } from "@agent-local/temporal";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
@@ -13,7 +13,7 @@ import { userContextMiddleware, requirePermission } from "./user/userContext.js"
 import { createJwksProvider } from "./user/jwks.js";
 import { HttpJobSender } from "./comms/sender.js";
 import { WorkService } from "./services/work-service.js";
-import { JobRegistry } from "./jobs/job-registry.js";
+import { WorkStore } from "./work/work-store.js";
 import { createHealthApi } from "./health.js";
 
 const DEFAULT_PORT = 3011;
@@ -32,12 +32,12 @@ async function main(): Promise<void> {
   // event bus
   const bus = new Eventing();
   const app = express();
-  const settings = loadAppSettings();  
-  const jobs = new JobRegistry();
+  const settings = loadAppSettings();
   if (!settings.host.session?.secret) logger.warn?.("[host] no host.session.secret — session cookie uses an insecure dev key");
   const cookieKey = sessionKey(settings.host.session?.secret ?? "agent-local-insecure-dev-session-secret");
   const db = openDatabase(resolveHostDbFile(settings.host.db?.file));
-  const ctx: MountContext = { bus, logger, signal: root.signal, settings, jobs, db, resolveUser: resolveUserFromRequest };
+  const works = WorkStore.create(db);
+  const ctx: MountContext = { bus, logger, signal: root.signal, settings, works, db, resolveUser: resolveUserFromRequest };
 
   app.use(express.json());
   // liveness: the host process is up and serving. cheap, dependency-free — orchestrators restart on its failure.
@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   const sender = new HttpJobSender(bus, settings.agent.baseUrl, logger, dispatchTokens, dispatchClientId);
   sender.start();                                                   // workflow.job -> HTTP -> agent service
   // the work service owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs
-  const workService = new WorkService(bus, jobs, sender, logger);
+  const workService = new WorkService(bus, works, sender, logger);
   workService.start();
   // gate the whole /workflow surface on the caller's session: reads need workflow:read, writes workflow:write;
   // liveness (/workflow/healthz) stays public. Mounted before the routes so it covers the engine routes.
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   const temporal = mountWorkflow(app, ctx);  // /workflow/* routes + Temporal client (publishes workflow.*)
   // the user-scoped work API: get/search/create/stop over the registry, each route owned by the cookie identity.
   // create runs the trigger flow; this replaces the old anonymous /workflow/trigger.
-  app.use(createWorksApi(workService, jobs, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
+  app.use(createWorksApi(workService, works, db, WORKFLOW_TEMPLATES, logger, (workId) => temporal.getSteps(workId)));
   // readiness (/health/ready): the host can actually serve work — engine reachable (TCP connect to its frontend)
   // AND a live probe of the separate agent service. registered before web (whose SSR catch-all would shadow it).
   // distinct from /healthz liveness: a down dependency is unready, not dead. engine address is env-only, same as

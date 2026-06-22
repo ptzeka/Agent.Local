@@ -1,7 +1,7 @@
 import express from "express";
 import { Container, Eventing, AccessTokenProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
-import { resolveAgentDbFile } from "../agent/db-schema.js";
+import { resolveAgentDbFile } from "../db/db-schema.js";
 import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
 import { HttpReceiver } from "./comms/receiver.js";

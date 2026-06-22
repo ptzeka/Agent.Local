@@ -2615,38 +2615,75 @@ and Continue on a step re-runs from exactly that step with its original inputs.
 sourced from `/api/jobs`, rows update live as work units change state, and Cancel
 stops a running work unit and its Camunda instance.
 
-### M8-6 · User chat popup on a work item (standalone CLI session) — `~2d` · P2
+### M8-6 · User chat popup on a work item (first-class `session` + `sessionConversation`) — `~2d` · P2
 A user-driven chat against a work item's workspace, separate from the workflow's
 own session but sharing its `workspaceId`, so the user can inspect/modify the
-work's files conversationally. Persisted as `userCliSessionId` on the job; it
+work's files conversationally. Modelled as a first-class standalone session that
 outlives the workflow run. Concurrency with a live workflow session is left to
 the user (no read-only/blocking gate).
 
-> **Context 2026-06-21:** no live event stream exists today — the SSE bus bridge
-> was removed (M8-2, 2026-06-19) and the agent-side streaming transport (M4-1,
-> `POST /sessions/:id/dispatch` SSE) is unbuilt. So the chat is request/response;
-> live token streaming is a follow-up gated on re-adding SSE/WS + M1-11b.
+> **Reshaped 2026-06-21 — first-class `session` table, not a `JobRecord` column.** Today the agent
+> session is just a column `sessionId` on `JobRecord` (minted/cleared in `work-service.ts`); there is no
+> host session store. Promote session to a first-class entity: a **`session` table** keyed by
+> `sessionId`, `{ workId (FK → jobs), kind ∈ {workflow, cli} }`, and a **`sessionConversation`** table
+> reffed to it. CLI is just `kind=cli`; the workflow session is the same table with `kind=workflow`. This
+> is the discriminator on receive — no wire subtype (the agent never learns the engine; `source` is the
+> JWT caller, not a workflow/cli flag). It reuses the SYMMETRIC `/receive` comms wholesale (M7-12) —
+> **no new agent route**: host → agent `POST /receive` (`ExecutionRequest` + `x-session-id`), reply
+> agent → host `POST /receive` (`ExecutionResult`, already carries `sessionId`). Attachable from EITHER
+> surface — web popup or agent CLI/REPL.
+>
+> **Refined 2026-06-21 — transcript, not history; poll only while open.** `sessionConversation` stores
+> the **transcript** (what the CLI would print: user input + the agent's rendered `result.result`), NOT a
+> structured event/tool history — that stays the agent's job (event-sourcing future). "Without the
+> system stuff" is done at the SOURCE (the agent's `result.result` is already clean rendered text); the
+> host writes it verbatim, no host-side filtering. Reply delivery is **poll-for-now** (no live stream —
+> SSE removed M8-2, agent SSE unbuilt M4-1): the UI polls the conversation **only WHILE the popup is
+> open** (configurable interval, default ~1s) and STOPS polling on close — cost is bounded to an open
+> chat. Event-sourced / live streaming (re-add SSE/WS + M1-11b) is the follow-up that retires polling.
 
-- [ ] `JobRecord.userCliSessionId: string | null` (`src/host/src/jobs/job-registry.ts`)
-      + the SQLite jobs repo column (M3-H); defaults null, set lazily on first chat open.
-- [ ] Mint-or-resume: host calls the existing `/session/create` with the job's
-      OWN `workspaceId` (idempotent `WorkspaceRegistry` → shared folder), stores the
-      returned id as `userCliSessionId`. No new session-mint path.
-- [ ] Agent interactive turn route (`src/agent/src/server/comms/`): resume by
-      `sessionId` (`SessionMiddleware`) + `dispatchAsync(message)`, return the reply
-      request/response. The conversational sibling of `runJob` — NOT workflow-job
-      shaped. Live token streaming deferred to SSE re-add (M4-1/M8-2) + M1-11b.
-- [ ] Host works API: `POST /api/works/:id/chat` (lazily mints `userCliSessionId`,
-      proxies the message to the agent route), gated by `requirePermission` +
-      cookie identity like the other works routes.
-- [ ] Console: a chat "[ > ]" action on the jobs table (M8-4) opening the popup.
-- [ ] Lifecycle: `Orchestrator.complete`/`finalizeStop` close ONLY the workflow
-      `sessionId`, never `userCliSessionId` — dropped by explicit close/retention.
+Schema (SQLite, alongside the existing work schema in `src/host/src/jobs/db-schema.ts`, M3-H). Naming:
+the current work/jobs table is **`Work`**; the two new tables are **`AgentSession`** and
+**`AgentConversation`** (the `Agent*` prefix also avoids colliding with the auth `user/session.ts`):
 
-**Done when:** from the jobs table a user opens a chat popup on a work item, sends
-a message, and the agent answers operating on that work's workspace via a persisted
-standalone `userCliSessionId` that survives the workflow completing.
-**Depends on:** M8-4 (jobs table), M3-H (jobs→SQLite), M4-1/M1-11b (live stream, follow-up only).
+```
+AgentSession(      sessionId PK, workId FK → Work, kind TEXT {workflow|cli}, createdAt )
+AgentConversation( sessionId FK → AgentSession, type TEXT {system|user}, content TEXT, ts )
+```
+
+`type` is the speaker: `user` = the user's input, `system` = the agent's rendered reply (what the CLI
+prints back). The workflow session's existing `Work.sessionId` becomes a reference into `AgentSession`
+rather than a second source of truth.
+
+Sub-stories:
+
+- [ ] **M8-6a · `AgentSession` + `AgentConversation` store** (host): create the two tables above. The
+      host `/receive` (`src/host/src/comms/receiver.ts`) looks up `result.sessionId` in `AgentSession`:
+      `kind=cli` → append a `system` row (`result.result` verbatim) to `AgentConversation`; otherwise
+      the existing workflow route (`runId == temporalId` → `agent.result`). No wire change.
+- [ ] **M8-6b · Poll endpoint:** `GET /api/works/:id/chat` → the cli session's `AgentConversation`
+      rows (ordered) for the UI to refetch. `requirePermission` + cookie identity like the other works
+      routes; 404 unless the work is the caller's.
+- [ ] **M8-6c · Send endpoint:** `POST /api/works/:id/chat` → mint-or-resume the work's `kind=cli`
+      `AgentSession` (existing `/session/create` with the work's OWN `workspaceId`, idempotent per
+      work+user), append a `user` row, send host → agent `POST /receive` (`ExecutionRequest {runId,
+      input}` + `x-session-id`, fresh per-turn `runId`), return 202. Reuses the workflow dispatch path
+      verbatim — no new agent route. Same gating.
+- [ ] **M8-6d · UI polling lifecycle:** the popup STARTS polling `GET .../chat` when it opens, STOPS on
+      close. Interval configurable (default ~1s). No background polling when no chat is open.
+- [ ] **M8-6e · Simple chat UI:** a chat "[ > ]" action on the works table (M8-4) opening a minimal
+      popup — a transcript pane + a text box and Send button. Send posts to M8-6c; the pane renders the
+      polled `AgentConversation`. No tool/system rendering — it shows what the CLI would print.
+- [ ] **Lifecycle:** `Orchestrator.complete`/`finalizeStop` close ONLY the `kind=workflow`
+      `AgentSession`, never the `kind=cli` one — it outlives the run; dropped by explicit close/retention.
+
+**Done when:** from the works table a user opens a chat popup on a work item, sends a message, and
+the agent answers operating on that work's workspace via a persisted `kind=cli` `AgentSession`; the
+`user` turn + the agent's `system` reply land in `AgentConversation` and render in the popup (polled
+while open, polling stops on close), and the session survives the workflow completing.
+**Depends on:** M8-4 (works table), M3-H (jobs/sessions→SQLite), M7-12 (symmetric `/receive`, done).
+Follow-up: live streaming (re-add SSE/WS + M1-11b) — retires the poll; event-sourced conversation;
+migrate the workflow `Work.sessionId` to reference `AgentSession` (retire the column as truth).
 
 ---
 

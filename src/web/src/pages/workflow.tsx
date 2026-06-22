@@ -178,7 +178,7 @@ export default function WorkflowPage() {
     if (!result) return;
     if (result.kind === "list") setWorks(result.works);
     else {
-      setWorks((prev) => prev.map((w) => (w.jobId === result.work.jobId ? result.work : w)));
+      setWorks((prev) => prev.map((w) => (w.workId === result.work.workId ? result.work : w)));
       setSteps(result.steps);
       setStepsError(result.stepsError);
     }
@@ -204,7 +204,7 @@ export default function WorkflowPage() {
 
   // one-row mutators share the same fold: swap just the touched row, surface any error inline
   const replaceRow = (work: WorkRecord): void =>
-    setWorks((prev) => prev.map((w) => (w.jobId === work.jobId ? work : w)));
+    setWorks((prev) => prev.map((w) => (w.workId === work.workId ? work : w)));
 
   const onStop = (workId: string): Promise<void | undefined> =>
     action.run(async () => replaceRow(await api.stopWork(workId)));
@@ -352,20 +352,20 @@ export default function WorkflowPage() {
                 const code = statusCodes.get(w.status);
                 const terminal = code?.terminal ?? false;
                 const stoppable = code?.stoppable ?? false;
-                const isOpen = opened === w.jobId;
+                const isOpen = opened === w.workId;
                 const tree = buildStepTree(steps);
                 // rerun follows the catalog's `continuable` flag — true only for a `stopped` work (a `completed` one
                 // is the clean end, done). new/running aren't continuable either; the engine refuses a live reset anyway
                 const canRerun = code?.continuable ?? false;
                 return (
-                  <Fragment key={w.jobId}>
+                  <Fragment key={w.workId}>
                     <TableRow
                       selected={isOpen}
                       sx={{ "& > *": { borderBottom: isOpen ? "unset" : undefined } }}
                     >
-                      <TableCell>{w.jobId.slice(0, 8)}</TableCell>
+                      <TableCell>{w.workId.slice(0, 8)}</TableCell>
                       <TableCell>
-                        <Tooltip title={w.statusDescription ?? ""} disableHoverListener={!w.statusDescription}>
+                        <Tooltip title={w.step ?? ""} disableHoverListener={!w.step}>
                           <Chip
                             label={code?.label ?? w.status}
                             color={code ? toneColor[code.tone] : "default"}
@@ -384,7 +384,7 @@ export default function WorkflowPage() {
                             size="small"
                             onClick={(e) => {
                               e.stopPropagation();
-                              setOpened(isOpen ? null : w.jobId);
+                              setOpened(isOpen ? null : w.workId);
                             }}
                           >
                             {isOpen ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
@@ -398,7 +398,7 @@ export default function WorkflowPage() {
                               disabled={!stoppable}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void onStop(w.jobId);
+                                void onStop(w.workId);
                               }}
                             >
                               <StopCircleIcon fontSize="small" />
@@ -412,7 +412,7 @@ export default function WorkflowPage() {
                               disabled={terminal}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                void onRefreshRow(w.jobId);
+                                void onRefreshRow(w.workId);
                               }}
                             >
                               <RefreshIcon fontSize="small" />
@@ -442,7 +442,7 @@ export default function WorkflowPage() {
                                   node={node}
                                   depth={0}
                                   canRerun={canRerun}
-                                  onRerun={(stepId) => void onRerunStep(w.jobId, stepId)}
+                                  onRerun={(stepId) => void onRerunStep(w.workId, stepId)}
                                   removingIds={removingIds}
                                 />
                               ))

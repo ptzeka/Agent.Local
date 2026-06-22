@@ -1,5 +1,5 @@
 // the single source of truth for the work-unit status domain. Both the DB lookup table (db-schema seeds
-// job_status from this) and the /api/works/statuscodes endpoint derive from it, so the set of statuses, their
+// work_status from this) and the /api/works/statuscodes endpoint derive from it, so the set of statuses, their
 // labels, presentation, and action semantics are defined ONCE and the UI never hardcodes them.
 //
 // `tone` is a presentation-neutral semantic (not an MUI color) so the host domain stays free of UI vocabulary;
@@ -22,12 +22,12 @@ export interface StatusCode {
 // workflow. The two terminal states split by recoverability, not by success: `completed` is the clean end (engine
 // returned) and is NOT continuable — done is done; `stopped` is the recoverable terminal that ALSO absorbs failures
 // (user cancel, engine failed/timedOut/orphaned), so it stays continuable — the work can be picked up again.
-export const JOB_STATUS_CODES = [
+export const WORK_STATUS_CODES = [
   { status: "new",       label: "New",       tone: "neutral", terminal: false, stoppable: true,  continuable: false },
   { status: "running",   label: "Running",   tone: "active",  terminal: false, stoppable: true,  continuable: false },
   { status: "stopped",   label: "Stopped",   tone: "warn",    terminal: true,  stoppable: false, continuable: true  },
   { status: "completed", label: "Completed", tone: "success", terminal: true,  stoppable: false, continuable: false },
 ] as const satisfies ReadonlyArray<StatusCode>;
 
-// the status union derived from the canonical list — adding a status to JOB_STATUS_CODES extends the type for free
-export type JobStatus = (typeof JOB_STATUS_CODES)[number]["status"];
+// the status union derived from the canonical list — adding a status to WORK_STATUS_CODES extends the type for free
+export type WorkStatus = (typeof WORK_STATUS_CODES)[number]["status"];

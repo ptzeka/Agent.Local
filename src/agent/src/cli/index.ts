@@ -15,7 +15,7 @@ import { Eventing } from "@agent-local/common/eventing";
 import { FileLogger } from "@agent-local/common/filelogger";
 import { openDatabase } from "@agent-local/common/db";
 import { LOGGER, DB } from "../server/container-tokens.js";
-import { resolveAgentDbFile } from "../agent/db-schema.js";
+import { resolveAgentDbFile } from "../db/db-schema.js";
 import { loadAgentSettings } from "../server/appsettings.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";

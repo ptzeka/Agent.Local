@@ -3,7 +3,7 @@
 #
 #   scripts/db.sh host          # interactive shell on src/host/data/host.sqlite
 #   scripts/db.sh agent         # interactive shell on src/agent/data/agent.sqlite
-#   scripts/db.sh host "SELECT * FROM jobs LIMIT 5;"   # one-shot query, then exit
+#   scripts/db.sh host "SELECT * FROM work LIMIT 5;"   # one-shot query, then exit
 #
 # The agent DB only exists after `npm run db:init`. Override either path with
 # HOST_DB_FILE / AGENT_DB_FILE (AGENT_DB_FILE is also what the agent process reads).

@@ -11,8 +11,11 @@ HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
 AUTH_PORT="${AUTH_PORT:-3015}"
 
-# Node ignores the Windows Root store, so the self-signed *.peritze.com cert must be passed explicitly.
-NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-C:/www/host/certs/peritze.com.crt}"
+# Node ignores the OS trust store (macOS keychain / Windows Root), so the self-signed *.peritze.com cert must be
+# passed explicitly — without it every outbound HTTPS (JWKS verify, agent /healthz probe) fails UNABLE_TO_VERIFY.
+# Default to the mkcert root CA (where the dev certs are minted) when present, else the Windows cert path.
+DEFAULT_CA="$( (command -v mkcert >/dev/null 2>&1 && echo "$(mkcert -CAROOT)/rootCA.pem") || echo "C:/www/host/certs/peritze.com.crt")"
+NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-$DEFAULT_CA}"
 if [ -f "$NODE_EXTRA_CA_CERTS" ]; then
   export NODE_EXTRA_CA_CERTS
   echo "[start] NODE_EXTRA_CA_CERTS=$NODE_EXTRA_CA_CERTS"

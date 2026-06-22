@@ -4,9 +4,10 @@ import { useMemo } from "react";
 import type { AxiosInstance } from "axios";
 import { useApiClient } from "@/providers/api_context";
 
-// mirrors the host's JobRecord (src/host/src/jobs/job-registry.ts); the wire shape the work table renders.
+// mirrors the host's WorkRecord (src/host/src/work/work-store.ts); the wire shape the work table renders.
+// step carries the descriptive "where we are" (it absorbed the old statusDescription: stop/failure reasons too).
 export interface WorkRecord {
-  jobId: string;
+  workId: string;
   userId: string;
   workflowId: string | null;
   workspaceId: string | null;
@@ -14,7 +15,6 @@ export interface WorkRecord {
   step: string | null;
   sessionId: string | null;
   temporalId: string | null;
-  statusDescription: string | null;
   createdAt: string;
   ts: string;
 }
@@ -33,7 +33,7 @@ export interface WorkflowStep {
   description: string | null;
 }
 
-// mirrors the host's StatusCode (src/host/src/jobs/job-status.ts) — the status catalog the UI renders from.
+// mirrors the host's StatusCode (src/host/src/work/work-status.ts) — the status catalog the UI renders from.
 // `tone` is presentation-neutral (the page maps it to a chip color); the flags drive the per-row action gating.
 export interface StatusCode {
   status: string;

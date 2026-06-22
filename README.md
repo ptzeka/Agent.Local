@@ -165,7 +165,7 @@ collide with other agent conventions like `AGENTS.md` or `CLAUDE.md`.
 ```markdown
 # Project direction
 
-- This repo is a Vite + React 18 app. No Next.js patterns.
+- This repo is a ExpressJs + React 19 app. No Next.js patterns.
 - All API calls go through `src/api/client.ts` — never `fetch` directly.
 - Tests live next to the file as `*.test.ts`. No `__tests__` folders.
 ```

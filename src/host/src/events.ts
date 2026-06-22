@@ -105,7 +105,7 @@ export interface WorkflowJobPayload {
 
 export interface WorkflowCompletedPayload {
   temporalId: string;
-  // the workflow's terminal return value (e.g. "user table created"); surfaced as the job's statusDescription
+  // the workflow's terminal return value (e.g. "user table created"); surfaced as the work's step
   result?: unknown;
 }
 

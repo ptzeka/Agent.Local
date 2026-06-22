@@ -18,8 +18,8 @@ import {
   type WorkflowFailedPayload,
   type WorkflowStatusPayload,
 } from "../events.js";
-import type { JobRecord, JobStatus } from "../jobs/job-registry.js";
-import type { JobRegistry } from "../jobs/job-registry.js";
+import type { WorkRecord, WorkStatus } from "../work/work-store.js";
+import type { WorkStore } from "../work/work-store.js";
 import type { AgentClient } from "../comms/sender.js";
 
 // the SINGLE place that maps the engine's authoritative status (Temporal's describe, or `missing` when it holds no
@@ -29,7 +29,7 @@ import type { AgentClient } from "../comms/sender.js";
 export function resolveEngineStatus(
   engineStatus: string | undefined,
   missing: boolean | undefined,
-): { status: JobStatus; description: string } | null {
+): { status: WorkStatus; description: string } | null {
   if (missing) return { status: "stopped", description: "no running workflow found on the engine" };
   switch (engineStatus) {
     case "canceled":
@@ -45,11 +45,11 @@ export function resolveEngineStatus(
 
 // owns the work unit's lifecycle: the join no single engine holds. trigger() provisions it up front (mint
 // ids -> open the agent session -> command the start), then the bus updaters fold each engine event back
-// onto the registry. Couples to the engines ONLY through the bus, except ctx.jobs which IS the host's state.
+// onto the store. Couples to the engines ONLY through the bus, except ctx.works which IS the host's state.
 export class WorkService {
   constructor(
     private readonly bus: Eventing,
-    private readonly jobs: JobRegistry,
+    private readonly works: WorkStore,
     private readonly agent: AgentClient,
     private readonly logger: ILogger,
   ) {}
@@ -58,7 +58,7 @@ export class WorkService {
   start(): void {
     this.bus.subscribe(WORKFLOW_STARTED, (event) => {
       const { workId, temporalId } = event.payload as unknown as WorkflowStartedPayload;
-      void this.jobs.update(workId, { temporalId, status: "running" });
+      void this.works.update(workId, { temporalId, status: "running" });
     });
 
     this.bus.subscribe(WORKFLOW_COMPLETED, (event) => {
@@ -96,9 +96,9 @@ export class WorkService {
   async trigger(workflowId: string, userId: string): Promise<string> {
     const workId = randomUUID();
     const workspaceId = randomUUID();
-    await this.jobs.add(workId, userId, workflowId, workspaceId);
+    await this.works.add(workId, userId, workflowId, workspaceId);
     const sessionId = await this.agent.createSession(workspaceId, workId);
-    await this.jobs.update(workId, { sessionId });
+    await this.works.update(workId, { sessionId });
     this.bus.publish(WORKFLOW_START, { workId, workspaceId, sessionId, workflowId });
     return workId;
   }
@@ -107,11 +107,11 @@ export class WorkService {
   // terminal) as the ACK. Cleanup (close the agent session) is deferred to finalizeStop, which runs only once the
   // engine CONFIRMS the cancel — so the session is not released while the workflow may still be alive. The
   // confirmation arrives as workflow.stopped (push) or via reconcile-on-refresh.
-  async stop(workId: string, userId: string, reason: string): Promise<JobRecord | null> {
-    const record = await this.jobs.get(workId);
+  async stop(workId: string, userId: string, reason: string): Promise<WorkRecord | null> {
+    const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
     if (record.temporalId) this.bus.publish(WORKFLOW_STOP, { workId, temporalId: record.temporalId });
-    return this.jobs.update(workId, { status: "stopped", statusDescription: reason });
+    return this.works.update(workId, { status: "stopped", step: reason });
   }
 
   // operator intervention: inject variables onto a work the caller owns (camunda must be live). returns the work
@@ -121,8 +121,8 @@ export class WorkService {
     userId: string,
     variables: Record<string, unknown>,
     opts: { scopeKey?: string; local?: boolean } = {},
-  ): Promise<JobRecord | null | false> {
-    const record = await this.jobs.get(workId);
+  ): Promise<WorkRecord | null | false> {
+    const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
     if (!record.temporalId) return false;
     this.bus.publish(WORKFLOW_INJECT, { temporalId: record.temporalId, variables, ...opts });
@@ -132,23 +132,23 @@ export class WorkService {
   // operator "continue": pick a stopped work back up — re-execute its last step via engine Reset. ownership by
   // workId; only a `stopped` work is resettable (a clean `completed` is done; the engine refuses a running one).
   // returns null for a non-owner, false when the work is not stopped. status goes back to `running` as the new run boots.
-  async continue(workId: string, userId: string): Promise<JobRecord | null | false> {
-    const record = await this.jobs.get(workId);
+  async continue(workId: string, userId: string): Promise<WorkRecord | null | false> {
+    const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
     if (record.status !== "stopped") return false;
     this.bus.publish(WORKFLOW_RESET, { workId });
-    return this.jobs.update(workId, { status: "running", statusDescription: "re-executing stopped step" });
+    return this.works.update(workId, { status: "running", step: "re-executing stopped step" });
   }
 
   // operator "rerun from step": re-execute a work from a chosen step via engine Reset (re-runs that step and
   // everything after, dropping old answers). ownership by workId; unlike continue() it is NOT gated to `stopped` — a
   // past step of a completed work is rerunnable too. the engine still refuses while the run is live. status goes
   // back to `running` as the new run boots; null for a non-owner.
-  async rerunStep(workId: string, userId: string, stepId: string): Promise<JobRecord | null> {
-    const record = await this.jobs.get(workId);
+  async rerunStep(workId: string, userId: string, stepId: string): Promise<WorkRecord | null> {
+    const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
     this.bus.publish(WORKFLOW_RESET, { workId, stepId });
-    return this.jobs.update(workId, { status: "running", statusDescription: `re-running from step ${stepId}` });
+    return this.works.update(workId, { status: "running", step: `re-running from step ${stepId}` });
   }
 
   // operator intervention: retry a failed step of a work the caller owns, keyed by the jobKey the caller supplies
@@ -158,8 +158,8 @@ export class WorkService {
     userId: string,
     jobKey: string,
     opts: { incidentKey?: string; retries?: number } = {},
-  ): Promise<JobRecord | null> {
-    const record = await this.jobs.get(workId);
+  ): Promise<WorkRecord | null> {
+    const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
     this.bus.publish(WORKFLOW_RETRY, { jobKey, ...opts });
     return record;
@@ -172,7 +172,7 @@ export class WorkService {
     if (!record) return;
     const description = result == null ? null : String(result);
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "completed", statusDescription: description, sessionId: record.sessionId });
+    await this.works.update(record.workId, { status: "completed", step: description });
   }
 
   // a failed/absent workflow settles to `stopped` (the recoverable terminal), with the engine's error as the row's
@@ -181,7 +181,7 @@ export class WorkService {
     const record = await this.byTemporalId(temporalId);
     if (!record) return;
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { status: "stopped", statusDescription: error, sessionId: record.sessionId });
+    await this.works.update(record.workId, { status: "stopped", step: error });
   }
 
   // engine confirmed the cancel: resolve the work by its engine id, then finalize the stop
@@ -194,10 +194,10 @@ export class WorkService {
   // once the engine confirms the cancel (workflow.stopped) OR a reconcile finds the run gone, so a missed
   // confirmation still heals on refresh. idempotent via sessionId: clearing it on close makes a re-run a no-op AND
   // stops the work reconciling. a `completed` work never reaches here (the reconcile gate excludes it).
-  private async finalizeStop(record: JobRecord): Promise<void> {
+  private async finalizeStop(record: WorkRecord): Promise<void> {
     if (!record.sessionId) return;
     await this.agent.closeSession(record.sessionId);
-    await this.jobs.update(record.jobId, { sessionId: null });
+    await this.works.update(record.workId, { sessionId: null });
   }
 
   // fold a reconcile answer onto the record — the recovery net for push events the host may have missed (e.g. a
@@ -205,7 +205,7 @@ export class WorkService {
   // `stopped` work whose post-stop cleanup is still pending (sessionId set). resolveEngineStatus is the single
   // status/description authority; an already-stopped work only needs its cleanup run, not another status fold.
   private async reconcile(workId: string, status: string | undefined, missing: boolean | undefined): Promise<void> {
-    const record = await this.jobs.get(workId);
+    const record = await this.works.get(workId);
     if (!record) return;
     // a stopped work is terminal — only run its deferred cleanup (close the session the engine has now released)
     if (record.status === "stopped") {
@@ -215,11 +215,11 @@ export class WorkService {
     if (record.status !== "new" && record.status !== "running") return;
     const resolved = resolveEngineStatus(status, missing);
     if (!resolved) return;
-    await this.jobs.update(workId, { status: resolved.status, statusDescription: resolved.description });
+    await this.works.update(workId, { status: resolved.status, step: resolved.description });
   }
 
   // the work unit carries the engine id as temporalId (== our workId); fold terminal events back by it
-  private async byTemporalId(temporalId: string): Promise<JobRecord | undefined> {
-    return (await this.jobs.search()).find((r) => r.temporalId === temporalId);
+  private async byTemporalId(temporalId: string): Promise<WorkRecord | undefined> {
+    return (await this.works.search()).find((r) => r.temporalId === temporalId);
   }
 }

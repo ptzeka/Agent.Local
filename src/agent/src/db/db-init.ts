@@ -1,5 +1,5 @@
 import type { ILogger } from "@agent-local/common";
-import { ensureAgentDb, resolveAgentDbFile } from "./agent/db-schema.js";
+import { ensureAgentDb, resolveAgentDbFile } from "./db-schema.js";
 
 // explicit `db init` command: brings agent.sqlite up to schema, then exits. Run once before launching the
 // agent server (start.sh calls it) rather than on every process boot, so a serving process never races it.

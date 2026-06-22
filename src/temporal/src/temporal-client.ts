@@ -141,7 +141,7 @@ function mapStepStatus(type: string): StepStatus | null {
 
 // owns the single Temporal connection: starts executions, signals them, reflects state outward
 // STATELESS — Temporal's visibility is authoritative, so it keeps no local instance map (unlike ZeebeClient)
-// ownership is the host's concern (JobRegistry keyed by userId), never the engine's
+// ownership is the host's concern (WorkStore keyed by userId), never the engine's
 export class TemporalClient {
   private readonly core: TemporalCore;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
