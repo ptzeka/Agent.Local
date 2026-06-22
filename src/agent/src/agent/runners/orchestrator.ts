@@ -259,7 +259,17 @@ export class Orchestrator {
           };
         }
 
-        // Orchestrator: gate through the evaluator.
+        // Orchestrator: gate through the evaluator, unless config disables it — capable models self-verify, so the
+        // first tool-free answer settles as satisfied on their own word (the guard rail is for weaker models).
+        if (!config.orchestration.evaluatorEnabled) {
+          return {
+            finalMessage: assistantMessage,
+            iterations: iteration,
+            dispatches: tracker.count,
+            outcome: "satisfied",
+          };
+        }
+
         const verdict = await this.evaluateCompletion(
           ctx.runtime,
           turnRequest,
@@ -331,7 +341,7 @@ export class Orchestrator {
       workingMessages.push(...toolMessages);
 
       // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
-      if (this.role !== "executor" && tracker.dueForPeriodicCheck()) {
+      if (this.role !== "executor" && config.orchestration.evaluatorEnabled && tracker.dueForPeriodicCheck()) {
         const verdict = await this.evaluateCompletion(
           ctx.runtime,
           turnRequest,

@@ -8,7 +8,9 @@ export { loadConfig, AGENT_EXECUTE_WORKFLOW_TYPE } from "./config.js";
 export type { TemporalConfig } from "./config.js";
 export {
   userTableTestWorkflow,
+  userTableFailTestWorkflow,
   USER_TABLE_TEST_WORKFLOW_TYPE,
+  USER_TABLE_FAIL_TEST_WORKFLOW_TYPE,
   agentResultSignal,
   injectSignal,
 } from "./workflows/user-table-test.js";

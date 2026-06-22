@@ -3,8 +3,10 @@ import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import {
   userTableTestWorkflow,
+  userTableFailTestWorkflow,
   agentResultSignal,
   USER_TABLE_TEST_WORKFLOW_TYPE,
+  USER_TABLE_FAIL_TEST_WORKFLOW_TYPE,
 } from "../workflows/user-table-test.js";
 import type { DispatchAgentTaskInput } from "../workflows/activities.js";
 
@@ -96,5 +98,52 @@ describe("userTableTestWorkflow", () => {
 
   it("exports a stable workflow type string for the host to start it by", () => {
     expect(USER_TABLE_TEST_WORKFLOW_TYPE).toBe("userTableTestWorkflow");
+  });
+
+  // the negative twin: it must drive all three steps (create + the danaskully append + the foxmulder assert) and
+  // fail on the verify, never returning the terminal message — proving a real verify-and-fail, not a short-circuit
+  it("fails at verify: appends danaskully but asserts foxmulder", async () => {
+    const dispatched: DispatchAgentTaskInput[] = [];
+    // play the agent honestly: create/append succeed, but the verify of a row that was never written fails
+    const dispatchAgentTask = jest.fn(async (input: DispatchAgentTaskInput) => {
+      dispatched.push(input);
+      const verifying = input.prompt.startsWith("Verify");
+      const handle = env.client.workflow.getHandle(input.workId);
+      await handle.signal(
+        agentResultSignal,
+        verifying
+          ? { result: "row userId=55, userName=foxmulder is missing", outcome: "failed" }
+          : { result: `answered: ${input.prompt.slice(0, 16)}`, outcome: "satisfied" },
+      );
+    });
+
+    const worker = await Worker.create({
+      connection: env.nativeConnection,
+      taskQueue: "test",
+      workflowsPath: require.resolve("../workflows/user-table-test.js"),
+      activities: { dispatchAgentTask },
+    });
+
+    const failure = await worker
+      .runUntil(
+        env.client.workflow.execute(userTableFailTestWorkflow, {
+          taskQueue: "test",
+          workflowId: "WORK-FAIL-VERIFY",
+          args: [{ workId: "WORK-FAIL-VERIFY", workspaceId: "WS-3", sessionId: "SESS-3" }],
+        }),
+      )
+      .then(() => null)
+      .catch((err: unknown) => err as Error & { cause?: Error });
+
+    expect(failure).not.toBeNull();
+    // step 4 (the third dispatched prompt) is the verify that fails
+    expect((failure?.cause as Error)?.message).toMatch(/step 3 did not complete \(outcome: failed\)/);
+    expect(dispatched).toHaveLength(3);
+    expect(dispatched[1].prompt).toContain("userId=88, userName=danaskully");
+    expect(dispatched[2].prompt).toContain("userId=55 and userName=foxmulder");
+  });
+
+  it("exports a stable workflow type string for the failing twin", () => {
+    expect(USER_TABLE_FAIL_TEST_WORKFLOW_TYPE).toBe("userTableFailTestWorkflow");
   });
 });

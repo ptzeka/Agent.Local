@@ -28,7 +28,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
     .add(new ContainerMiddleware())
     .add(new EventingMiddleware({ parent: deps.eventing }))
     .add(new LoggerMiddleware({ logger: deps.logger }))
-    .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
+    .add(new ConfigurationMiddleware({ config: deps.config }))
     .add(new ProvidersMiddleware())
     .add(new ModelsMiddleware())
     .add(new StoreMiddleware())

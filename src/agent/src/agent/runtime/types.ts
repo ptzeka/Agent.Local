@@ -5,7 +5,7 @@ import type { Session } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { Eventing } from "@agent-local/common/eventing";
 import type { DatabaseHandle } from "@agent-local/common/db";
-import { ConfigurationRegistry } from "../registries/configuration-registry.js";
+import { ConfigurationRegistry, type RuntimeConfig } from "../registries/configuration-registry.js";
 import { ProvidersRegistry, ModelRegistry } from "../registries/index.js";
 import { ContextLoader } from "../context/context-loader.js";
 import { ILogger } from "@agent-local/common/ilogger";
@@ -28,14 +28,14 @@ export interface AgentRuntimeQueryable {
 }
 
 export interface AgentRuntimeDeps {
-  configPath: string;
+  // parsed once at the edge (cli/server) and injected as an object; the runtime never reads config files itself
+  config: RuntimeConfig;
   orchestratorRole: "orchestrator" | "executor";
   sessionsDir: string;
   // agent.sqlite handle, opened once at process startup and shared down the runtime tree (sub-runtimes included)
   db: DatabaseHandle;
   workspaceRoot: string;
   sandboxRoot: string;
-  mcpConfigPath: string;
   logger: ILogger;
   credentials?: IdentityContext;
   // ancestor cancel reaches everything this runtime owns; omitted, the runtime is its own root
@@ -49,12 +49,11 @@ export interface AgentRuntimeDeps {
 export interface RuntimeContext {
   // per-runtime service container: ContainerMiddleware creates it first, later steps set() services, consumers get()
   registry: Container;
-  readonly configPath: string;
+  readonly config: RuntimeConfig;
   readonly sessionsDir: string;
   readonly db: DatabaseHandle;
   readonly workspaceRoot: string;
   readonly sandboxRoot: string;
-  readonly mcpConfigPath: string;
   readonly credentials: IdentityContext;
   logger: ILogger;
   // steps hand this to resources that must die with the runtime (MCP clients, sub-session children)

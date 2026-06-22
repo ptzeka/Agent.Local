@@ -1635,6 +1635,45 @@ alongside this note (see below); this item is the remaining *judgment* layer.
 an independent read cannot confirm cannot reach SATISFIED, and judge-error
 fail-open no longer yields terminal success.
 
+### M5-9 · Structured turn responses — a parseable answer channel distinct from the turn verdict — `~1.5d` · P1
+Surfaced 2026-06-21 from `userTableFailTestWorkflow` run `ce2ae2f6` (session
+`161bdee9`): the verify step asked "confirm row userId=55/userName=foxmulder
+exists; fail if missing". The agent verified HONESTLY (executor query returned
+`matched_count: 0`, orchestrator reported "the row does not exist"), yet the
+work landed `completed` / "user table verified". Root cause: the per-turn
+evaluator answers *"did the agent do the turn?"* (yes) — not *"what was the
+answer to the question?"* (false). The assertion result has nowhere to live:
+`agentResult.result` is free-text prose, `outcome` is the turn verdict, and the
+evaluator's `FAILED` means "task impossible", not "asserted condition is false".
+So a legitimately-violated assertion can never trip the workflow's
+`outcome !== "satisfied"` gate.
+- **Shipped 2026-06-21 (precursor, not this item):** the per-turn evaluator is
+  now config-gated (`orchestration.evaluatorEnabled`, default `true`; set
+  `false` in `models.json`) — it was a guard rail for weaker models and is off
+  by default for capable ones. This removes the rubber-stamp path but leaves the
+  assertion-answer gap below; structured responses are the real replacement.
+- [ ] **Parseable answer contract.** Define a structured verdict an assertion
+      step returns alongside the turn outcome — e.g. a final-message token
+      (`ASSERT: PASS|FAIL`) or a one-line JSON `{ "holds": boolean, "detail" }`.
+      `agentResult.result` is already typed `unknown`, so it can carry the object
+      end-to-end through `mount.ts` → the `agentResult` signal.
+- [ ] **Workflow gates on the answer, FAIL closed.** Add an `assertStep(prompt)`
+      sibling to `createStepRunner`'s `runStep`
+      ([workflows/user-table-test.ts](src/temporal/src/workflows/user-table-test.ts))
+      that parses the answer and throws `AgentStepFailed` on FAIL *or* on an
+      unparseable answer — the opposite bias to the evaluator's deliberate
+      fail-open, because a verify gate must not pass on doubt.
+- [ ] **Hardening (optional follow-up).** If free-text token drift shows up,
+      promote the answer to a synthetic `report_assertion(holds, detail)` tool so
+      the structured value is the tool arg, not parsed prose.
+- [ ] Test: `userTableFailTestWorkflow` ends `stopped`/failed via the assertion
+      channel (not the evaluator), and the positive `userTableTestWorkflow` (row
+      present) still completes.
+
+**Done when:** an assertion-style step fails the work whenever its asked
+condition is false — independent of the per-turn evaluator — and a missing/
+malformed structured answer fails closed rather than banking a false pass.
+
 ---
 
 ## M6 — Feature-flag registry (≈ 1–1.5 days)

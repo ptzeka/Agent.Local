@@ -1,5 +1,7 @@
-import fs from "node:fs/promises";
+import fs from "node:fs";
 import path from "node:path";
+import type { AgentServerSettings } from "../../server/appsettings.js";
+import type { McpServerDef } from "../runtime/middleware/external-mcp.js";
 
 export interface ModelDefinition {
   provider: string;
@@ -24,6 +26,9 @@ export interface OrchestrationConfig {
   orchestratorTemperature: number;
   executorTemperature: number;
   evaluatorTemperature: number;
+  // per-turn completion judge; a guard rail for weaker models that self-verify poorly. Capable models can run
+  // without it — set false to skip the gate so a tool-free turn settles as satisfied on the model's own word.
+  evaluatorEnabled: boolean;
   // mid-flight progress check every N dispatches catches no-progress loops; set very high to disable
   validatorCheckIntervalDispatches: number;
   // compact the prefix past this many messages; lower = more summarizer calls, set very high to disable
@@ -39,6 +44,7 @@ const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
   orchestratorTemperature: 0.2,
   executorTemperature: 0.1,
   evaluatorTemperature: 0.1,
+  evaluatorEnabled: true,
   validatorCheckIntervalDispatches: 3,
   summarizeAtMessages: 30,
   summarizerKeepLastN: 8,
@@ -55,46 +61,54 @@ export interface ModelsFile {
   summaryWordThreshold: number;
 }
 
-export class ConfigurationRegistry
-{
-    private modelsConfig? : ModelsFile;
+// the parsed, validated runtime config the registry serves. Built once at the edge (cli/server) and injected as
+// an object — no file path crosses into the runtime, so the core stays host-agnostic and parses nothing lazily.
+export interface RuntimeConfig {
+  models: ModelsFile;
+  settings: AgentServerSettings;
+  // the mcpServers map from mcp.json; consumers spawn the named stdio servers
+  mcpServers: Record<string, McpServerDef>;
+}
 
-    constructor(private configPath: string) {
-    }
-    
-    public async getModelsConfiguration() : Promise<ModelsFile> {
-        if (this.modelsConfig)
-        {
-            return this.modelsConfig;
-        }
-        const absolutePath = path.resolve(this.configPath);
-        const raw = await fs.readFile(absolutePath, "utf8");
-        const parsed = JSON.parse(raw) as ModelsFile;
+function mergeOrchestration(raw: Partial<OrchestrationConfig> | undefined): OrchestrationConfig {
+  // unknown keys fall away; defaults win for anything not explicitly set
+  return { ...DEFAULT_ORCHESTRATION, ...(raw ?? {}) };
+}
 
-        if (!parsed.models || Object.keys(parsed.models).length === 0) {
-        throw new Error(`${absolutePath} declares no models.`);
-        }
-        if (!parsed.roles || Object.keys(parsed.roles).length === 0) {
-        throw new Error(`${absolutePath} declares no role assignments.`);
-        }
+// edge loader: read + validate models.json into the in-memory ModelsFile. Validation lives here so a malformed
+// config fails loudly at startup, not lazily mid-run deep in the runtime.
+export function loadModelsFile(configPath: string): ModelsFile {
+  const absolutePath = path.resolve(configPath);
+  const raw = fs.readFileSync(absolutePath, "utf8");
+  const parsed = JSON.parse(raw) as ModelsFile;
 
-        parsed.orchestration = this.mergeOrchestration(parsed.orchestration);
-        parsed.summaryWordThreshold = parsed.summaryWordThreshold ?? DEFAULT_SUMMARY_WORD_THRESHOLD;
+  if (!parsed.models || Object.keys(parsed.models).length === 0) {
+    throw new Error(`${absolutePath} declares no models.`);
+  }
+  if (!parsed.roles || Object.keys(parsed.roles).length === 0) {
+    throw new Error(`${absolutePath} declares no role assignments.`);
+  }
 
-        this.modelsConfig = parsed;
-        return this.modelsConfig;
-    }
+  parsed.orchestration = mergeOrchestration(parsed.orchestration);
+  parsed.summaryWordThreshold = parsed.summaryWordThreshold ?? DEFAULT_SUMMARY_WORD_THRESHOLD;
+  return parsed;
+}
 
-    private mergeOrchestration(
-        raw: Partial<OrchestrationConfig> | undefined
-        ): OrchestrationConfig {
-        if (!raw) return { ...DEFAULT_ORCHESTRATION };
+// holds the runtime config bundle and slices it to each consumer (models, appsettings, mcp servers). Constructed
+// from already-parsed objects, so it does no file IO and the same instance is safe to reuse across sub-runtimes.
+export class ConfigurationRegistry {
+  constructor(private readonly config: RuntimeConfig) {}
 
-        // strip legacy keys before merging so defaults win for anything not explicitly set
-        const {
-            ...current
-        } = raw;
+  // async to keep the consumer contract stable, though the object is already in memory
+  public async getModelsConfiguration(): Promise<ModelsFile> {
+    return this.config.models;
+  }
 
-        return { ...DEFAULT_ORCHESTRATION, ...current };
-    }
+  public getAppSettings(): AgentServerSettings {
+    return this.config.settings;
+  }
+
+  public getMcpServerDefs(): Record<string, McpServerDef> {
+    return this.config.mcpServers;
+  }
 }

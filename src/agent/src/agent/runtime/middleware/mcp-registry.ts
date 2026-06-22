@@ -6,10 +6,10 @@ import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EX
 import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
-import { McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
+import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
-import { readMcpServerDefs, mountExternalMcp, type McpServerDef } from "./external-mcp.js";
+import { mountExternalMcp, type McpServerDef } from "./external-mcp.js";
 
 // memomcp is segregated per session: each spawned instance reads/writes only this session's collection
 const MEMOMCP_SERVER_NAME = "memomcp";
@@ -85,7 +85,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     const workspace = ctx.registry.get(WorkspaceToken);
     const sandboxRoot = ctx.sandboxRoot;
     const fsRoot = path.join(sandboxRoot, session.workspaceId);
-    const externalDefs = readMcpServerDefs(ctx.mcpConfigPath);
+    const externalDefs = ctx.registry.get(ConfigurationToken).getMcpServerDefs();
     
     for (const mcp of serverNames ?? []) {
       switch (mcp) {

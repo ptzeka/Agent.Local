@@ -36,7 +36,7 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     // no parent bus: a child is its own event root, reaching the parent via the executor MCP bridge
     .add(new EventingMiddleware())
     .add(new LoggerMiddleware({ logger: deps.logger }))
-    .add(new ConfigurationMiddleware({ configPath: deps.configPath }))
+    .add(new ConfigurationMiddleware({ config: deps.config }))
     .add(new ProvidersMiddleware())
     .add(new ModelsMiddleware())
     .add(new StoreMiddleware())

@@ -4,6 +4,7 @@ import { McpRegistryMiddleware } from "../../src/agent/runtime/middleware/mcp-re
 import { McpRegistryToken } from "../../src/agent/runtime/tokens.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
+import type { ConfigurationRegistry } from "../../src/agent/registries/configuration-registry.js";
 import { makeContext } from "./context.js";
 import { createSession } from "../../src/agent/session/session.js";
 
@@ -14,6 +15,11 @@ const stubModelsRegistry = {
   getValidMcpServersForRole: () => ["fsmcp", "excel"],
   getTimeoutForModel: () => 60000,
 } as unknown as ModelRegistry;
+
+// the middleware reads only the external mcp.json defs off config; no test mounts stdio servers, so empty is fine
+const stubConfigurationRegistry = {
+  getMcpServerDefs: () => ({}),
+} as unknown as ConfigurationRegistry;
 
 // constructs the MCP client registry (bound to the sandbox root), registers the in-process servers
 // (filesystem and Excel) as LocalMcp instances on it, then continues the chain
@@ -41,6 +47,7 @@ describe("McpRegistryMiddleware", () => {
       sandboxRoot: "/tmp/sandbox",
       mcpRegistry: undefined,
       modelsRegistry: stubModelsRegistry,
+      configurationRegistry: stubConfigurationRegistry,
     });
     const next = jest.fn(async () => {});
 
@@ -73,6 +80,7 @@ describe("McpRegistryMiddleware", () => {
       sandboxRoot: "/tmp/sandbox",
       mcpRegistry: undefined,
       modelsRegistry: splitModelsRegistry,
+      configurationRegistry: stubConfigurationRegistry,
     });
 
     await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, jest.fn(async () => {}));
@@ -109,6 +117,7 @@ describe("McpRegistryMiddleware", () => {
       sandboxRoot: "/tmp/sandbox",
       mcpRegistry: undefined,
       modelsRegistry: executorModelsRegistry,
+      configurationRegistry: stubConfigurationRegistry,
     });
 
     await new McpRegistryMiddleware({ role: "executor" }).initialize(ctx, jest.fn(async () => {}));

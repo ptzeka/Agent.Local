@@ -13,6 +13,16 @@ export const userTableTestTemplate: WorkflowTemplate = {
   label: "User Table Test",
 };
 
+// sibling workflow whose verify step is DESIGNED to fail: it appends danaskully but asserts foxmulder, so the
+// agent's verify turn must report a non-satisfied verdict and fail the run — exercising the real verify-and-fail
+// path (not a mocked verdict). Same Workflow Type string == this function's name.
+export const USER_TABLE_FAIL_TEST_WORKFLOW_TYPE = "userTableFailTestWorkflow";
+
+export const userTableFailTestTemplate: WorkflowTemplate = {
+  name: USER_TABLE_FAIL_TEST_WORKFLOW_TYPE,
+  label: "User Table Test (Verify Fails)",
+};
+
 // start args = the work-unit ids the host seeds at trigger; step 1 "gathers" them into the workflow state.
 // the OWNER is the host's principal (WorkStore keyed by userId), NOT an engine variable — the engine stays
 // user-agnostic (M7-9), so no userId/identity rides into the workflow here.
@@ -33,23 +43,24 @@ const { dispatchAgentTask } = proxyActivities<AgentActivities>({
   startToCloseTimeout: "5 minutes",
 });
 
-// a code-first test workflow that drives the agent through a users-table scenario, proving the mount seam is
-// engine-agnostic: initialize -> create sheet -> add record -> assert row -> done. The agent reports each step
-// back via the agentResult signal and the WORKFLOW decides when it is done (returns the terminal message).
-export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<string> {
+// shared step driver for the user-table workflows: registers the agentResult/inject handlers and returns a
+// runStep that dispatches one prompt, blocks on the matching answer, then GATES on its verdict — only a
+// `satisfied` turn advances. Any other outcome (failed | capped | awaiting-input) means the step did not achieve
+// its goal, so throw a non-retryable ApplicationFailure — this fails the workflow, which the host folds to
+// `stopped` (with the agent's message), instead of the run sailing on to a false `completed`.
+function createStepRunner(args: UserTableTestArgs): (prompt: string) => Promise<unknown> {
   // the workflow IS the session: state gathered at initialize and carried across steps with no external store
-  const session: Record<string, unknown> = {};
-
+  const session: Record<string, unknown> = {
+    workId: args.workId,
+    workspaceId: args.workspaceId,
+    sessionId: args.sessionId,
+  };
   // each agentResult signal appends here; a step waits for its own answer to land before advancing
   const results: { result: unknown; outcome?: string }[] = [];
   setHandler(agentResultSignal, (payload) => void results.push(payload));
   setHandler(injectSignal, (vars) => void Object.assign(session, vars));
 
-  // dispatch one prompt, block until the agent's next agentResult arrives, then GATE on its verdict: only a
-  // `satisfied` turn advances. Any other outcome (failed | capped | awaiting-input) means the step did not
-  // achieve its goal, so throw a non-retryable ApplicationFailure — this fails the workflow, which the host folds
-  // to `stopped` (with the agent's message), instead of the run sailing on to a false `completed`.
-  const runStep = async (prompt: string): Promise<unknown> => {
+  return async (prompt: string): Promise<unknown> => {
     const awaited = results.length + 1;
     // log.* is the replay-safe sink (suppressed on replay), so the step trace stays deterministic
     log.info("runStep dispatch", { workId: args.workId, step: awaited, prompt });
@@ -65,11 +76,14 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
     }
     return answer.result;
   };
+}
 
+// a code-first test workflow that drives the agent through a users-table scenario, proving the mount seam is
+// engine-agnostic: initialize -> create sheet -> add record -> assert row -> done. The agent reports each step
+// back via the agentResult signal and the WORKFLOW decides when it is done (returns the terminal message).
+export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<string> {
   // step 1 — initialize: gather the start command's variables into the session (no agent turn)
-  session.workId = args.workId;
-  session.workspaceId = args.workspaceId;
-  session.sessionId = args.sessionId;
+  const runStep = createStepRunner(args);
 
   // step 2 — ask the agent to create the users sheet
   await runStep(`Create an Excel sheet named "users" with two columns: userId, userName.`);
@@ -82,4 +96,24 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
 
   // step 5 — complete the work unit with the terminal message
   return "user table created";
+}
+
+// the negative twin: appends danaskully (88) but asserts foxmulder (55), so the verify step's agent turn must
+// find the row missing and report a non-satisfied verdict — runStep then fails the run. Proves the agent really
+// checks the sheet rather than rubber-stamping the last step, and that a failed verify never reaches `completed`.
+export async function userTableFailTestWorkflow(args: UserTableTestArgs): Promise<string> {
+  // step 1 — initialize (no agent turn)
+  const runStep = createStepRunner(args);
+
+  // step 2 — create the users sheet
+  await runStep(`Create an Excel sheet named "users" with two columns: userId, userName.`);
+
+  // step 3 — append a DIFFERENT row than the one the next step asserts, so the verify is bound to fail
+  await runStep(`Append a row to the "users" sheet with userId=88, userName=danaskully.`);
+
+  // step 4 — assert a row that was never written; the agent must report failure here
+  await runStep(`Verify the "users" sheet has a row where userId=55 and userName=foxmulder; fail if it is missing.`);
+
+  // step 5 — unreachable when the agent verifies honestly; present only so a buggy rubber-stamp would surface here
+  return "user table verified";
 }

@@ -14,7 +14,6 @@ import { formatChatStart, formatEvent, formatSubSessionNotification, formatTurnE
 export interface ReplOptions {
   workspaceRoot: string;
   sandboxRoot: string;
-  configPath: string;
   runtime: AgentRuntime;
   resumed: boolean;
 }

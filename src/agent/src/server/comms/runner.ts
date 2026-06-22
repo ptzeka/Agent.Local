@@ -4,6 +4,8 @@ import type { DatabaseHandle } from "@agent-local/common/db";
 import { Eventing, type ILogger } from "@agent-local/common";
 import { buildRuntime, type AgentRuntime, type AgentRuntimeDeps } from "../../runtime.js";
 import { findProjectRoot, moduleDir, resolveSandboxRoot, resolveSessionsDir } from "../../paths.js";
+import { loadModelsFile, type RuntimeConfig } from "../../agent/registries/index.js";
+import { readMcpServerDefs } from "../../agent/runtime/middleware/external-mcp.js";
 import type { AgentServerSettings } from "../appsettings.js";
 import {
   EXECUTION_REQUESTED,
@@ -25,6 +27,9 @@ export class ExecutionRunner {
     private readonly logger: ILogger,
     private readonly bus: Eventing,
   ) {}
+
+  // models.json + mcp.json are parsed once and reused across every job; appsettings is already injected (this.config)
+  private runtimeConfig?: RuntimeConfig;
 
   // bus binding: every queued request runs one turn and publishes its result back onto the bus
   start(): void {
@@ -65,9 +70,13 @@ export class ExecutionRunner {
     fs.mkdirSync(sandboxRoot, { recursive: true });
     const sessionsDir = resolveSessionsDir(projectRoot, configuredSessionsDir);
     const token = process.env.AGENT_API_TOKEN;
+    this.runtimeConfig ??= {
+      models: loadModelsFile(path.join(projectRoot, "models.json")),
+      settings: this.config,
+      mcpServers: readMcpServerDefs(path.join(projectRoot, "mcp.json")),
+    };
     const runtimeDeps: AgentRuntimeDeps = {
-      configPath: path.join(projectRoot, "models.json"),
-      mcpConfigPath: path.join(projectRoot, "mcp.json"),
+      config: this.runtimeConfig,
       sessionsDir,
       db: this.db,
       workspaceRoot: projectRoot,

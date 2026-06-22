@@ -111,12 +111,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   async build(): Promise<this> {
     // registry is created by ContainerMiddleware (first step); RuntimeContext is assignable to this seed, so the cast is sound
     const ctx = {
-      configPath: this.deps.configPath,
+      config: this.deps.config,
       sessionsDir: this.deps.sessionsDir,
       db: this.deps.db,
       workspaceRoot: this.deps.workspaceRoot,
       sandboxRoot: this.deps.sandboxRoot,
-      mcpConfigPath: this.deps.mcpConfigPath,
       credentials: this.deps.credentials ?? {},
       logger: this.deps.logger,
       runtimeSignal: this.scope.signal,

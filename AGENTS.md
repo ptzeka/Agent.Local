@@ -10,6 +10,21 @@
 ## BACKLOG
 Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
 
+## Skills: reusable runbooks live in `.claude/skills/`
+
+This repo ships project skills under `.claude/skills/<name>/SKILL.md`. Consult them
+**before** improvising the same task by hand, and keep one current after a refactor that
+changes its paths/schema/commands (a stale runbook is worse than none):
+
+| Skill | Use when |
+|---|---|
+| `debug-work` | Tracing one work/job by id — wrong status, missing file, a step didn't run, a dispatch misbehaved. Covers the host `work`/`work_agent_session`/`work_temporal` tables, agent session+conversation, workspace, logs, and host/agent/Temporal health. |
+| `install-mcp-servers` | Installing/registering this repo's MCP servers (codemcp + memomcp) into the global Claude (`~/.claude.json`) / Cursor (`~/.cursor/mcp.json`) configs. |
+| `solid` | Writing or reviewing code against the project's SOLID conventions — where logic lives, second implementations behind interfaces, DI via registries/Runtime. |
+
+Invocation is by exact name (`/debug-work`) when surfaced as a slash command; otherwise
+the file is the canonical reference — read it and follow its inline queries.
+
 ## Logs: where to find them
 
 `npm start` runs the auth service + host + agent in the background and redirects each process's stdout/stderr to
@@ -44,7 +59,7 @@ The following repositories are indexed and cached:
 
 | Repository | Notes |
 |---|---|
-| `Agent.Local` | This repo — `c:\www\Agent.Local`, branch `main` |
+| `Agent.Local` | This repo — `/Applications/WWW/Agent.Local`, branch `main` |
 
 
 ### Tool selection rules

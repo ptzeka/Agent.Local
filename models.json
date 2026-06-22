@@ -130,6 +130,7 @@
     "orchestratorTemperature": 0.2,
     "executorTemperature": 0.1,
     "evaluatorTemperature": 0.1,
+    "evaluatorEnabled": false,
     "summarizeAtMessages": 30,
     "summarizerKeepLastN": 8
   }

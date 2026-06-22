@@ -1,4 +1,4 @@
-import { userTableTestTemplate } from "./user-table-test.js";
+import { userTableTestTemplate, userTableFailTestTemplate } from "./user-table-test.js";
 
 // the catalog of startable workflows, sourced from code so the console's workflow dropdown is never a hardcoded
 // string: each workflow module contributes a template (its Temporal Workflow Type `name` + a UI label). A
@@ -9,4 +9,4 @@ export interface WorkflowTemplate {
   label: string; // human-facing text for the dropdown
 }
 
-export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [userTableTestTemplate];
+export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [userTableTestTemplate, userTableFailTestTemplate];

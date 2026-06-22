@@ -17,6 +17,8 @@ import { openDatabase } from "@agent-local/common/db";
 import { LOGGER, DB } from "../server/container-tokens.js";
 import { resolveAgentDbFile } from "../db/db-schema.js";
 import { loadAgentSettings } from "../server/appsettings.js";
+import { loadModelsFile, type RuntimeConfig } from "../agent/registries/index.js";
+import { readMcpServerDefs } from "../agent/runtime/middleware/external-mcp.js";
 import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
@@ -39,8 +41,8 @@ interface Bootstrap {
   projectRoot: string;
   sandboxRoot: string;
   sessionsDir: string;
-  configPath: string;
-  mcpConfigPath: string;
+  // models.json + mcp.json + the agent's appsettings, parsed once here and injected as objects into every runtime
+  config: RuntimeConfig;
   // the one startup container: holds the process singletons (logger; the agent.sqlite handle opened once here,
   // schema owned by `db init`). the CLI has no request scope, so the container IS the bootstrap singleton store
   // — buildRuntime reads logger/db off it, the same handles the agent server resolves through req.container.
@@ -89,12 +91,17 @@ async function bootstrap(): Promise<Bootstrap> {
 
   const sessionsDir = resolveSessionsDir(projectRoot);
 
-  const mcpConfigPath = path.join(projectRoot, "mcp.json");
-  const configPath = path.join(projectRoot, "models.json");
+  // parse every config file ONCE here at the composition root; the runtime receives objects, never paths
+  const settings = loadAgentSettings();
+  const config: RuntimeConfig = {
+    models: loadModelsFile(path.join(projectRoot, "models.json")),
+    settings,
+    mcpServers: readMcpServerDefs(path.join(projectRoot, "mcp.json")),
+  };
 
   // open the agent DB connection at startup; `db init` owns the schema, so this only opens (never reconciles).
   // the file comes from the agent's appsettings (db.file), overridable by AGENT_DB_FILE for ops
-  const db = openDatabase(resolveAgentDbFile(loadAgentSettings().db?.file));
+  const db = openDatabase(resolveAgentDbFile(settings.db?.file));
 
   // runtimes are built later per run mode, so the handlers hold a slot the run mode fills via registerRuntime
   const root = new AbortController();
@@ -136,8 +143,7 @@ async function bootstrap(): Promise<Bootstrap> {
     projectRoot,
     sandboxRoot,
     sessionsDir,
-    mcpConfigPath,
-    configPath,
+    config,
     container,
     rootSignal: root.signal,
     registerRuntime,
@@ -158,12 +164,11 @@ function buildRuntime(
   sessionId?: string,
   streamOutput = false
 ): AgentRuntime {
-  const { projectRoot, sandboxRoot, sessionsDir, mcpConfigPath, configPath } = boot;
+  const { projectRoot, sandboxRoot, sessionsDir, config } = boot;
   const db = boot.container.get(DB);
   const token = process.env.AGENT_API_TOKEN;
   const deps: AgentRuntimeDeps = {
-    mcpConfigPath,
-    configPath,
+    config,
     sessionsDir,
     db,
     workspaceRoot: projectRoot,
@@ -181,7 +186,7 @@ function buildRuntime(
 
 // interactive e.g. user request/response
 async function runInteractive(boot: Bootstrap): Promise<void> {
-  const { projectRoot, sandboxRoot, configPath } = boot;
+  const { projectRoot, sandboxRoot } = boot;
 
   const saved = await AgentRuntime.listSavedSessions(boot.container.get(DB));
   const choice = await pickSession(saved);
@@ -200,7 +205,6 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
     await runRepl({
       workspaceRoot: projectRoot,
       sandboxRoot,
-      configPath,
       runtime,
       resumed: choice.kind === "resume",
     });
