@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   app.use(userContextMiddleware(getKey, sessions));
   // session lifecycle mounts BEFORE the job receiver: minting/closing a session needs no runtime, and routing
   // it through the receiver would build a per-request runtime (and spurious session state) for it
-  app.use(createSessionApi(sessions, sessionStore));
+  app.use(createSessionApi(sessions, sessionStore, bus));
   // one shared runtime builder (off root.signal + the shared db) and the live-connection registry the SSE read
   // half and the runner both speak: a live session routes input to its persistent runtime, a one-shot job builds
   // and drains. The SSE route mounts before the receiver — opening a stream needs no /receive turn.

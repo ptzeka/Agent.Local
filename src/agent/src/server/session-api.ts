@@ -1,15 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
+import { type Eventing } from "@agent-local/common";
 import { type SessionRegistry } from "./session-registry.js";
 import { createSession } from "../agent/session/session.js";
 import { type SessionStore } from "../agent/session/session-store.js";
+import { EXECUTION_CANCEL } from "./comms/contract.js";
 
 // session lifecycle API (kept separate from comms/: this mints a capability, it is not event transport).
 // minting/closing a work session needs no runtime, so it mounts BEFORE the runtime middleware (which would
 // otherwise build a runtime — and spurious session/sandbox state — per request). /session/create is
 // privileged: gated on agent:trigger from the verified token (same host->agent scope the receiver checks).
 // The host owns workId (the unit) and workspaceId (the shared folder guid) and passes both; the agent mints the sessionId.
-export function createSessionApi(sessions: SessionRegistry, store: SessionStore): Router {
+export function createSessionApi(sessions: SessionRegistry, store: SessionStore, bus: Eventing): Router {
   const router = Router();
 
   // the minted session is persisted here (not in the runtime) so the first /receive can resume it by id;
@@ -48,6 +50,8 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore)
       res.status(202).json({ closed: false });
       return;
     }
+    // abort any in-flight run for this session BEFORE marking it terminal, so a Stop/pause kills the live turn now
+    bus.publish(EXECUTION_CANCEL, { sessionId });
     const session = await store.load(sessionId);
     if (session) {
       session.status = "done";

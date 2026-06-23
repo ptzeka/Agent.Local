@@ -71,6 +71,13 @@ export interface HistoryEvent {
   summary?: string;
   // the signal name on a WorkflowExecutionSignaled event; `agentResult` marks one step's round-trip answered
   signalName?: string;
+  // on an `agentResult` signal: the answer's decoded verdict — the envelope `status` the workflow gates on
+  // (`success` advances; anything else fails the step). getSteps uses it to fail the paired dispatch step, since the
+  // fire-and-forget activity's own completion only proves the job was published, not that the agent succeeded.
+  verdict?: string;
+  // on an `agentResult` signal: the agent's final structured answer (the report_result payload), stringified — the
+  // step's "what did the LLM say" surfaced alongside its status.
+  response?: string;
 }
 
 // the engine's own activity status for a step — deliberately NOT the host work-status catalog, which describes the
@@ -89,6 +96,9 @@ export interface WorkflowStep {
   // the step's intent decoded from the activity input (the dispatched prompt); null when the input carried none.
   // `name` stays the activity type; this is what makes two dispatchAgentTask steps tell themselves apart.
   description: string | null;
+  // the agent's final structured answer for a dispatch step (the report_result payload), stringified; null until the
+  // step's agentResult signal has landed (or for non-dispatch steps that carry no answer).
+  response: string | null;
 }
 
 // default core until the real @temporalio/client adapter ships with the worker; tests always inject a fake
@@ -279,6 +289,10 @@ export class TemporalClient {
     // dispatch steps in schedule order, paired against the agentResult signals as they arrive — the workflow
     // serializes dispatch -> await answer, so the Nth signal answers the Nth dispatch (see user-table-test.ts)
     const dispatchSteps: WorkflowStep[] = [];
+    // each agentResult signal's answer in arrival order — the Nth answers the Nth dispatch (the workflow serializes
+    // dispatch -> await). Paired below so a non-success verdict fails the dispatch step the activity reported
+    // `completed`, and the agent's response surfaces on the step.
+    const answers: { verdict?: string; response?: string }[] = [];
     let answeredCount = 0;
     for (const ev of events) {
       if (ev.type === "ActivityTaskScheduled") {
@@ -290,6 +304,7 @@ export class TemporalClient {
           startedAt: ev.timestamp,
           detail: null,
           description: ev.summary ?? null,
+          response: null,
         };
         steps.set(ev.eventId, step);
         if (ev.activityType === AGENT_DISPATCH_ACTIVITY) dispatchSteps.push(step);
@@ -297,6 +312,7 @@ export class TemporalClient {
       }
       if (ev.type === "WorkflowExecutionSignaled" && ev.signalName === AGENT_RESULT_SIGNAL) {
         answeredCount++;
+        answers.push({ verdict: ev.verdict, response: ev.response });
         continue;
       }
       // a started/terminal event keys back to its scheduled event; skip if we never saw the schedule (torn history)
@@ -306,10 +322,17 @@ export class TemporalClient {
       if (ev.detail) step.detail = ev.detail;
     }
     // a dispatch activity is fire-and-forget (it returns the instant the job is published), so ActivityTaskCompleted
-    // marks it `completed` too early — the real round-trip lands as the agentResult signal. Hold every dispatch past
-    // the answered count at `running`: it has dispatched but the agent has not answered yet.
+    // marks it `completed` too early — the real round-trip lands as the agentResult signal. Reconcile each dispatch
+    // against its answer: unanswered ones stay `running`; an answered one with a non-success verdict is `failed` (the
+    // agent reported the step's goal unmet — the workflow throws on the same verdict), not the activity's false `completed`.
     dispatchSteps.forEach((step, index) => {
-      if (step.status === "completed" && index >= answeredCount) step.status = "running";
+      if (index >= answeredCount) {
+        if (step.status === "completed") step.status = "running";
+        return;
+      }
+      const answer = answers[index];
+      if (answer?.verdict !== undefined && answer.verdict !== "success") step.status = "failed";
+      if (answer?.response) step.response = answer.response;
     });
     return [...steps.values()].sort((a, b) => a.startedAt.localeCompare(b.startedAt));
   }

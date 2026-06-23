@@ -8,12 +8,19 @@
 export const EXECUTION_REQUESTED = "execution.requested";
 // internal bus: the runner publishes this finished turn for the sender to POST back to the host
 export const EXECUTION_RESULT = "execution.result";
+// internal bus: the host closed a session (Stop/pause) — the runner aborts that session's in-flight one-shot run
+export const EXECUTION_CANCEL = "execution.cancel";
 
 // inbound wire payload (POST /receive). sessionId rides the x-session-id header, not the body, so it doubles
 // as the session-binding the runtime resumes against.
 export interface ExecutionRequest {
   runId: string;
   input: string;
+}
+
+// the cancel event's payload: which session's in-flight one-shot run the runner must abort
+export interface ExecutionCancel {
+  sessionId: string;
 }
 
 // the runner's bus event: the request plus the provenance the receiver stamped (source from the JWT, createdAt

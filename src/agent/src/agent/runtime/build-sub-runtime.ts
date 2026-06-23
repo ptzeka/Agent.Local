@@ -30,9 +30,9 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     parentSignal: refs.parentSignal ?? deps.parentSignal,
     // a sub-run has no live renderer of its own; it reports through the executor bridge, so it stays collect-only
     streamOutput: false,
-    // a sub-session answers its PARENT, not a workflow, so it never runs as workflow-orchestrator (which would
-    // mount report_result and force a verdict envelope it has no caller for) — pin it to the plain orchestrator role
-    orchestratorRole: "orchestrator",
+    // honour the caller's role: the executor dispatch needs EXECUTOR_ROLE (no dispatch seam, write tools instead),
+    // while the subsession factory pins "orchestrator" at its own call site so it never inherits workflow-orchestrator
+    orchestratorRole: deps.orchestratorRole,
   };
   return new AgentRuntime(childDeps)
     .add(new ContainerMiddleware())

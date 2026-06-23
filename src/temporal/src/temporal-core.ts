@@ -45,6 +45,34 @@ function decodeActivitySummary(
   }
 }
 
+// the agentResult signal carries { result: <envelope>, outcome }; the envelope's `status` is the step verdict the
+// workflow gates on (success advances, anything else fails the step) and its `result` is the agent's final structured
+// answer. Decode both so step reconstruction can fail the paired dispatch step on a non-success answer (rather than
+// reading the fire-and-forget activity's completion as success) AND surface the agent's response on the step.
+function decodeSignalAnswer(
+  input: { payloads?: ({ data?: Uint8Array | null } | null)[] | null } | null | undefined,
+): { verdict?: string; response?: string } {
+  try {
+    const data = input?.payloads?.[0]?.data;
+    if (!data) return {};
+    const arg = JSON.parse(Buffer.from(data).toString("utf8")) as { result?: { status?: unknown; result?: unknown } };
+    const verdict = typeof arg.result?.status === "string" ? arg.result.status : undefined;
+    const payload = arg.result?.result;
+    // the final answer is task-defined JSON; render it as a string for the step (prose stays prose, objects stringify)
+    const response =
+      payload === undefined || payload === null
+        ? undefined
+        : typeof payload === "string"
+          ? payload
+          : JSON.stringify(payload);
+    return { verdict, response };
+  } catch {
+    // an undecodable payload yields no verdict/response; the step keeps its activity-derived status (fail-open here —
+    // the work-level status, set from the workflow's own throw, remains the authority on overall success)
+    return {};
+  }
+}
+
 // Temporal's describe status names -> the engine-neutral ExecutionStatus the control surface returns.
 // CONTINUED_AS_NEW reads as still running (the chain is live); anything unknown defaults to running, not a failure.
 function mapStatus(name: string | undefined): ExecutionStatus {
@@ -218,7 +246,15 @@ export function createTemporalCore(cfg: TemporalConfig): TemporalCore {
         } else if (canceled) {
           out.push({ eventId, timestamp, type: "ActivityTaskCanceled", scheduledEventId: String(toNumber(canceled.scheduledEventId)) });
         } else if (signaled) {
-          out.push({ eventId, timestamp, type: "WorkflowExecutionSignaled", signalName: signaled.signalName ?? undefined });
+          const answer = decodeSignalAnswer(signaled.input);
+          out.push({
+            eventId,
+            timestamp,
+            type: "WorkflowExecutionSignaled",
+            signalName: signaled.signalName ?? undefined,
+            verdict: answer.verdict,
+            response: answer.response,
+          });
         }
       }
       return out;

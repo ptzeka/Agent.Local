@@ -34,10 +34,12 @@ export function resolveEngineStatus(
   switch (engineStatus) {
     case "canceled":
       return { status: "stopped", description: "cancellation confirmed by the engine" };
+    // genuine engine failures fold to `failed` (the error terminal), not `stopped` — a user cancel and a broken run
+    // are distinct outcomes even though both recover via the same Reset path.
     case "failed":
     case "timedOut":
     case "terminated":
-      return { status: "stopped", description: `engine reported ${engineStatus}` };
+      return { status: "failed", description: `engine reported ${engineStatus}` };
     default:
       return null; // running / completed / unknown: in-flight or owned by the push path
   }
@@ -129,13 +131,13 @@ export class WorkService {
     return record;
   }
 
-  // operator "continue": pick a stopped work back up — re-execute its last step via engine Reset. ownership by
-  // workId; only a `stopped` work is resettable (a clean `completed` is done; the engine refuses a running one).
-  // returns null for a non-owner, false when the work is not stopped. status goes back to `running` as the new run boots.
+  // operator "continue": pick a stopped or failed work back up — re-execute its last step via engine Reset. ownership
+  // by workId; only the continuable terminals are resettable (a clean `completed` is done; the engine refuses a
+  // running one). returns null for a non-owner, false when the work isn't continuable. status goes back to `running`.
   async continue(workId: string, userId: string): Promise<WorkRecord | null | false> {
     const record = await this.works.get(workId);
     if (!record || record.userId !== userId) return null;
-    if (record.status !== "stopped") return false;
+    if (record.status !== "stopped" && record.status !== "failed") return false;
     this.bus.publish(WORKFLOW_RESET, { workId });
     return this.works.update(workId, { status: "running", step: "re-executing stopped step" });
   }
@@ -175,13 +177,14 @@ export class WorkService {
     await this.works.update(record.workId, { status: "completed", step: description });
   }
 
-  // a failed/absent workflow settles to `stopped` (the recoverable terminal), with the engine's error as the row's
-  // context. close the session like any stop — the recovery path is a Reset (continue/rerun), which rebuilds it.
+  // a failed workflow settles to `failed` (the error terminal), with the engine's error as the row's context. close
+  // the session like any stop — `failed` is continuable, so the recovery path is the same Reset (continue/rerun),
+  // which rebuilds the session.
   public async markFailed(temporalId: string, error: string): Promise<void> {
     const record = await this.byTemporalId(temporalId);
     if (!record) return;
     if (record.sessionId) await this.agent.closeSession(record.sessionId);
-    await this.works.update(record.workId, { status: "stopped", step: error });
+    await this.works.update(record.workId, { status: "failed", step: error });
   }
 
   // engine confirmed the cancel: resolve the work by its engine id, then finalize the stop
@@ -207,8 +210,8 @@ export class WorkService {
   private async reconcile(workId: string, status: string | undefined, missing: boolean | undefined): Promise<void> {
     const record = await this.works.get(workId);
     if (!record) return;
-    // a stopped work is terminal — only run its deferred cleanup (close the session the engine has now released)
-    if (record.status === "stopped") {
+    // a stopped/failed work is terminal — only run its deferred cleanup (close the session the engine has now released)
+    if (record.status === "stopped" || record.status === "failed") {
       await this.finalizeStop(record);
       return;
     }

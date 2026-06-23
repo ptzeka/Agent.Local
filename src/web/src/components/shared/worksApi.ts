@@ -31,6 +31,9 @@ export interface WorkflowStep {
   // the step's intent decoded from the activity input (the dispatched prompt); null when none. `name` stays
   // the activity type — this is what differentiates otherwise-identical steps in the accordion.
   description: string | null;
+  // the agent's final structured answer for this step (the report_result payload), stringified; null until the
+  // step's answer has landed (or for non-dispatch steps that carry no answer).
+  response: string | null;
 }
 
 // mirrors the host's StatusCode (src/host/src/work/work-status.ts) — the status catalog the UI renders from.

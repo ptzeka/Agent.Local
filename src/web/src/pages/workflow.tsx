@@ -109,6 +109,8 @@ function StepRow({
           {step.description && (
             <Typography variant="caption" color="text.secondary" noWrap>{step.name}</Typography>
           )}
+          {/* the agent's final structured answer for the step (report_result payload) — shown when it has landed */}
+          {step.response && <Typography variant="caption" color="text.secondary">{step.response}</Typography>}
           {step.detail && <Typography variant="caption" color="error" noWrap>{step.detail}</Typography>}
         </Stack>
         <Typography variant="caption" color="text.secondary">id {step.id}</Typography>
@@ -354,8 +356,8 @@ export default function WorkflowPage() {
                 const stoppable = code?.stoppable ?? false;
                 const isOpen = opened === w.workId;
                 const tree = buildStepTree(steps);
-                // rerun follows the catalog's `continuable` flag — true only for a `stopped` work (a `completed` one
-                // is the clean end, done). new/running aren't continuable either; the engine refuses a live reset anyway
+                // rerun follows the catalog's `continuable` flag — true for the recoverable terminals (`stopped`,
+                // `failed`); a `completed` work is the clean end (done) and new/running refuse a live reset anyway
                 const canRerun = code?.continuable ?? false;
                 return (
                   <Fragment key={w.workId}>

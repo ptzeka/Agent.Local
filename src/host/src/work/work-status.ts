@@ -18,14 +18,17 @@ export interface StatusCode {
   continuable: boolean;
 }
 
-// four states mirroring the engine's own lifecycle. `new` = provisioned, no engine record yet; `running` = a live
-// workflow. The two terminal states split by recoverability, not by success: `completed` is the clean end (engine
-// returned) and is NOT continuable — done is done; `stopped` is the recoverable terminal that ALSO absorbs failures
-// (user cancel, engine failed/timedOut/orphaned), so it stays continuable — the work can be picked up again.
+// five states mirroring the engine's own lifecycle. `new` = provisioned, no engine record yet; `running` = a live
+// workflow. The three terminal states split by recoverability AND success: `completed` is the clean end (engine
+// returned) and is NOT continuable — done is done; `stopped` is the user-cancel / orphan terminal (no failure), kept
+// continuable so the work can be picked back up; `failed` is the engine-failure terminal (failed/timedOut/terminated),
+// also continuable since the recovery path is the same engine Reset (continue/rerun) — it just reads as an error, not
+// a benign stop, so the UI can distinguish "you stopped this" from "this broke".
 export const WORK_STATUS_CODES = [
   { status: "new",       label: "New",       tone: "neutral", terminal: false, stoppable: true,  continuable: false },
   { status: "running",   label: "Running",   tone: "active",  terminal: false, stoppable: true,  continuable: false },
   { status: "stopped",   label: "Stopped",   tone: "warn",    terminal: true,  stoppable: false, continuable: true  },
+  { status: "failed",    label: "Failed",    tone: "error",   terminal: true,  stoppable: false, continuable: true  },
   { status: "completed", label: "Completed", tone: "success", terminal: true,  stoppable: false, continuable: false },
 ] as const satisfies ReadonlyArray<StatusCode>;
 

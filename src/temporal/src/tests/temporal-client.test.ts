@@ -169,6 +169,26 @@ describe("TemporalClient", () => {
     expect(step.detail).toBe("boom");
   });
 
+  it("getSteps fails a dispatch step whose agentResult verdict is non-success (not the activity's false completed)", async () => {
+    const bus = new Eventing();
+    const { core, setEvents } = fakeCore();
+    const client = new TemporalClient(loadConfig(), bus, noopLogger, new AbortController().signal, core);
+    // the verify dispatch activity COMPLETED (fire-and-forget), but the agent's answer reported a non-success
+    // verdict — the step must read `failed`, mirroring the workflow's own throw on the same verdict.
+    setEvents([
+      { eventId: "5", type: "ActivityTaskScheduled", timestamp: "2026-06-19T10:00:00.000Z", activityType: "dispatchAgentTask", summary: "Verify the row exists" },
+      { eventId: "6", type: "ActivityTaskStarted", timestamp: "2026-06-19T10:00:01.000Z", scheduledEventId: "5" },
+      { eventId: "7", type: "ActivityTaskCompleted", timestamp: "2026-06-19T10:00:05.000Z", scheduledEventId: "5" },
+      { eventId: "8", type: "WorkflowExecutionSignaled", timestamp: "2026-06-19T10:00:06.000Z", signalName: "agentResult", verdict: "fail", response: '{"reason":"row missing"}' },
+    ]);
+
+    const [step] = await client.getSteps("WORK-7");
+
+    expect(step.status).toBe("failed");
+    // the agent's final answer surfaces on the step regardless of verdict
+    expect(step.response).toBe('{"reason":"row missing"}');
+  });
+
   it("rerunFromStep routes to the core reset-to-step with the chosen step id", async () => {
     const bus = new Eventing();
     const { core, resets } = fakeCore();

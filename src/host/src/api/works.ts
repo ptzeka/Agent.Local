@@ -3,9 +3,17 @@ import type { ILogger } from "@agent-local/common";
 import type { DatabaseHandle } from "@agent-local/common/db";
 import type { WorkflowTemplate, WorkflowStep } from "@agent-local/temporal";
 import { requirePermission } from "../user/userContext.js";
-import type { WorkStore, WorkStatus } from "../work/work-store.js";
+import type { WorkStore, WorkStatus, WorkRecord } from "../work/work-store.js";
 import { readStatusCodes } from "../db/db-schema.js";
 import type { WorkService } from "../services/work-service.js";
+
+// which works still warrant a poll-time reconcile: the in-flight ones (new/running) plus a terminal work whose
+// deferred session cleanup is still pending. `stopped` and `failed` are both that kind of terminal — the engine has
+// released the run but the released session may not be closed yet; once sessionId clears they are fully settled.
+function needsReconcile(work: WorkRecord): boolean {
+  if (work.status === "new" || work.status === "running") return true;
+  return (work.status === "stopped" || work.status === "failed") && Boolean(work.sessionId);
+}
 
 // the user-scoped work API: the host BFF resource over the work-unit store. Every route is gated AND scoped
 // to the caller's identity (req.userContext.userInfo.sub, set by userContextMiddleware) so a user only ever
@@ -59,10 +67,10 @@ export function createWorksApi(
     const status = typeof req.query.status === "string" ? (req.query.status as WorkStatus) : undefined;
     const results = await works.search({ userId: owner(req), status });
     // poll-time reconcile: kick a bus-pure describe for each unsettled work so a NEXT poll reflects engine truth.
-    // a `stopped` work is included only while its cleanup is pending (sessionId set), so reconcile closes the
-    // released session — once cleaned it is fully settled and no longer pinged.
+    // a `stopped`/`failed` work is included only while its cleanup is pending (sessionId set), so reconcile closes
+    // the released session — once cleaned it is fully settled and no longer pinged.
     for (const work of results) {
-      if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
+      if (needsReconcile(work)) {
         workService.requestReconcile(work.workId);
       }
     }
@@ -77,9 +85,9 @@ export function createWorksApi(
       return;
     }
     // poll-time reconcile: an unsettled work asks the engine for its live state; this read returns the current
-    // record, the fold lands async (bus-pure) so the next read shows it — orphaned/failed workflows surface as
-    // `stopped`, and a stopped work with cleanup still pending (sessionId set) gets its released session closed.
-    if (work.status === "new" || work.status === "running" || (work.status === "stopped" && work.sessionId)) {
+    // record, the fold lands async (bus-pure) so the next read shows it — orphaned workflows surface as `stopped`,
+    // failed ones as `failed`, and a terminal work with cleanup still pending (sessionId set) gets its session closed.
+    if (needsReconcile(work)) {
       workService.requestReconcile(work.workId);
     }
     // step history: the engine's reconstructed per-step status, folded in so the detail view renders it from one
@@ -119,7 +127,7 @@ export function createWorksApi(
       return;
     }
     if (result === false) {
-      res.status(409).json({ error: "work is not stopped" });
+      res.status(409).json({ error: "work is not continuable" });
       return;
     }
     logger.debug?.(`[host] continued (reset) work ${result.workId}`);

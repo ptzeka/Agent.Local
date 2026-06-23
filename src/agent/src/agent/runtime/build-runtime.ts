@@ -43,5 +43,5 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware())
-    .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime(deps, refs) }));
+    .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime({ ...deps, orchestratorRole: "orchestrator" }, refs) }));
 }
