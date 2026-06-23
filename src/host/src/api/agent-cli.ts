@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import type { ILogger } from "@agent-local/common";
 import { requirePermission } from "../user/userContext.js";
 import type { WorkStore } from "../work/work-store.js";
+import { isTerminalStatus } from "../work/work-status.js";
 import type { AgentClient } from "../comms/sender.js";
 
 // host BFF for the interactive agent CLI over a work item. The browser only ever talks to the host (cookie, same
@@ -24,11 +25,17 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
       res.status(409).json({ error: "work has no workspace yet" });
       return;
     }
-    let sessionId = await works.getCliSessionId(work.workId);
-    if (!sessionId) {
-      sessionId = await agent.createSession(work.workspaceId, work.workId, work.userId);
-      await works.setCliSessionId(work.workId, sessionId);
+    // a `complete` work is fully locked: no new chat session may be opened on it (mirrors the UI's disabled button)
+    if (isTerminalStatus(work.status)) {
+      res.status(409).json({ error: "work is complete" });
+      return;
     }
+    // pass the cached cli session to create: the agent reuses it when still valid (resuming its transcript) or mints
+    // a fresh one when it's gone (e.g. after a restart). always store what create returns — upserts on (work_id,
+    // kind='cli'), so a now-invalid cached id is replaced rather than handed back to a doomed stream.
+    const cached = await works.getCliSessionId(work.workId);
+    const sessionId = await agent.createSession(work.workspaceId, work.workId, work.userId, cached ?? undefined);
+    await works.setCliSessionId(work.workId, sessionId);
     res.json({ sessionId });
   });
 
@@ -91,6 +98,11 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
       res.status(404).json({ error: "unknown work" });
       return;
     }
+    // locked: a `complete` work accepts no further turns even if a chat session lingered from before it completed
+    if (isTerminalStatus(work.status)) {
+      res.status(409).json({ error: "work is complete" });
+      return;
+    }
     const sessionId = await works.getCliSessionId(work.workId);
     if (!sessionId) {
       res.status(409).json({ error: "cli session not initialized" });
@@ -104,6 +116,26 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
     try {
       await agent.sendInput(sessionId, input);
       res.status(202).json({ accepted: true });
+    } catch (err) {
+      res.status(502).json({ error: String(err) });
+    }
+  });
+
+  // chat Stop: cancel the live turn for the owner's cli session without closing it (the SSE stream stays attached)
+  router.post("/api/agent/cli/:workId/stop", requirePermission("workflow:write"), async (req: Request, res: Response) => {
+    const work = await works.get(req.params.workId);
+    if (!work || work.userId !== owner(req)) {
+      res.status(404).json({ error: "unknown work" });
+      return;
+    }
+    const sessionId = await works.getCliSessionId(work.workId);
+    if (!sessionId) {
+      res.status(409).json({ error: "cli session not initialized" });
+      return;
+    }
+    try {
+      await agent.interruptSession(sessionId);
+      res.status(202).json({ stopped: true });
     } catch (err) {
       res.status(502).json({ error: String(err) });
     }

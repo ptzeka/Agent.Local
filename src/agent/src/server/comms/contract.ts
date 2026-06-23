@@ -10,6 +10,9 @@ export const EXECUTION_REQUESTED = "execution.requested";
 export const EXECUTION_RESULT = "execution.result";
 // internal bus: the host closed a session (Stop/pause) — the runner aborts that session's in-flight one-shot run
 export const EXECUTION_CANCEL = "execution.cancel";
+// internal bus: the user pressed Stop in the live chat — the runner cancels that session's in-flight TURN but
+// leaves the runtime up (distinct from CANCEL, which tears a one-shot run down), so the chat stays usable
+export const EXECUTION_INTERRUPT = "execution.interrupt";
 
 // inbound wire payload (POST /receive). sessionId rides the x-session-id header, not the body, so it doubles
 // as the session-binding the runtime resumes against.
@@ -20,6 +23,11 @@ export interface ExecutionRequest {
 
 // the cancel event's payload: which session's in-flight one-shot run the runner must abort
 export interface ExecutionCancel {
+  sessionId: string;
+}
+
+// the interrupt event's payload: which live session's in-flight turn the runner must cancel (runtime kept alive)
+export interface ExecutionInterrupt {
   sessionId: string;
 }
 

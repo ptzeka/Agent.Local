@@ -28,6 +28,12 @@ export class SseQueue {
     return this.byId.has(sessionId);
   }
 
+  // snapshot of live connections for a sweep (e.g. the heartbeat reaping orphans); copied so a consumer can
+  // deregister mid-iteration without mutating the map it is walking
+  values(): SseConnection[] {
+    return [...this.byId.values()];
+  }
+
   // remove only when the stored connection is the one closing, so a replaced connection's late close is a no-op
   deregister(sessionId: string, connection: SseConnection): void {
     if (this.byId.get(sessionId) === connection) this.byId.delete(sessionId);

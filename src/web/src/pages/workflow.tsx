@@ -19,6 +19,8 @@ import RefreshIcon from "@mui/icons-material/Refresh";
 import KeyboardArrowUpIcon from "@mui/icons-material/KeyboardArrowUp";
 import KeyboardArrowDownIcon from "@mui/icons-material/KeyboardArrowDown";
 import ClearIcon from "@mui/icons-material/Clear";
+import ChatIcon from "@mui/icons-material/Chat";
+import WorkChatDialog from "@/components/shared/WorkChatDialog";
 import { useHealth } from "@/components/shared/useHealth";
 import { useWorksApi, type WorkRecord, type StatusCode, type WorkflowTemplate, type WorkflowStep } from "@/components/shared/worksApi";
 import { useApiQuery, useApiMutation } from "@/components/shared/useApi";
@@ -29,14 +31,19 @@ import type IPage from "./IPage";
 export const Page: IPage = { pageName: "workflow", displayLabel: "Workflow", permission: Permissions.WorkflowRead };
 
 // the only UI-local status knowledge: maps the host's presentation-neutral `tone` to an MUI chip color. Everything
-// else (which statuses exist, their labels, which are terminal/stoppable/continuable) comes from the host catalog.
+// else (which statuses exist, their labels, which are terminal) comes from the host catalog. `neutral` (new) rides
+// MUI's `default` chip resolved to an explicit palette grey via sx (see chipSx); `attention` is the stored orange.
 type ChipColor = "default" | "info" | "warning" | "error" | "success";
 const toneColor: Record<StatusCode["tone"], ChipColor> = {
   neutral: "default",
   active: "info",
-  warn: "warning",
-  error: "error",
   success: "success",
+  attention: "warning",
+};
+
+// new = light grey: MUI's single `default` is too dark, so the chip resolves it to an explicit palette grey
+const chipSx: Partial<Record<StatusCode["tone"], object>> = {
+  neutral: { bgcolor: "grey.200", color: "text.primary" },
 };
 
 // step status is the engine's own activity status, not the work catalog — its own small tone map (the work status
@@ -75,8 +82,8 @@ const dash = (v: string | null): string => v ?? "—";
 const when = (iso: string | null | undefined): string => (iso ? new Date(iso).toLocaleString() : "—");
 
 // one step on a single flat row — no expand/collapse; every field shows inline. children nest with a left indent
-// so a child-workflow step still reads as nested. canRerun gates the ✕ "remove row" action — disabled while the
-// work is in-flight, since the engine refuses a reset on a live run.
+// so a child-workflow step still reads as nested. canRerun gates the ✕ "remove row" action — available until the
+// work is terminal (`complete`); it cancels this step and everything after and re-submits from here.
 function StepRow({
   node,
   depth,
@@ -115,7 +122,7 @@ function StepRow({
         </Stack>
         <Typography variant="caption" color="text.secondary">id {step.id}</Typography>
         <Typography variant="caption" color="text.secondary">{new Date(step.startedAt).toLocaleTimeString()}</Typography>
-        <Tooltip title={canRerun ? "Remove this step and everything after, then rerun from here" : "Available once the work has stopped running"}>
+        <Tooltip title={canRerun ? "Cancel this step and everything after, then re-submit from here" : "Locked — the work is complete"}>
           <span>
             <IconButton
               size="small"
@@ -149,6 +156,7 @@ export default function WorkflowPage() {
   const [steps, setSteps] = useState<WorkflowStep[]>([]); // the opened work's reconstructed step history, from its GET
   const [stepsError, setStepsError] = useState<string | null>(null); // why the step read failed, if it did (vs truly-empty)
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set()); // steps optimistically grayed while a rerun-cut is in flight
+  const [chatWork, setChatWork] = useState<string | null>(null); // the workId whose chat dialog is open, if any
 
   // load the status catalog once: labels, chip tone, and per-status action rules all come from the host lookup
   const statusQuery = useApiQuery(() => api.getStatusCodes(), [api]);
@@ -161,6 +169,8 @@ export default function WorkflowPage() {
   // load the workflow catalog once: the Start dropdown is sourced from the host (code-defined), not hardcoded
   const workflowsQuery = useApiQuery(() => api.getWorkflows(), [api]);
   const workflows = workflowsQuery.data ?? [];
+  // resolve a work's stored workflow type to its human label for the table column (falls back to the raw id/dash)
+  const workflowLabels = useMemo(() => new Map(workflows.map((wf) => [wf.name, wf.label])), [workflows]);
   useEffect(() => {
     // default the selection to the first template so Start is immediately usable
     if (workflows.length > 0) setWorkflowId((prev) => prev || workflows[0].name);
@@ -274,7 +284,7 @@ export default function WorkflowPage() {
       </Stack>
 
       <Typography variant="body2" color="text.secondary">
-        Your work units — fetched on load; no live stream. Per row: Stop a running one, rerun a stopped one from any step, or Refresh just that row.
+        Your work units — fetched on load; no live stream. Per row: Stop a live one, re-submit from any step, or Refresh just that row. Every action stays available until the work is complete.
       </Typography>
 
       <Stack direction="row" spacing={2} alignItems="center">
@@ -331,9 +341,8 @@ export default function WorkflowPage() {
             <TableRow>
               <TableCell>Work ID</TableCell>
               <TableCell>Status</TableCell>
-              <TableCell>Temporal</TableCell>
+              <TableCell>Workflow</TableCell>
               <TableCell>Workspace</TableCell>
-              <TableCell>Agent session</TableCell>
               <TableCell>Created</TableCell>
               <TableCell>Updated</TableCell>
               <TableCell align="right">Actions</TableCell>
@@ -342,7 +351,7 @@ export default function WorkflowPage() {
           <TableBody>
             {works.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={8}>
+                <TableCell colSpan={7}>
                   <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
                     {loading ? "Loading…" : "No work yet. Start a workflow above to see it here."}
                   </Typography>
@@ -353,12 +362,10 @@ export default function WorkflowPage() {
                 // all status semantics come from the host catalog; an unknown status (catalog miss) renders inert
                 const code = statusCodes.get(w.status);
                 const terminal = code?.terminal ?? false;
-                const stoppable = code?.stoppable ?? false;
                 const isOpen = opened === w.workId;
                 const tree = buildStepTree(steps);
-                // rerun follows the catalog's `continuable` flag — true for the recoverable terminals (`stopped`,
-                // `failed`); a `completed` work is the clean end (done) and new/running refuse a live reset anyway
-                const canRerun = code?.continuable ?? false;
+                // every action is available until the work is terminal (`complete`); only then is the row locked
+                const canAct = !terminal;
                 return (
                   <Fragment key={w.workId}>
                     <TableRow
@@ -371,53 +378,69 @@ export default function WorkflowPage() {
                           <Chip
                             label={code?.label ?? w.status}
                             color={code ? toneColor[code.tone] : "default"}
+                            sx={code ? chipSx[code.tone] : undefined}
                             size="small"
                           />
                         </Tooltip>
                       </TableCell>
-                      <TableCell>{dash(w.temporalId)}</TableCell>
+                      <TableCell>{w.workflowId ? (workflowLabels.get(w.workflowId) ?? w.workflowId) : "—"}</TableCell>
                       <TableCell>{dash(w.workspaceId)}</TableCell>
-                      <TableCell>{dash(w.sessionId)}</TableCell>
                       <TableCell>{when(w.createdAt)}</TableCell>
                       <TableCell>{when(w.ts)}</TableCell>
                       <TableCell align="right">
                         <Tooltip title={isOpen ? "Hide steps" : "Show steps"}>
                           <IconButton
-                            size="small"
+                            size="medium"
                             onClick={(e) => {
                               e.stopPropagation();
                               setOpened(isOpen ? null : w.workId);
                             }}
                           >
-                            {isOpen ? <KeyboardArrowUpIcon fontSize="small" /> : <KeyboardArrowDownIcon fontSize="small" />}
+                            {isOpen ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
                           </IconButton>
+                        </Tooltip>
+                        <Tooltip title={canAct ? "Chat with the agent" : "Work is complete — chat is closed"}>
+                          <span>
+                            <IconButton
+                              size="medium"
+                              color="primary"
+                              // chat needs a workspace AND a non-terminal work: a `complete` work is fully locked
+                              disabled={!w.workspaceId || !canAct}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setChatWork(w.workId);
+                              }}
+                            >
+                              <ChatIcon />
+                            </IconButton>
+                          </span>
                         </Tooltip>
                         <Tooltip title="Stop">
                           <span>
                             <IconButton
-                              size="small"
+                              size="medium"
                               color="warning"
-                              disabled={!stoppable}
+                              disabled={!canAct}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void onStop(w.workId);
                               }}
                             >
-                              <StopCircleIcon fontSize="small" />
+                              <StopCircleIcon />
                             </IconButton>
                           </span>
                         </Tooltip>
                         <Tooltip title="Refresh this work">
                           <span>
                             <IconButton
-                              size="small"
+                              size="medium"
                               disabled={terminal}
                               onClick={(e) => {
                                 e.stopPropagation();
                                 void onRefreshRow(w.workId);
                               }}
                             >
-                              <RefreshIcon fontSize="small" />
+                              <RefreshIcon />
                             </IconButton>
                           </span>
                         </Tooltip>
@@ -425,7 +448,7 @@ export default function WorkflowPage() {
                     </TableRow>
                     {/* step history of THIS work, inline under its row; unmountOnExit so collapsed rows render no accordion */}
                     <TableRow>
-                      <TableCell colSpan={8} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
+                      <TableCell colSpan={7} sx={{ py: 0, borderBottom: isOpen ? undefined : "none" }}>
                         <Collapse in={isOpen} timeout="auto" unmountOnExit>
                           <Stack spacing={1} sx={{ py: 2 }}>
                             <Typography variant="subtitle2">Steps</Typography>
@@ -443,7 +466,7 @@ export default function WorkflowPage() {
                                   key={node.step.id}
                                   node={node}
                                   depth={0}
-                                  canRerun={canRerun}
+                                  canRerun={canAct}
                                   onRerun={(stepId) => void onRerunStep(w.workId, stepId)}
                                   removingIds={removingIds}
                                 />
@@ -460,6 +483,16 @@ export default function WorkflowPage() {
           </TableBody>
         </Table>
       </Paper>
+
+      {/* one chat dialog, mounted only while a row's chat is open — its EventSource opens on mount, closes on unmount */}
+      {chatWork && (
+        <WorkChatDialog
+          workId={chatWork}
+          title={chatWork.slice(0, 8)}
+          open={chatWork !== null}
+          onClose={() => setChatWork(null)}
+        />
+      )}
     </Stack>
   );
 }

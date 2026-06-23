@@ -4,7 +4,7 @@ import { type Eventing } from "@agent-local/common";
 import { type SessionRegistry } from "./session-registry.js";
 import { createSession } from "../agent/session/session.js";
 import { type SessionStore } from "../agent/session/session-store.js";
-import { EXECUTION_CANCEL } from "./comms/contract.js";
+import { EXECUTION_CANCEL, EXECUTION_INTERRUPT } from "./comms/contract.js";
 
 // session lifecycle API (kept separate from comms/: this mints a capability, it is not event transport).
 // minting/closing a work session needs no runtime, so it mounts BEFORE the runtime middleware (which would
@@ -21,20 +21,28 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
       res.status(403).json({ error: "forbidden" });
       return;
     }
-    const { workspaceId, workId, userId } = (req.body ?? {}) as {
+    const { workspaceId, workId, userId, sessionId } = (req.body ?? {}) as {
       workspaceId?: string;
       workId?: string;
       // present for a user-facing (cli) session; absent for a job session owned by the workflow
       userId?: string;
+      // the caller's cached session, if any: honoured when still valid (resumable), else a fresh one is minted
+      sessionId?: string;
     };
     if (!workspaceId || !workId) {
       res.status(400).json({ error: "workspaceId and workId are required" });
       return;
     }
-    const record = sessions.create(workspaceId, workId, userId);
+    // a passed session is honoured only if its persisted state still exists; otherwise it's stale (e.g. the store
+    // was reset) and we mint fresh. empty in -> always mint. so create always answers a valid, resumable session.
+    const requestedValid = sessionId ? Boolean(await store.load(sessionId)) : false;
+    const record = sessions.create(workspaceId, workId, userId, requestedValid ? sessionId : undefined);
     try {
-      const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID() });
-      await store.save(session);
+      // persist a conversation only when the resolved id has none yet — a reuse/rehydrate must not reset the transcript
+      if (!(await store.load(record.sessionId))) {
+        const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID() });
+        await store.save(session);
+      }
     } catch (err) {
       sessions.close(record.sessionId);
       res.status(500).json({ error: `session persist failed: ${String(err)}` });
@@ -58,6 +66,18 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
       await store.save(session);
     }
     res.status(202).json({ closed: sessions.close(sessionId) });
+  });
+
+  // interrupt cancels the live session's in-flight turn (chat Stop) WITHOUT closing the session — the runtime stays
+  // up so the user can send again. The runner does the work (it owns the live-connection registry); we only signal.
+  router.post("/session/interrupt", (req: Request, res: Response) => {
+    const { sessionId } = (req.body ?? {}) as { sessionId?: string };
+    if (!sessionId) {
+      res.status(202).json({ interrupted: false });
+      return;
+    }
+    bus.publish(EXECUTION_INTERRUPT, { sessionId });
+    res.status(202).json({ interrupted: true });
   });
 
   return router;

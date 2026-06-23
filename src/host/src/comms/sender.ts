@@ -7,14 +7,17 @@ import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type ExecutionR
 // translates the engine's job into a neutral ExecutionRequest — runId carries the host's temporalId (== workId)
 // opaquely, so the agent's reply round-trips back to THIS work via the runId it echoes.
 export interface AgentClient {
-  // userId binds a user-facing (cli) session to its owner on the agent; omitted for a workflow job session
-  createSession(workspaceId: string, workId: string, userId?: string): Promise<string>;
+  // userId binds a user-facing (cli) session to its owner on the agent; omitted for a workflow job session.
+  // sessionId carries the host's cached session so the agent reuses it when still valid, else mints a new one.
+  createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string>;
   closeSession(sessionId: string): Promise<void>;
   // the live interactive CLI half: open the agent's SSE event stream for a session (to pipe to the browser), and
   // push one input turn into that session. The stream carries the USER — subjectToken (the caller's access token)
   // is exchanged for an OBO bearer so the agent verifies the user and binds the stream to the session's owner.
   openSseStream(sessionId: string, subjectToken: string | null, signal: AbortSignal): Promise<Response>;
   sendInput(sessionId: string, input: string): Promise<void>;
+  // chat Stop: cancel the session's in-flight turn but keep the session open for the next input
+  interruptSession(sessionId: string): Promise<void>;
 }
 
 // the job carries the instruction in a variable; accept the common spellings
@@ -49,11 +52,11 @@ export class HttpJobSender implements AgentClient {
     });
   }
 
-  async createSession(workspaceId: string, workId: string, userId?: string): Promise<string> {
-    const res = await this.post("/session/create", { workspaceId, workId, userId });
+  async createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string> {
+    const res = await this.post("/session/create", { workspaceId, workId, userId, sessionId });
     if (!res.ok) throw new Error(`agent /session/create -> ${res.status}`);
-    const { sessionId } = (await res.json()) as { sessionId: string };
-    return sessionId;
+    const { sessionId: resolved } = (await res.json()) as { sessionId: string };
+    return resolved;
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -88,6 +91,13 @@ export class HttpJobSender implements AgentClient {
     const request: ExecutionRequest = { runId: randomUUID(), input };
     const res = await this.post("/receive", request, sessionId);
     if (!res.ok) throw new Error(`agent /receive -> ${res.status}`);
+  }
+
+  // POST a Stop for the session's live turn: the agent cancels the in-flight turn but leaves the runtime up. throws
+  // on non-2xx so the route can surface it; a no-op (no live turn) still answers 202.
+  async interruptSession(sessionId: string): Promise<void> {
+    const res = await this.post("/session/interrupt", { sessionId });
+    if (!res.ok) throw new Error(`agent /session/interrupt -> ${res.status}`);
   }
 
   // POST one execution request to the agent's /receive. the host presents its OWN agent:trigger service token

@@ -4,7 +4,9 @@ import {
   EXECUTION_REQUESTED,
   EXECUTION_RESULT,
   EXECUTION_CANCEL,
+  EXECUTION_INTERRUPT,
   type ExecutionCancel,
+  type ExecutionInterrupt,
   type ExecutionRequested,
   type ExecutionResult,
   type TurnResponse,
@@ -46,6 +48,33 @@ export class ExecutionRunner {
       controller.abort("session-closed");
       this.logger.debug?.(`[agent-server] aborted in-flight run for session ${sessionId}`);
     });
+    // user pressed Stop in the live chat: cancel that live session's in-flight turn but keep the runtime up, so the
+    // chat stays usable. Only the live (SSE) path applies — a one-shot job has no interactive Stop.
+    this.bus.subscribe(EXECUTION_INTERRUPT, (event) => {
+      const { sessionId } = event.payload as unknown as ExecutionInterrupt;
+      const live = this.sseQueue.get(sessionId);
+      if (!live) return;
+      live.runtime.stopAllWork();
+      this.logger.debug?.(`[agent-server] interrupted live turn for session ${sessionId}`);
+    });
+  }
+
+  // periodic sweep (driven by the process Heartbeat): a dead SSE whose 'close' never fired — a tab the OS/proxy
+  // dropped without propagating the disconnect — holds the session's single live slot and leaks its runtime,
+  // 409-ing the real user out forever. Reap any connection whose response is no longer writable: deregister and
+  // drain it the same way ssereceiver's own teardown does, freeing the slot. Live-but-idle streams are untouched.
+  heartbeat(): void {
+    for (const connection of this.sseQueue.values()) {
+      const res = connection.res;
+      const dead = res.writableEnded || res.destroyed || res.socket?.destroyed === true;
+      if (!dead) continue;
+      this.sseQueue.deregister(connection.sessionId, connection);
+      void connection.runtime
+        .stopTurnLoop()
+        .then(() => connection.runtime.shutdown({ mode: "drain", timeoutMs: 10_000 }))
+        .catch((err) => this.logger.error?.("[agent-server] orphan sse teardown failed", err));
+      this.logger.debug?.(`[agent-server] reaped orphan sse for session ${connection.sessionId}`);
+    }
   }
 
   private async run(requested: ExecutionRequested): Promise<void> {

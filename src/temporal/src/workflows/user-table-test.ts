@@ -98,10 +98,10 @@ export async function userTableTestWorkflow(args: UserTableTestArgs): Promise<st
   const runStep = createStepRunner(args);
 
   // step 2 — ask the agent to create the users sheet
-  await runStep(`Create an Excel sheet named "users" with two columns: userId, userName.`);
+  await runStep(`Create an Excel sheet named "users" with three columns: index (row index), userId, userName.`);
 
   // step 3 — ask the agent to add a record (userId/userName are domain TEST DATA, not the principal owner)
-  await runStep(`Append a row to the "users" sheet with userId=55, userName=foxmulder.`);
+  await runStep(`Append a row to the "users" sheet with index, userId=55, userName=foxmulder.`);
 
   // step 4 — ask the agent to assert the row is present
   await runStep(`Verify the "users" sheet has a row where userId=55 and userName=foxmulder; fail if it is missing.`);
@@ -118,10 +118,10 @@ export async function userTableFailTestWorkflow(args: UserTableTestArgs): Promis
   const runStep = createStepRunner(args);
 
   // step 2 — create the users sheet
-  await runStep(`Create an Excel sheet named "users" with two columns: userId, userName.`);
+  await runStep(`Create an Excel sheet named "users" with three columns: (row index), userId, userName.`);
 
   // step 3 — append a DIFFERENT row than the one the next step asserts, so the verify is bound to fail
-  await runStep(`Append a row to the "users" sheet with userId=88, userName=danaskully.`);
+  await runStep(`Append a row to the "users" sheet with index, userId=88, userName=danaskully.`);
 
   // step 4 — assert a row that was never written; the agent must report failure here
   await runStep(`Verify the "users" sheet has a row where userId=55 and userName=foxmulder; fail if it is missing.`);

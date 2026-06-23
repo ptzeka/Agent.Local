@@ -6,12 +6,14 @@ import { useApiClient } from "@/providers/api_context";
 
 // mirrors the host's WorkRecord (src/host/src/work/work-store.ts); the wire shape the work table renders.
 // step carries the descriptive "where we are" (it absorbed the old statusDescription: stop/failure reasons too).
+// `attention` (orange) is a STORED status the failure-event fold writes — not a separate overlay flag — so the
+// list colors the row from `status` alone with no step-history read.
 export interface WorkRecord {
   workId: string;
   userId: string;
   workflowId: string | null;
   workspaceId: string | null;
-  status: "new" | "running" | "stopped" | "completed";
+  status: "new" | "running" | "attention" | "complete";
   step: string | null;
   sessionId: string | null;
   temporalId: string | null;
@@ -37,14 +39,13 @@ export interface WorkflowStep {
 }
 
 // mirrors the host's StatusCode (src/host/src/work/work-status.ts) — the status catalog the UI renders from.
-// `tone` is presentation-neutral (the page maps it to a chip color); the flags drive the per-row action gating.
+// `tone` is presentation-neutral (the page maps it to a chip color); `terminal` is the lone lock flag — a terminal
+// work disables every action, a non-terminal one keeps them all.
 export interface StatusCode {
   status: string;
   label: string;
-  tone: "neutral" | "active" | "warn" | "error" | "success";
+  tone: "neutral" | "active" | "success" | "attention";
   terminal: boolean;
-  stoppable: boolean;
-  continuable: boolean;
 }
 
 // mirrors the host's WorkflowTemplate (src/temporal/src/workflows/index.ts) — one startable workflow the
@@ -117,7 +118,8 @@ export function createWorksApi(client: AxiosInstance): WorksApi {
       return data.work;
     },
 
-    // stop a work the caller owns; returns its updated record (status "stopped")
+    // stop a work the caller owns; the host only cancels (no status write) and returns the record as-is — the
+    // engine's cancel confirmation later folds it to "attention"
     async stopWork(workId: string, reason?: string) {
       const { data } = await client.post<{ work: WorkRecord }>(
         `/api/works/${encodeURIComponent(workId)}/stop`,
@@ -127,7 +129,7 @@ export function createWorksApi(client: AxiosInstance): WorksApi {
     },
 
     // continue (pick a stopped work back up — re-execute its last step) the caller owns; returns its updated record
-    // (status "running"). only a `stopped` work is resettable — the host answers 409 otherwise, thrown by the interceptor.
+    // (status "running"). only an `attention` work is resettable — the host answers 409 otherwise, thrown by the interceptor.
     async continueWork(workId: string) {
       const { data } = await client.post<{ work: WorkRecord }>(
         `/api/works/${encodeURIComponent(workId)}/continue`,

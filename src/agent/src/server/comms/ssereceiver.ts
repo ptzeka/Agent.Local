@@ -40,10 +40,22 @@ export class SseReceiver {
         res.status(403).json({ error: "forbidden" });
         return;
       }
-      // one runtime per connection: a second attach would race two runtimes on the same session store
-      if (this.sseQueue.has(sessionId)) {
-        res.status(409).json({ error: "session already streaming" });
-        return;
+      // newest tab wins. A lingering connection — a dead tab whose disconnect never propagated upstream — would
+      // otherwise hold this session's single slot forever and 409 the real user out. Evict it before attaching:
+      // deregister, end its response, and fully DRAIN its runtime first, so the "one runtime per session store at
+      // a time" invariant still holds (the old runtime is gone before the new one resumes the same store below).
+      const stale = this.sseQueue.get(sessionId);
+      if (stale) {
+        this.sseQueue.deregister(sessionId, stale);
+        try {
+          stale.res.end();
+        } catch {
+          // the stale response's socket is already gone — nothing left to end
+        }
+        await stale.runtime
+          .stopTurnLoop()
+          .then(() => stale.runtime.shutdown({ mode: "drain", timeoutMs: 10_000 }))
+          .catch(() => undefined);
       }
 
       // SSE handshake: stream content-type, no buffering, flush so the client opens the stream immediately

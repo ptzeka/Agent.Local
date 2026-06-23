@@ -7,12 +7,11 @@ import type { WorkStore, WorkStatus, WorkRecord } from "../work/work-store.js";
 import { readStatusCodes } from "../db/db-schema.js";
 import type { WorkService } from "../services/work-service.js";
 
-// which works still warrant a poll-time reconcile: the in-flight ones (new/running) plus a terminal work whose
-// deferred session cleanup is still pending. `stopped` and `failed` are both that kind of terminal — the engine has
-// released the run but the released session may not be closed yet; once sessionId clears they are fully settled.
+// every non-terminal work warrants a poll-time reconcile: its status is RECALCULATED against live engine truth on
+// each poll (an `attention` work returns to `running` when its workflow is active again, a `running` one becomes
+// `attention` when the engine cancels/fails it). Only a `complete` work is terminal and never reconciles.
 function needsReconcile(work: WorkRecord): boolean {
-  if (work.status === "new" || work.status === "running") return true;
-  return (work.status === "stopped" || work.status === "failed") && Boolean(work.sessionId);
+  return work.status !== "complete";
 }
 
 // the user-scoped work API: the host BFF resource over the work-unit store. Every route is gated AND scoped
@@ -74,6 +73,8 @@ export function createWorksApi(
         workService.requestReconcile(work.workId);
       }
     }
+    // pure DB read: every status (including `attention`) is stored, so the list colors each row with zero engine
+    // calls — step history is fetched only on the detail/expand path below.
     res.json({ works: results });
   });
 
@@ -105,8 +106,9 @@ export function createWorksApi(
       .catch((err) => res.status(503).json({ error: String(err) }));
   });
 
-  // stop: cancel the caller's work (camunda cancel + agent session close), record `stopped` with a reason.
-  // 404 when the work isn't the caller's (workService.stop returns null), so stop can't reach across owners.
+  // stop: cancel the caller's work (engine cancel + agent session close) and nothing else — no status write here;
+  // the engine's cancel confirmation folds the work to `attention` (the single non-terminal stopped state). returns
+  // the record as-is. 404 when the work isn't the caller's (workService.stop returns null), so stop can't cross owners.
   router.post("/api/works/:workId/stop", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const reason = String((req.body ?? {}).reason ?? "stopped by user");
     const work = await workService.stop(req.params.workId, owner(req), reason);
@@ -119,7 +121,8 @@ export function createWorksApi(
   });
 
   // continue: pick a stopped work back up — re-execute its last step via engine Reset. 404 when not the caller's,
-  // 409 when the work is not `stopped` (a clean completed work is done; a running one the engine refuses anyway).
+  // 409 when the work isn't recoverable (only an `attention` work is; `complete` is locked, a running one the
+  // engine refuses anyway).
   router.post("/api/works/:workId/continue", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const result = await workService.continue(req.params.workId, owner(req));
     if (result === null) {
@@ -127,7 +130,7 @@ export function createWorksApi(
       return;
     }
     if (result === false) {
-      res.status(409).json({ error: "work is not continuable" });
+      res.status(409).json({ error: "work is not in a recoverable state" });
       return;
     }
     logger.debug?.(`[host] continued (reset) work ${result.workId}`);

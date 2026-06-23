@@ -13,16 +13,14 @@ export const HOST_SCHEMA: SchemaSpec = {
   tables: [
     {
       // the status-code lookup: an FK domain so a work row can never carry an unknown status, AND the catalog the
-      // /api/works/statuscodes endpoint serves. Carries label + presentation tone + action flags so the UI is
-      // fully data-driven. SQLite has no boolean, so the flags are 0/1 INTEGER columns.
+      // /api/works/statuscodes endpoint serves. Carries label + presentation tone + the lone `terminal` lock flag
+      // so the UI is fully data-driven. SQLite has no boolean, so terminal is a 0/1 INTEGER column.
       name: "work_status",
       columns: [
         "status TEXT PRIMARY KEY",
         "label TEXT NOT NULL",
         "tone TEXT NOT NULL",
         "terminal INTEGER NOT NULL",
-        "stoppable INTEGER NOT NULL",
-        "continuable INTEGER NOT NULL",
       ],
       lookup: {
         conflictColumns: ["status"],
@@ -31,8 +29,6 @@ export const HOST_SCHEMA: SchemaSpec = {
           label: s.label,
           tone: s.tone,
           terminal: s.terminal ? 1 : 0,
-          stoppable: s.stoppable ? 1 : 0,
-          continuable: s.continuable ? 1 : 0,
         })),
       },
     },
@@ -97,18 +93,16 @@ export function resolveHostDbFile(configured?: string): string {
 }
 
 // reads the status-code catalog from the live lookup table — the actual source the API serves (not the in-code
-// const). Maps the 0/1 INTEGER flags back to booleans so the wire shape matches StatusCode.
+// const). Maps the 0/1 INTEGER terminal flag back to a boolean so the wire shape matches StatusCode.
 export function readStatusCodes(db: DatabaseHandle): StatusCode[] {
   const rows = db
-    .prepare("SELECT status, label, tone, terminal, stoppable, continuable FROM work_status")
-    .all() as Array<{ status: string; label: string; tone: string; terminal: number; stoppable: number; continuable: number }>;
+    .prepare("SELECT status, label, tone, terminal FROM work_status")
+    .all() as Array<{ status: string; label: string; tone: string; terminal: number }>;
   return rows.map((r) => ({
     status: r.status,
     label: r.label,
     tone: r.tone as StatusTone,
     terminal: r.terminal === 1,
-    stoppable: r.stoppable === 1,
-    continuable: r.continuable === 1,
   }));
 }
 

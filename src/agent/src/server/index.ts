@@ -6,6 +6,7 @@ import { SessionStore } from "../agent/session/session-store.js";
 import { loadAgentSettings } from "./appsettings.js";
 import { HttpReceiver } from "./comms/receiver.js";
 import { ExecutionRunner } from "./comms/runner.js";
+import { Heartbeat } from "./comms/heartbeat.js";
 import { RuntimeBuilder } from "./comms/runtime-builder.js";
 import { SseQueue } from "./comms/sse-queue.js";
 import { SseReceiver } from "./comms/ssereceiver.js";
@@ -89,8 +90,13 @@ async function main(): Promise<void> {
   // the runner owns input routing off the bus: it injects into a live SSE runtime, or builds a runtime per queued
   // job, runs the turn, and drains it. the receiver is pure transport — it parses /receive, stamps provenance, and
   // publishes onto the bus the runner consumes; the sender POSTs the one-shot result back out.
-  new ExecutionRunner(root.signal, runtimeBuilder, sseQueue, logger, bus).start();
+  const runner = new ExecutionRunner(root.signal, runtimeBuilder, sseQueue, logger, bus);
+  runner.start();
   app.use(new HttpReceiver().routes());
+
+  // ambient 5-min heartbeat: one process timer for periodic upkeep. For now its only task is reaping orphan SSE
+  // connections (dead tabs whose disconnect never fired) so a leaked runtime doesn't hold a session's live slot.
+  new Heartbeat(5 * 60_000, root.signal, logger).register(() => runner.heartbeat()).start();
 
   const port = Number(process.env.AGENT_PORT) || settings.port;
   const server = app.listen(port, () => logger.info(`[agent-server] listening on :${port}`));

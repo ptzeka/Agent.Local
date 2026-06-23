@@ -1586,8 +1586,8 @@ alongside this note (see below); this item is the remaining *judgment* layer.
       `evaluateCompletion` swallows judge errors as `satisfied`
       (`runners/orchestrator.ts` ~L496); for the final completion gate that
       leaks an unverified pass. Fail-open should not stamp terminal success.
-- [ ] Test: a workflow whose executor never wrote the file ends `stopped`/
-      failed, never `completed`; a run with the file present still completes.
+- [ ] Test: a workflow whose executor never wrote the file ends `attention`
+      (failure fold), never `complete`; a run with the file present still completes.
 
 **Done when:** completion is evidence-gated — a turn claiming an artifact that
 an independent read cannot confirm cannot reach SATISFIED, and judge-error
@@ -1624,9 +1624,9 @@ So a legitimately-violated assertion can never trip the workflow's
 - [ ] **Hardening (optional follow-up).** If free-text token drift shows up,
       promote the answer to a synthetic `report_assertion(holds, detail)` tool so
       the structured value is the tool arg, not parsed prose.
-- [ ] Test: `userTableFailTestWorkflow` ends `stopped`/failed via the assertion
-      channel (not the evaluator), and the positive `userTableTestWorkflow` (row
-      present) still completes.
+- [ ] Test: `userTableFailTestWorkflow` ends `attention` (failure fold) via the
+      assertion channel (not the evaluator), and the positive `userTableTestWorkflow`
+      (row present) still completes.
 
 **Done when:** an assertion-style step fails the work whenever its asked
 condition is false — independent of the per-turn evaluator — and a missing/
@@ -1856,7 +1856,8 @@ work unit / true session, host-owned. It binds, **1:1:1**, the three facets none
 the engines should own together:
 ```
 workId (= the unit of WORK — request start → end, reflects work done; host-owned)
-  ├─ status:        new | running | stuck | cancelled | error | completed
+  ├─ status:        new | running | attention | complete   (4 stored states — see M8-4; `attention`
+  │                 folds user-stop/engine-cancel/failure, `complete` is the only terminal)
   ├─ workspaceId:   guid naming the shared folder/bucket (workspaces/<workspaceId>)
   ├─ sessionId:     the agent session (metrics + conversation), linked under the unit
   ├─ camundaId:     processInstanceKey — the one linked Camunda execution
@@ -2470,6 +2471,41 @@ work-unit aggregate, distinct from the M8-3 live timeline — this is the flat
 > workflow-task boundary, re-running the stuck step with the same inputs — new `WORKFLOW_RESET` bus
 > event → `TemporalClient.resetProcess` → `workflowService.resetWorkflowExecution`; `POST
 > /api/works/:id/continue` (404 non-owner, 409 unless `stuck`). Added `@mui/icons-material`.
+>
+> **Status model cleaned up 2026-06-22 — exactly 4 STORED statuses, recalculated, never latched.**
+> The status vocabulary above (`stopped`/`stuck`/`cancelled`/`paused`) collapsed to a single canonical
+> set defined ONCE in `src/host/src/work/work-status.ts` (`WORK_STATUS_CODES` drives the `WorkStatus`
+> type, the `work_status` DB lookup seed, AND `isTerminalStatus`):
+> - **`new`** (neutral/grey) — provisioned, no engine instance yet.
+> - **`running`** (active/blue) — a live workflow (`WORKFLOW_STARTED`).
+> - **`attention`** (warning/orange) — the single NON-terminal stopped state: any stop or end that
+>   isn't a clean completion — user Stop, engine canceled, `WORKFLOW_FAILED`, or reconcile finding
+>   failed/timedOut/terminated. Recovered via engine Reset. The ACTUAL per-step Temporal status
+>   (`canceled` etc.) shows at the STEP (accordion), never as a work status — the work only says
+>   "stopped, needs attention". A clean stop carries NO description (`step=null`); a failure keeps the
+>   engine reason.
+> - **`complete`** (success/green) — the clean end (`WORKFLOW_COMPLETED`); the ONLY terminal status.
+>
+> Key behaviors:
+> - **`attention` is STORED, set by the event fold — not derived at read.** The list (`GET /api/works`)
+>   is a PURE DB read with ZERO per-row engine calls; `getSteps` fires only on detail/expand. Colors the
+>   row the moment the stop/failure event lands.
+> - **Status RECALCULATES on every poll — it does not latch.** `reconcile` (`work-service.ts`) recomputes
+>   each non-terminal work against live engine truth both directions: an `attention` work returns to
+>   `running` when its workflow is active again (e.g. later steps fire after an earlier one was canceled);
+>   a `running` work the engine cancels/fails becomes `attention`. Only `complete` is never re-evaluated
+>   (`needsReconcile` = `status !== "complete"`). A fresh `new` work is guarded from a transient
+>   `missing`→`attention` flip.
+> - **Stop is PURE CANCELLATION.** `workService.stop` cancels Temporal steps + closes the agent session
+>   and writes NO status; the engine's cancel confirmation (`WORKFLOW_STOPPED`/reconcile) folds the work
+>   to `attention`.
+> - **`complete` is fully locked at BOTH UI and server.** No Stop/Continue/Rerun/Inject/Retry/Chat on a
+>   complete work — UI disables the action bar; the server gates every mutation route on `isTerminalStatus`
+>   (`work-service.ts` + `api/agent-cli.ts` return 409). **Continue** is offered only on `attention`
+>   (`POST /api/works/:id/continue` → 409 unless `attention`).
+> - Web maps the host's presentation-neutral `tone` → MUI chip color in `workflow.tsx`
+>   (`neutral→default/grey`, `active→info`, `attention→warning`, `success→success`); the per-step
+>   accordion keeps its own engine-status tones (`stepToneColor`).
 
 | jobId | status | description | action |
 |-------|--------|-------------|--------|
@@ -2650,7 +2686,9 @@ Sub-stories:
 - [x] **M8-7e · Host SSE proxy** (host): `GET /api/agent/cli/:workId` — `requirePermission` + cookie
       owner-gate, resolve the work's `kind=cli` session, open the upstream agent `GET /ssereceive/...` with
       a minted `agent:trigger` token, pipe with backpressure. `PUT /api/agent/cli/:workId` provisions the
-      session idempotently (host-side reuse). *(`src/host/src/api/agent-cli.ts`, `comms/sender.ts`, `work/work-store.ts`)*
+      session idempotently (host-side reuse). The provision (`PUT`) and input (`POST .../input`) routes
+      reject a terminal work with **409** (`isTerminalStatus` — chat is closed on a `complete` work,
+      mirroring the disabled Chat button in the UI). *(`src/host/src/api/agent-cli.ts`, `comms/sender.ts`, `work/work-store.ts`)*
 - [x] **M8-7f · Teardown contract**: browser `res.on("close")` → `AbortController.abort()` the upstream;
       agent `req.on("close")` → `stopTurnLoop` + `shutdown drain` + deregister. No leaked live sessions.
 - [x] **M8-7g · Input proxy** (host): `POST /api/agent/cli/:workId/input` — owner gate → `sender.sendInput`
