@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Open a repo SQLite DB in the sqlite3 shell with the repo's .sqliterc formatting applied.
+# Run a one-shot query against a repo SQLite DB, formatted like the repo .sqliterc
+# (box table, headers, NULL nullvalue, timer). Backed by better-sqlite3 via Node,
+# so no system `sqlite3` binary is required.
 #
-#   scripts/db.sh host          # interactive shell on src/host/data/host.sqlite
-#   scripts/db.sh agent         # interactive shell on src/agent/data/agent.sqlite
-#   scripts/db.sh host "SELECT * FROM work LIMIT 5;"   # one-shot query, then exit
+#   scripts/db.sh host "SELECT * FROM work LIMIT 5;"    # one-shot query, then exit
+#   scripts/db.sh agent "SELECT * FROM session LIMIT 5;"
 #
 # The agent DB only exists after `npm run db:init`. Override either path with
 # HOST_DB_FILE / AGENT_DB_FILE (AGENT_DB_FILE is also what the agent process reads).
@@ -27,5 +28,5 @@ if [ ! -f "$db" ]; then
   exit 1
 fi
 
-# -init loads the repo .sqliterc (box mode, headers, timer) before the prompt/query.
-exec sqlite3 -init "$ROOT/.sqliterc" "$db" "$@"
+# db.mjs applies the .sqliterc presentation (box mode, headers, timer) itself.
+exec node "$ROOT/scripts/db.mjs" "$db" "$@"

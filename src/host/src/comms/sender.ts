@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { type AccessTokenProvider, type Eventing, type ILogger } from "@agent-local/common";
 import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type ExecutionRequest } from "./contract.js";
 
-// host -> agent SENDER: the work service opens/closes a session per work unit, then this forwards workflow jobs
-// to the agent service over HTTP. Transport is swappable (HTTP now, gRPC later) behind these interfaces. It
+// host -> agent SENDER: forwards workflow jobs to the agent over HTTP, minting a per-step session (via the
+// StepSessionResolver) for each dispatch. Transport is swappable (HTTP now, gRPC later) behind these interfaces. It
 // translates the engine's job into a neutral ExecutionRequest — runId carries the host's temporalId (== workId)
 // opaquely, so the agent's reply round-trips back to THIS work via the runId it echoes.
 export interface AgentClient {
@@ -25,7 +25,19 @@ function promptFor(variables: Record<string, unknown>): string {
   return String(variables.prompt ?? variables.input ?? variables.task ?? "").trim();
 }
 
+// port the sender calls to bind a session to the step it is about to dispatch — implemented by WorkService, which
+// owns the work state. Keeps the sender pure transport (it mints/persists nothing) while the session is created on
+// the host the moment a step is dispatched. `open` is idempotent per (workId, runKey, stepKey) so activity retries
+// reuse one session; `close` releases a session whose dispatch never reached the agent.
+export interface StepSessionResolver {
+  open(workId: string, runKey: string, stepKey: string): Promise<string>;
+  close(sessionId: string): Promise<void>;
+}
+
 export class HttpJobSender implements AgentClient {
+  // set once at wiring (after WorkService exists) so the WORKFLOW_JOB handler can mint a per-step session
+  private stepSessions?: StepSessionResolver;
+
   constructor(
     private readonly bus: Eventing,
     private readonly baseUrl: string,
@@ -34,14 +46,16 @@ export class HttpJobSender implements AgentClient {
     private readonly clientId?: string,
   ) {}
 
-  // bus binding: translate each engine job into a neutral ExecutionRequest and POST it to the agent's /receive
+  setStepSessionResolver(resolver: StepSessionResolver): void {
+    this.stepSessions = resolver;
+  }
+
+  // bus binding: mint this step's own session, then translate the engine job into a neutral ExecutionRequest and
+  // POST it to the agent's /receive. A failure (no resolver, mint failed, or the POST) fails the workflow step.
   start(): void {
     this.bus.subscribe(WORKFLOW_JOB, (event) => {
       const job = event.payload as unknown as WorkflowJobPayload;
-      const variables = job.variables ?? {};
-      const sessionId = String(variables.sessionId ?? "");
-      const request: ExecutionRequest = { runId: job.temporalId, input: promptFor(variables) };
-      void this.dispatch(request, sessionId).catch((err) => {
+      void this.dispatchStep(job).catch((err) => {
         this.logger.error?.("[agent-client] dispatch failed", err);
         this.bus.publish(WORKFLOW_FAILED, {
           temporalId: job.temporalId,
@@ -50,6 +64,23 @@ export class HttpJobSender implements AgentClient {
         });
       });
     });
+  }
+
+  // open the step's session via the resolver, then dispatch under it; if the POST never reaches the agent, close
+  // the just-opened session so it is not later swept as if it were live work.
+  private async dispatchStep(job: WorkflowJobPayload): Promise<void> {
+    if (!this.stepSessions) throw new Error("[agent-client] no StepSessionResolver wired");
+    const variables = job.variables ?? {};
+    const runKey = String(variables.runKey ?? "");
+    const stepKey = String(variables.stepKey ?? "");
+    const sessionId = await this.stepSessions.open(job.temporalId, runKey, stepKey);
+    const request: ExecutionRequest = { runId: job.temporalId, input: promptFor(variables) };
+    try {
+      await this.dispatch(request, sessionId);
+    } catch (err) {
+      await this.stepSessions.close(sessionId);
+      throw err;
+    }
   }
 
   async createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string> {

@@ -20,8 +20,12 @@ workId  ==  temporalId (Temporal WorkflowId)
   to be columns on the job record into joined tables (1:1 per work):
   - `work` — the work unit: `status`, `step` (absorbed the old `statusDescription`),
     `workflow_id`, `workspace_id`, `user_id`, timestamps. PK `(user_id, work_id)`.
-  - `work_agent_session` — the session id, with `kind` ∈ {`job`,`cli`}. The
-    orchestrator ROOT session for the website is the `kind='job'` row. UNIQUE(work_id, kind).
+  - `work_agent_session` — agent sessions, with `kind` ∈ {`job`,`cli`}. `kind='cli'` is
+    the standalone user chat (one per work). `kind='job'` is now PER STEP: one session per
+    dispatched step, keyed by `(work_id, run_key, step_key)` (run_key=Temporal runId,
+    step_key=the step ordinal). So a work holds MANY job sessions, opened at dispatch and
+    closed when the step's answer lands; a reset (new run_key) discards them all. Partial
+    unique indexes: one cli per work, one job per (work_id, run_key, step_key).
   - `work_temporal` — the `temporal_id` (room for engine metadata later).
   - `work_status` — the status lookup (label/tone/flags) the console renders from.
 - **Agent** keys state by `session_id` in `agent.sqlite`. The conversation is NOT keyed
@@ -55,26 +59,32 @@ workId  ==  temporalId (Temporal WorkflowId)
 
 ---
 
-## 1. Work record (current state + session + temporal join)
+## 1. Work record (current state + temporal join) + its step sessions
 
-One query folds the work row together with its `kind='job'` session and its temporal id —
-this is the fastest "what/where/which-session" snapshot. `LIKE '<id>%'` lets you pass a
-short prefix. Grab `session_id` and `workspace_id` from the output — the rest keys off them.
+The work row folds in only its temporal id now (sessions are per-step, so they are listed
+separately). `LIKE '<id>%'` lets you pass a short prefix. Grab `workspace_id` and
+`temporal_id` from the first query, then list the per-step job sessions from the second.
 
 ```bash
 WORKID=<workid>
 sqlite3 -header -column src/host/data/host.sqlite "
 SELECT w.user_id, w.work_id, w.workflow_id, w.workspace_id, w.status, w.step,
-       s.session_id, s.kind, t.temporal_id, w.created_at, w.updated_at
+       t.temporal_id, w.created_at, w.updated_at
 FROM work w
-LEFT JOIN work_agent_session s ON s.work_id = w.work_id AND s.kind='job'
-LEFT JOIN work_temporal     t ON t.work_id = w.work_id
+LEFT JOIN work_temporal t ON t.work_id = w.work_id
 WHERE w.work_id LIKE '$WORKID%';"
+
+# the agent sessions this work owns: one cli (chat) + one per dispatched step (job)
+sqlite3 -header -column src/host/data/host.sqlite "
+SELECT kind, session_id, run_key, step_key, created_at
+FROM work_agent_session WHERE work_id LIKE '$WORKID%' ORDER BY kind, step_key;"
 ```
 
-A missing `session_id`/`temporal_id` (NULL) means the join row was never written —
-the trigger half-provisioned the work (the website enforces exactly one `kind='job'`
-session per work, so a NULL here is a real fault, not a normal state).
+A NULL `temporal_id` means the instance never started (the trigger half-provisioned). Job
+sessions are opened at dispatch and removed when their step's answer lands, so a RUNNING
+work shows a job row only for steps still in flight; a settled/complete work shows none.
+Job rows whose `run_key` differs from the work's current run are reset leftovers (should
+have been swept — a real fault if they linger).
 
 ## 2. Agent session status
 
@@ -194,6 +204,10 @@ Healthy host.log shows `[temporal] connected to Temporal server`,
   dispatch enum only lists tools the executor actually mounts.
 - **Step stuck `running`** → the `dispatchAgentTask` activity fired but the `agentResult`
   signal never landed (round-trip incomplete) — check §6 for the matching `agent.result`.
-- **`work` row has NULL `session_id` or `temporal_id`** → the join row in
-  `work_agent_session` / `work_temporal` was never written; the trigger only
-  half-provisioned the work. Check §6 around the create/trigger for the failure.
+- **`work` row has NULL `temporal_id`** → `work_temporal` was never written; the trigger
+  only half-provisioned the work. Check §6 around the create/trigger for the failure.
+- **A step has no `work_agent_session` row while still running** → the host failed to mint
+  the step session at dispatch (resolver/`/session/create` error) — check §6 for the
+  `[agent-client]` dispatch failure that fails the workflow step.
+- **Job sessions linger after stop/complete/reset** → the discard sweep didn't run; they
+  should be closed on terminal/stop and dropped on reset (new `run_key`).

@@ -37,10 +37,10 @@ export const mount = (app: Express, ctx: MountContext): TemporalClient => {
   // the host commands a start over the bus; the Temporal WorkflowId is our workId, so dedup is free and every
   // later op keys by it. the engine instance id (temporalId) it returns here equals workId.
   ctx.bus.subscribe("workflow.start", (event) => {
-    const { workId, workspaceId, sessionId, workflowId } = event.payload as Record<string, string>;
+    const { workId, workspaceId, workflowId } = event.payload as Record<string, string>;
     const workflowType = workflowId || config.defaultWorkflowType;
     client
-      .startProcess(workflowType, workId, { workId, workspaceId, sessionId })
+      .startProcess(workflowType, workId, { workId, workspaceId })
       .then((record) => ctx.bus.publish("workflow.started", { workId, temporalId: record.workflowId }))
       .catch((err) => ctx.bus.publish("workflow.failed", { workId, error: String(err) }));
   });

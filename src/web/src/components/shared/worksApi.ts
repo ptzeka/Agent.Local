@@ -15,7 +15,6 @@ export interface WorkRecord {
   workspaceId: string | null;
   status: "new" | "running" | "attention" | "complete";
   step: string | null;
-  sessionId: string | null;
   temporalId: string | null;
   createdAt: string;
   ts: string;

@@ -6,9 +6,10 @@ export type { WorkStatus } from "./work-status.js";
 import type { WorkStatus } from "./work-status.js";
 
 // the read model the host orchestrates: the join ONLY the host holds, tying the user's request to the temporal
-// run and the agent session. sessionId/temporalId are joined in from the child tables (work_agent_session kind=job,
-// work_temporal) — normalized out of the row but surfaced here so callers read one flat record. step carries the
-// descriptive "where we are" (it absorbed the old statusDescription: stop/failure reasons live here too).
+// run. temporalId is joined in from work_temporal — normalized out of the row but surfaced here so callers read one
+// flat record. Agent sessions are NOT folded in: a work owns many per-step job sessions now (work_agent_session
+// kind=job), so they are queried separately. step carries the descriptive "where we are" (it absorbed the old
+// statusDescription: stop/failure reasons live here too).
 export interface WorkRecord {
   workId: string;
   // the owner: the userSub (cookie identity) that created the work. search/get scope to this so a user
@@ -21,8 +22,6 @@ export interface WorkRecord {
   status: WorkStatus;
   // current step / descriptive context: the running element, or the stop/failure reason, or the terminal value
   step: string | null;
-  // the work's kind=job agent session (work_agent_session); null until associated, cleared on close
-  sessionId: string | null;
   // the Temporal instance id (work_temporal); null until the instance starts
   temporalId: string | null;
   // ISO timestamp the work was first added; set once at add() and carried forward unchanged
@@ -31,13 +30,12 @@ export interface WorkRecord {
   ts: string;
 }
 
-// the mutable surface of a work: work-table fields plus the two normalized child ids (null releases the child)
+// the mutable surface of a work: work-table fields plus the normalized temporal child id (null releases it)
 export type WorkPatch = {
   status?: WorkStatus;
   step?: string | null;
   workflowId?: string | null;
   workspaceId?: string | null;
-  sessionId?: string | null;
   temporalId?: string | null;
 };
 
@@ -49,7 +47,6 @@ interface WorkRow {
   workspace_id: string | null;
   status: WorkStatus;
   step: string | null;
-  session_id: string | null;
   temporal_id: string | null;
   created_at: string;
   updated_at: string;
@@ -130,7 +127,6 @@ export class WorkStore {
       if ("workspaceId" in patch) (sets.push("workspace_id = ?"), values.push(patch.workspaceId ?? null));
       this.db.prepare(`UPDATE work SET ${sets.join(", ")} WHERE work_id = ?`).run(...values, workId);
 
-      if ("sessionId" in patch) this.upsertSession(workId, patch.sessionId ?? null, now);
       if ("temporalId" in patch) this.upsertTemporal(workId, patch.temporalId ?? null, now);
     })();
     return this.get(workId);
@@ -145,28 +141,52 @@ export class WorkStore {
     return row?.session_id ?? null;
   }
 
-  // idempotent bind of the work's cli session: upserts on (work_id, kind='cli') so a re-init reuses the row
+  // idempotent bind of the work's cli session: upserts on the partial cli unique index (one cli row per work) so a
+  // re-init reuses the row. run_key/step_key are NULL — they discriminate job sessions only.
   public async setCliSessionId(workId: string, sessionId: string): Promise<void> {
     this.db
       .prepare(
-        "INSERT INTO work_agent_session (session_id, work_id, kind, created_at) VALUES (?, ?, 'cli', ?) " +
-          "ON CONFLICT (work_id, kind) DO UPDATE SET session_id = excluded.session_id",
+        "INSERT INTO work_agent_session (session_id, work_id, kind, run_key, step_key, created_at) " +
+          "VALUES (?, ?, 'cli', NULL, NULL, ?) " +
+          "ON CONFLICT (work_id) WHERE kind = 'cli' DO UPDATE SET session_id = excluded.session_id",
       )
       .run(sessionId, workId, new Date().toISOString());
   }
 
-  // one kind=job session per work: a non-null id upserts on the (work_id, kind) unique key; null releases it
-  private upsertSession(workId: string, sessionId: string | null, now: string): void {
-    if (sessionId === null) {
-      this.db.prepare("DELETE FROM work_agent_session WHERE work_id = ? AND kind = 'job'").run(workId);
-      return;
-    }
+  // ---------------------------------------------------------------------------
+  // Job (per-step) sessions
+  // ---------------------------------------------------------------------------
+
+  // the session already bound to one step of a run, if any — the idempotency key for openJobSession so an activity
+  // retry for the same (work, run_key, step_key) reuses its session instead of minting a second one.
+  public async getJobSessionId(workId: string, runKey: string, stepKey: string): Promise<string | null> {
+    const row = this.db
+      .prepare("SELECT session_id FROM work_agent_session WHERE work_id = ? AND kind = 'job' AND run_key = ? AND step_key = ?")
+      .get(workId, runKey, stepKey) as { session_id: string } | undefined;
+    return row?.session_id ?? null;
+  }
+
+  // bind a freshly minted session to one step of a run; unique on (work_id, run_key, step_key) for kind=job
+  public async addJobSession(workId: string, sessionId: string, runKey: string, stepKey: string): Promise<void> {
     this.db
       .prepare(
-        "INSERT INTO work_agent_session (session_id, work_id, kind, created_at) VALUES (?, ?, 'job', ?) " +
-          "ON CONFLICT (work_id, kind) DO UPDATE SET session_id = excluded.session_id",
+        "INSERT INTO work_agent_session (session_id, work_id, kind, run_key, step_key, created_at) " +
+          "VALUES (?, ?, 'job', ?, ?, ?)",
       )
-      .run(sessionId, workId, now);
+      .run(sessionId, workId, runKey, stepKey, new Date().toISOString());
+  }
+
+  // every live job session id for a work — the sweep set closed on stop/complete/fail/reset (the discard rule)
+  public async listJobSessionIds(workId: string): Promise<string[]> {
+    const rows = this.db
+      .prepare("SELECT session_id FROM work_agent_session WHERE work_id = ? AND kind = 'job'")
+      .all(workId) as { session_id: string }[];
+    return rows.map((r) => r.session_id);
+  }
+
+  // drop one job session row (after its agent session is closed); idempotent — a missing row is a no-op
+  public async removeJobSession(sessionId: string): Promise<void> {
+    this.db.prepare("DELETE FROM work_agent_session WHERE session_id = ? AND kind = 'job'").run(sessionId);
   }
 
   // 1:1 temporal run per work (work_id PK): a non-null id upserts, null drops the row
@@ -184,12 +204,12 @@ export class WorkStore {
   }
 }
 
-// the join every read shares: kind=job session + the temporal run folded onto the work row
+// the join every read shares: the temporal run folded onto the work row. Agent sessions are NOT joined — a work
+// owns many per-step job sessions, so a 1:1 fold would multiply rows; they are read via the job-session queries.
 const SELECT_WORK =
   "SELECT w.work_id, w.user_id, w.workflow_id, w.workspace_id, w.status, w.step, w.created_at, w.updated_at, " +
-  "s.session_id AS session_id, t.temporal_id AS temporal_id " +
+  "t.temporal_id AS temporal_id " +
   "FROM work w " +
-  "LEFT JOIN work_agent_session s ON s.work_id = w.work_id AND s.kind = 'job' " +
   "LEFT JOIN work_temporal t ON t.work_id = w.work_id";
 
 function toRecord(row: WorkRow): WorkRecord {
@@ -200,7 +220,6 @@ function toRecord(row: WorkRow): WorkRecord {
     workspaceId: row.workspace_id,
     status: row.status,
     step: row.step,
-    sessionId: row.session_id,
     temporalId: row.temporal_id,
     createdAt: row.created_at,
     ts: row.updated_at,

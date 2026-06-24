@@ -112,17 +112,6 @@ that the model whitelist would otherwise allow, enforced at mount time.
 
 ## M1 — Loop reliability & cost (≈ 1–1.5 weeks)
 
-### M1-1 · Provider retry/backoff decorator — `~1.5d` · P0
-- [ ] `RetryingProvider implements LLMProvider` wrapping any provider:
-      retry on 429/5xx/network errors, jittered exponential backoff,
-      honor `retry-after` when present, hard cap (e.g. 4 attempts),
-      respect `AbortSignal` between attempts.
-- [ ] Wrap at construction in `providers/index.ts` so all three providers
-      and every role get it for free.
-- [ ] Non-retryable errors (400 schema, auth) pass through immediately.
-- [ ] Tests with a fake provider: succeeds-after-2, gives-up-after-cap,
-      abort-during-backoff.
-
 ### M1-2 · Complete token accounting — `~1d` · P1
 - [ ] `Executor`, `Evaluator`, `Summarizer` call `provider.chat` directly —
       fold their `usage` into `session.counters` via the existing
@@ -1860,6 +1849,8 @@ workId (= the unit of WORK — request start → end, reflects work done; host-o
   │                 folds user-stop/engine-cancel/failure, `complete` is the only terminal)
   ├─ workspaceId:   guid naming the shared folder/bucket (workspaces/<workspaceId>)
   ├─ sessionId:     the agent session (metrics + conversation), linked under the unit
+  │                 (SUPERSEDED 2026-06-24 — no longer 1:1: each dispatched STEP gets its own
+  │                 job session + one cli session, keyed (work_id, run_key, step_key); see DONE M7-13)
   ├─ camundaId:     processInstanceKey — the one linked Camunda execution
   └─ currentJobKey / step:  the live Camunda task to complete
 ```

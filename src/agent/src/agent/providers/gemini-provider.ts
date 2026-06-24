@@ -15,6 +15,7 @@ import type {
   LLMProvider,
   ToolCall,
 } from "./provider.js";
+import { retryTransient, isTransientError } from "./retry.js";
 
 export interface GeminiProviderConfig {
   apiKey: string;
@@ -77,11 +78,21 @@ export class GeminiProvider implements LLMProvider {
 
     const params = { model: this.modelId, contents, config };
     let response: GenerateContentResponse;
+    // an overloaded endpoint answers 429/5xx ("try again later") — a blip, not a failure — so retry with backoff.
+    // streaming carve-out: once a delta has been forwarded, a re-run would double-emit, so a mid-stream failure is
+    // not retried; only a clean pre-token failure (the common 503 at request time) is.
+    let hasStreamed = false;
     try {
-      // stream only when a sink is listening; otherwise the single-shot call keeps the collect path unchanged
-      response = options.onDelta
-        ? await this.generateStreamed(params, options.onDelta)
-        : await this.client.models.generateContent(params);
+      response = await retryTransient(
+        () =>
+          options.onDelta
+            ? this.generateStreamed(params, (delta) => {
+                hasStreamed = true;
+                options.onDelta!(delta);
+              })
+            : this.client.models.generateContent(params),
+        { signal: options.signal, shouldRetry: (err) => isTransientError(err) && !hasStreamed },
+      );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(

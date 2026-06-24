@@ -8,6 +8,7 @@ import type {
   LLMProvider,
   ToolCall,
 } from "./provider.js";
+import { retryTransient, isTransientError } from "./retry.js";
 
 // one instance per (apiKey, model), mirroring OllamaProvider; the real work is translating
 // this codebase's flat ChatMessage[] to Anthropic's structured Messages format and back
@@ -70,15 +71,27 @@ export class AnthropicProvider implements LLMProvider {
 
     const startedAt = Date.now();
     let response;
+    // 529 overloaded / 429 / 5xx are transient "try again later" blips — retry with backoff instead of failing the
+    // turn. streaming carve-out: a re-run would re-fire text deltas, so once any has streamed we don't retry; only a
+    // clean pre-token failure is retried.
+    let hasStreamed = false;
     try {
-      // stream so high max_tokens can't trip the SDK's non-streaming HTTP timeout
-      const stream = this.client.messages.stream(request, { signal: options.signal });
-      // forward text deltas live when a sink is supplied; finalMessage() still returns the whole
-      // message, so the persisted/append path stays byte-identical whether or not anyone is streaming
-      if (options.onDelta) {
-        stream.on("text", (textDelta) => options.onDelta!(textDelta));
-      }
-      response = await stream.finalMessage();
+      response = await retryTransient(
+        async () => {
+          // stream so high max_tokens can't trip the SDK's non-streaming HTTP timeout
+          const stream = this.client.messages.stream(request, { signal: options.signal });
+          // forward text deltas live when a sink is supplied; finalMessage() still returns the whole
+          // message, so the persisted/append path stays byte-identical whether or not anyone is streaming
+          if (options.onDelta) {
+            stream.on("text", (textDelta) => {
+              hasStreamed = true;
+              options.onDelta!(textDelta);
+            });
+          }
+          return stream.finalMessage();
+        },
+        { signal: options.signal, shouldRetry: (err) => isTransientError(err) && !hasStreamed },
+      );
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(

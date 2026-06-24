@@ -18,6 +18,8 @@ export class HttpEventReceiver {
       temporalId: result.runId,
       result: result.result,
       outcome: result.outcome,
+      // carried so the work service closes THIS step's per-step session once its answer has landed
+      sessionId: result.sessionId,
     });
     this.logger.debug?.(`[host] /receive routed run ${result.runId} (${result.outcome})`);
   }

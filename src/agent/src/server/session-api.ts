@@ -33,10 +33,11 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
       res.status(400).json({ error: "workspaceId and workId are required" });
       return;
     }
-    // a passed session is honoured only if its persisted state still exists; otherwise it's stale (e.g. the store
-    // was reset) and we mint fresh. empty in -> always mint. so create always answers a valid, resumable session.
-    const requestedValid = sessionId ? Boolean(await store.load(sessionId)) : false;
-    const record = sessions.create(workspaceId, workId, userId, requestedValid ? sessionId : undefined);
+    // honour the caller's id when given: the host mints a fresh id PER STEP and expects the agent to create exactly
+    // that session, so two steps of one work never collide on a reused per-work session. A cli re-init passes its
+    // cached id to resume. Only an absent id falls back to find-by-work / mint. The transcript is created below when
+    // the resolved id has none yet, so a brand-new (not-yet-persisted) id is still valid and resumable.
+    const record = sessions.create(workspaceId, workId, userId, sessionId);
     try {
       // persist a conversation only when the resolved id has none yet — a reuse/rehydrate must not reset the transcript
       if (!(await store.load(record.sessionId))) {

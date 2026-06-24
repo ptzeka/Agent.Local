@@ -48,7 +48,7 @@ describe("userTableTestWorkflow", () => {
       env.client.workflow.execute(userTableTestWorkflow, {
         taskQueue: "test",
         workflowId: "WORK-1",
-        args: [{ workId: "WORK-1", workspaceId: "WS-1", sessionId: "SESS-1" }],
+        args: [{ workId: "WORK-1", workspaceId: "WS-1" }],
       }),
     );
 
@@ -58,7 +58,9 @@ describe("userTableTestWorkflow", () => {
     expect(dispatched[0].prompt).toContain("Create an Excel sheet");
     expect(dispatched[1].prompt).toContain("userId=55, userName=foxmulder");
     expect(dispatched[2].prompt).toContain("Verify");
-    expect(dispatched.every((d) => d.sessionId === "SESS-1")).toBe(true);
+    // each dispatch carries its own per-step key (the ordinal); all share the one run's run_key
+    expect(dispatched.map((d) => d.stepKey)).toEqual(["1", "2", "3"]);
+    expect(new Set(dispatched.map((d) => d.runKey)).size).toBe(1);
   });
 
   it("fails the workflow when a step's agent turn reports a non-satisfied outcome", async () => {
@@ -91,7 +93,7 @@ describe("userTableTestWorkflow", () => {
         env.client.workflow.execute(userTableTestWorkflow, {
           taskQueue: "test",
           workflowId: "WORK-FAIL",
-          args: [{ workId: "WORK-FAIL", workspaceId: "WS-2", sessionId: "SESS-2" }],
+          args: [{ workId: "WORK-FAIL", workspaceId: "WS-2" }],
         }),
       )
       .then(() => null)
@@ -147,7 +149,7 @@ describe("userTableTestWorkflow", () => {
         env.client.workflow.execute(userTableFailTestWorkflow, {
           taskQueue: "test",
           workflowId: "WORK-FAIL-VERIFY",
-          args: [{ workId: "WORK-FAIL-VERIFY", workspaceId: "WS-3", sessionId: "SESS-3" }],
+          args: [{ workId: "WORK-FAIL-VERIFY", workspaceId: "WS-3" }],
         }),
       )
       .then(() => null)

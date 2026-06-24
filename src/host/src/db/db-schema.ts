@@ -57,18 +57,26 @@ export const HOST_SCHEMA: SchemaSpec = {
       ],
     },
     {
-      // the agent sessions a work owns, split out of work.session_id so a work can have more than one: kind=job
-      // is the workflow's own session (exactly one per work, enforced below); kind=cli is a standalone user chat.
+      // the agent sessions a work owns: kind=cli is the standalone user chat (one per work); kind=job is a
+      // per-STEP workflow session — one per dispatched step, keyed by (run_key, step_key) so each step runs in its
+      // own agent conversation instead of all steps sharing one. run_key=Temporal runId, step_key=the step ordinal;
+      // both NULL for cli. A run_key change (reset) discards every job session for the work.
       name: "work_agent_session",
       columns: [
         "session_id TEXT PRIMARY KEY",
         "work_id TEXT NOT NULL",
         "kind TEXT NOT NULL CHECK (kind IN ('job', 'cli'))",
+        "run_key TEXT",
+        "step_key TEXT",
         "created_at TEXT NOT NULL",
       ],
       foreignKeys: [{ column: "work_id", references: "work", refColumn: "work_id" }],
-      // one session per (work, kind): a work has at most one kind=job session and one kind=cli session
-      indexes: [{ name: "idx_work_agent_session_work_kind", columns: "work_id, kind", unique: true }],
+      // two disjoint uniqueness rules via partial indexes: one cli session per work; one job session per
+      // (work, run_key, step_key) i.e. per step within a run
+      indexes: [
+        { name: "idx_work_agent_session_cli", columns: "work_id", unique: true, where: "kind = 'cli'" },
+        { name: "idx_work_agent_session_job", columns: "work_id, run_key, step_key", unique: true, where: "kind = 'job'" },
+      ],
     },
     {
       // the temporal run backing a work, split out of work.temporal_id so engine-specific metadata can grow

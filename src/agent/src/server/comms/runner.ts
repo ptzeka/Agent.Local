@@ -115,6 +115,25 @@ export class ExecutionRunner {
           .shutdown({ mode: "drain", timeoutMs: 30_000 })
           .catch((err) => this.logger.error?.("[agent-server] runtime close failed", err));
       }
+    } catch (err) {
+      // only an expected, completed turn counts as success — a thrown turn (build failure, provider 5xx, a capped
+      // run) is a real verdict and must bubble up as a fail ENVELOPE, not be swallowed. Without this the host never
+      // gets agent.result, the workflow blocks forever on a signal that will never arrive, and the step session
+      // leaks. Carve-out: a deliberate cancel (EXECUTION_CANCEL aborts the run on host Stop/pause) is meant to drop
+      // the answer so the workflow re-dispatches on resume — publish nothing there, or it would fail a paused step.
+      if (signal.aborted) {
+        this.logger.debug?.(`[agent-server] run for session ${requested.sessionId} aborted; answer dropped`);
+        return;
+      }
+      this.logger.error?.("[agent-server] run failed; reporting fail verdict", err);
+      this.bus.publish(EXECUTION_RESULT, {
+        sessionId: requested.sessionId,
+        runId: requested.runId,
+        source: requested.source,
+        createdAt: requested.createdAt,
+        result: { status: "fail", input: requested.input, result: { error: String(err) } },
+        outcome: "failed",
+      } satisfies ExecutionResult);
     } finally {
       // only clear our own handle: a later run for the same session may have already replaced it
       if (this.activeRuns.get(requested.sessionId) === controller) this.activeRuns.delete(requested.sessionId);

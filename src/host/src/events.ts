@@ -136,6 +136,8 @@ export interface AgentResultPayload {
   temporalId: string;
   result: unknown;
   outcome?: string;
+  // the agent session that produced this turn — the per-step job session the host closes once its answer lands
+  sessionId?: string;
 }
 
 // maps each event name to its payload so publishers/subscribers stay in lockstep across workspaces

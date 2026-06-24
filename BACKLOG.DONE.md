@@ -46,6 +46,58 @@ _created 2026-06-17 · updated 2026-06-17 · by Periklis Tzeka_
 Completed slices of the M7 milestone (see [BACKLOG.md](BACKLOG.md) for the open
 M7 sequence).
 
+### M7-14 · Dispatch fail-envelope on a thrown agent turn — `~0.5d` · P0
+A dispatched (one-shot job) turn that THREW — a provider 5xx, a build failure, a capped
+run — was swallowed: the runner published `EXECUTION_RESULT` only on the success line and
+the throw escaped to a bare `.catch(log)`
+([runner.ts](src/agent/src/server/comms/runner.ts)). So no `agent.result` ever reached the
+host, the workflow blocked forever on the `agentResult` signal that would never arrive, the
+engine kept reporting `running`, and the per-step session leaked (closed only on
+`agent.result` or a terminal sweep, neither of which fired). Surfaced by the M7-13 per-step
+model, which made the leaked session visible; root-caused on a live work whose step-1 turn
+hit a Gemini `503 UNAVAILABLE`.
+- [x] Wrap the one-shot build+dispatch so a thrown turn publishes a fail ENVELOPE
+      (`{ status: "fail", result: { error } }`, `outcome: "failed"`) instead of only logging
+      — only an expected, completed turn counts as success; everything else bubbles up as a
+      fail verdict the host can act on.
+- [x] Carve-out: a deliberate cancel (`signal.aborted` from `EXECUTION_CANCEL` on a host
+      Stop/pause) publishes nothing and returns, so a paused step is re-dispatched on resume
+      rather than wrongly failed.
+- [x] Cascade now completes end-to-end (no host/temporal/schema change needed):
+      `EXECUTION_RESULT(fail)` → `agent.result(outcome:failed)` → `reportResult` → workflow
+      fails the step → `workflow.failed` → `markFailed` → work `attention` +
+      `closeAllJobSessions` sweeps the step session.
+
+**Done when:** ~~…~~ — **met 2026-06-24**: a thrown one-shot turn settles its work to
+`attention` and releases its step session instead of hanging `running`; the abort path still
+drops the answer for re-dispatch. Agent suite green (184 tests).
+
+_created 2026-06-24 · updated 2026-06-24 · by Periklis Tzeka_
+
+### M7-13 · Per-step agent sessions — `kind` job|cli, keyed (work_id, run_key, step_key) — `~2d` · P1
+Reshapes M7-6's "**1 agent session = 1 work/execution**" into one session **per dispatched
+step**, so steps of one work no longer share (and overlap in) a single master conversation.
+- [x] `work_agent_session` table carries `kind` ∈ {`job`,`cli`} plus `run_key` (Temporal
+      runId) and `step_key` (dispatch ordinal). Two partial unique indexes: one `cli` per
+      work; one `job` per `(work_id, run_key, step_key)` (new `where` partial-index support
+      added to the shared `common/db.ts` schema helper).
+- [x] Sessions minted at dispatch (`WorkService.open`, host-minted id the agent creates
+      as-is) and released when the step's `agent.result` lands (`close`); a work's
+      stop/complete/fail/reconcile sweeps ALL job sessions, and a reset (new `run_key`)
+      discards them up front. `cli` stays one-per-work.
+- [x] Dispatch carries `runKey` (`workflowInfo().runId`, replay-safe) + `stepKey` instead of
+      a pre-minted sessionId; `agent.result` threads `sessionId` back so the host closes the
+      right step session. `WorkRecord.sessionId` removed (no longer a 1:1 fold).
+- [x] `StepSessionResolver` port wires sender (transport) ↔ WorkService (state) via a setter,
+      breaking the construction cycle.
+
+**Done when:** ~~…~~ — **met 2026-06-24**: each dispatched step gets its own isolated agent
+session; a work accrues many job sessions opened at dispatch and swept at terminal/reset.
+Builds clean across common/temporal/host/agent/web; temporal 17/17 and agent tests pass.
+Supersedes the `sessionId` 1:1 line in M7-6.
+
+_created 2026-06-24 · updated 2026-06-24 · by Periklis Tzeka_
+
 ### M7-12 · Neutralize the agent comms contract — symmetric `/receive`, thin transport adapters — `~1d` · P1
 The host↔agent seam today speaks the workflow engine's vocabulary on the wire: the
 agent's inbound route is `POST /events` carrying a `{ eventType, payload }` envelope
@@ -130,6 +182,42 @@ _created 2026-06-21 · updated 2026-06-21 · by ptzeka_
 
 Completed slices of the M1 milestone (see [BACKLOG.md](BACKLOG.md) for the open
 M1 sequence and the M1-4 prompt-cache slices below).
+
+### M1-1 · Provider retry/backoff — `~1.5d` · P0
+A transient model error (overloaded `503 UNAVAILABLE`, `429` too-many-requests, 5xx) threw
+straight through `provider.chat` → orchestrator → caller with NO retry, so a "try again
+later" blip killed the whole turn (chat died; a job step failed). Hit in normal chat use on
+Gemini `gemini-2.5-flash-lite`.
+- [x] Shared `retryTransient(fn, { signal, maxAttempts, baseDelayMs, shouldRetry })` +
+      `isTransientError` ([retry.ts](src/agent/src/agent/providers/retry.ts)): retry on
+      429/5xx (read off the SDK error's numeric `.status`, falling back to
+      `UNAVAILABLE`/`RESOURCE_EXHAUSTED`/`INTERNAL`/`overloaded` in the message); jittered
+      exponential backoff; abort-respecting; hard cap; rethrows the ORIGINAL error past the
+      cap so downstream handling (the M7-14 fail-envelope) still runs.
+- [x] Wired into both cloud providers' `chat`
+      ([gemini-provider.ts](src/agent/src/agent/providers/gemini-provider.ts),
+      [anthropic-provider.ts](src/agent/src/agent/providers/anthropic-provider.ts) — Anthropic
+      `529 overloaded`/`429`), threading the turn `signal`.
+- [x] Streaming carve-out: a `hasStreamed` flag makes `shouldRetry = isTransient &&
+      !hasStreamed`, so a mid-stream failure (tokens already shown) never re-emits; only a
+      clean pre-token failure (the common 503 at request time) retries.
+- [x] Non-retryable errors (400 schema, auth, bad model) pass through immediately.
+- [x] Tests ([retry.test.ts](src/agent/tests/providers/retry.test.ts)): succeeds-after-2,
+      gives-up-after-cap (rethrows original), abort-during-backoff, terminal-no-retry,
+      shouldRetry-veto, plus `isTransientError` classification.
+
+> **Divergence from the original spec:** implemented as a shared helper called inside each
+> provider's `chat`, NOT a `RetryingProvider implements LLMProvider` decorator wrapped at
+> construction in `providers/index.ts`. Same guarantees; the streaming no-double-emit carve-out
+> is cleaner in-provider (the decorator can't see deltas). **`retry-after` header honoring is
+> NOT implemented** (backoff is jitter-only) — left as a follow-up if a provider's `Retry-After`
+> proves materially better than jitter.
+
+**Done when:** ~~…~~ — **met 2026-06-24**: a transient 503/429 is retried with backoff and the
+turn succeeds instead of erroring out; a persistent outage falls through to the fail-envelope.
+Agent suite green (184 tests, +9 for retry).
+
+_created 2026-06-10 · updated 2026-06-24 · by Periklis Tzeka_
 
 ### M1-13 · Required-field presence check at the client — `~0.5d` · P1
 Scope deliberately minimal: the client checks ONLY that a tool's declared

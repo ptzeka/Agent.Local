@@ -61,9 +61,11 @@ async function main(): Promise<void> {
   if (settings.host.dispatch) dispatchTokens.register(settings.host.dispatch);
   const dispatchClientId = settings.host.dispatch?.clientId;
   const sender = new HttpJobSender(bus, settings.agent.baseUrl, logger, dispatchTokens, dispatchClientId);
-  sender.start();                                                   // workflow.job -> HTTP -> agent service
-  // the work service owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs
+  // the work service owns the work unit: trigger provisions it, the bus updaters fold engine events onto jobs.
+  // it also resolves a per-step session for each dispatch, so wire it into the sender BEFORE sender.start().
   const workService = new WorkService(bus, works, sender, logger);
+  sender.setStepSessionResolver(workService);
+  sender.start();                                                   // workflow.job -> mint step session -> HTTP -> agent
   workService.start();
   // gate the whole /workflow surface on the caller's session: reads need workflow:read, writes workflow:write;
   // liveness (/workflow/healthz) stays public. Mounted before the routes so it covers the engine routes.

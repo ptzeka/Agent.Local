@@ -1,4 +1,4 @@
-import { proxyActivities, defineSignal, setHandler, condition, log, ApplicationFailure } from "@temporalio/workflow";
+import { proxyActivities, defineSignal, setHandler, condition, log, workflowInfo, ApplicationFailure } from "@temporalio/workflow";
 // type-only imports: erased at runtime so the workflow sandbox stays pure (no bus / no node deps leak in)
 import type { AgentActivities } from "./activities.js";
 import type { WorkflowTemplate } from "./index.js";
@@ -29,7 +29,6 @@ export const userTableFailTestTemplate: WorkflowTemplate = {
 export interface UserTableTestArgs {
   workId: string;
   workspaceId: string;
-  sessionId: string;
 }
 
 // the agent answers each dispatched step with this signal — TemporalClient.reportResult sends name "agentResult".
@@ -60,8 +59,10 @@ function createStepRunner(args: UserTableTestArgs): (prompt: string) => Promise<
   const session: Record<string, unknown> = {
     workId: args.workId,
     workspaceId: args.workspaceId,
-    sessionId: args.sessionId,
   };
+  // runId identifies this run (the generation); a reset spawns a new one, so the host discards the old run's
+  // per-step sessions. replay-safe: workflowInfo() returns the same runId on every replay of this run.
+  const runKey = workflowInfo().runId;
   // each agentResult signal appends here; a step waits for its own answer to land before advancing
   const results: { result: unknown; outcome?: string }[] = [];
   setHandler(agentResultSignal, (payload) => void results.push(payload));
@@ -71,7 +72,8 @@ function createStepRunner(args: UserTableTestArgs): (prompt: string) => Promise<
     const awaited = results.length + 1;
     // log.* is the replay-safe sink (suppressed on replay), so the step trace stays deterministic
     log.info("runStep dispatch", { workId: args.workId, step: awaited, prompt });
-    await dispatchAgentTask({ workId: args.workId, sessionId: args.sessionId, prompt });
+    // stepKey = the dispatch ordinal (deterministic across replay); with runKey it uniquely binds this step's session
+    await dispatchAgentTask({ workId: args.workId, prompt, runKey, stepKey: String(awaited) });
     await condition(() => results.length >= awaited);
     const answer = results[awaited - 1];
     // gate on the structured envelope's status — the parseable ANSWER, so a true-but-negative verify (e.g. row

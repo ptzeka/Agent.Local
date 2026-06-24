@@ -27,6 +27,9 @@ export interface IndexSpec {
   // raw column list, e.g. "user_id, status"
   columns: string;
   unique?: boolean;
+  // partial-index predicate (rendered as `WHERE <where>`): scopes a UNIQUE index to a subset of rows, so two
+  // disjoint uniqueness rules can coexist on one table (e.g. one row per work for cli, one per step for job)
+  where?: string;
 }
 
 // reference rows kept in sync from a template: each row is upserted on the table's conflict key
@@ -169,7 +172,8 @@ function renderCreateTable(table: TableSpec): string {
 
 function renderCreateIndex(tableName: string, index: IndexSpec): string {
   const unique = index.unique ? "UNIQUE " : "";
-  return `CREATE ${unique}INDEX ${quote(index.name)} ON ${quote(tableName)} (${index.columns})`;
+  const where = index.where ? ` WHERE ${index.where}` : "";
+  return `CREATE ${unique}INDEX ${quote(index.name)} ON ${quote(tableName)} (${index.columns})${where}`;
 }
 
 // sqlite_master stores the CREATE text verbatim; collapsing whitespace makes the compare robust to the
