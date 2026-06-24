@@ -1,10 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import { type Eventing } from "@agent-local/common";
-import { type SessionRegistry } from "./session-registry.js";
-import { createSession } from "../agent/session/session.js";
-import { type SessionStore } from "../agent/session/session-store.js";
-import { EXECUTION_CANCEL, EXECUTION_INTERRUPT } from "./comms/contract.js";
+import { type SessionRegistry } from "../session-registry.js";
+import { createSession } from "../../agent/session/session.js";
+import { type SessionStore } from "../../agent/session/session-store.js";
+import { EXECUTION_CANCEL, EXECUTION_INTERRUPT } from "../comms/contract.js";
 
 // session lifecycle API (kept separate from comms/: this mints a capability, it is not event transport).
 // minting/closing a work session needs no runtime, so it mounts BEFORE the runtime middleware (which would
@@ -41,7 +41,9 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
     try {
       // persist a conversation only when the resolved id has none yet — a reuse/rehydrate must not reset the transcript
       if (!(await store.load(record.sessionId))) {
-        const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID() });
+        // set the external reference (host workId) ONLY here, at first creation — a reuse/rehydrate skips this
+        // branch, so the key minted with the session is never rewritten
+        const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID(), externalReferenceKey: workId });
         await store.save(session);
       }
     } catch (err) {
@@ -54,6 +56,10 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
 
   // close marks the persisted session terminal so its resumable state reflects the host having ended the unit
   router.post("/session/close", async (req: Request, res: Response) => {
+    if (!req.userContext?.permissions?.includes("agent:trigger")) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
     const { sessionId } = (req.body ?? {}) as { sessionId?: string };
     if (!sessionId) {
       res.status(202).json({ closed: false });
@@ -72,6 +78,10 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
   // interrupt cancels the live session's in-flight turn (chat Stop) WITHOUT closing the session — the runtime stays
   // up so the user can send again. The runner does the work (it owns the live-connection registry); we only signal.
   router.post("/session/interrupt", (req: Request, res: Response) => {
+    if (!req.userContext?.permissions?.includes("agent:trigger")) {
+      res.status(403).json({ error: "forbidden" });
+      return;
+    }
     const { sessionId } = (req.body ?? {}) as { sessionId?: string };
     if (!sessionId) {
       res.status(202).json({ interrupted: false });

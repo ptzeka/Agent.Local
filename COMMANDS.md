@@ -4,6 +4,7 @@
 # pkill -f "ollama serve"
 # ollama pull qwen2.5-coder:14b
 # ollama pull deepseek-r1:14b
+# ollama pull deepseek-r1:8b-0528 
 # ollama pull llama3.2:3b
 # ollama pull gemma3:4b
 # npm run build
@@ -20,8 +21,8 @@ powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Reposi
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:/www/Agent.Local
 powershell -ExecutionPolicy Bypass -File .\scripts\publish-codeindex.ps1 -Repository C:\www\react_sandbox
 powershell Remove-Item -Recurse -Force .\src\codeindex\data; Remove-Item -Recurse -Force .\src\codemcp\data;
-scripts/publish-codeindex.sh -Repository /Applications/www/Agent.Local    
-scripts/publish-codeindex.sh -Repository /Applications/www/rxoinc/platform/Rxo.Platform.Web.Sandbox
+node scripts\db.mjs src\agent\data\agent.sqlite "SELECT session_id, status, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 10;"
+node scripts\db.mjs src\host\data\host.sqlite "SELECT session_id, status, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 10;"
  
 
 # .\scripts\publish-codeindex.ps1  -Repository C:/www/rxo/platform/Rxo.Platform.Web.Sandbox

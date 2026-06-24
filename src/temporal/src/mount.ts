@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
-import type { Express, Request, Response } from "express";
+import type { Express } from "express";
 import type { Eventing, AppSettings } from "@agent-local/common";
 import { loadConfig } from "./config.js";
-import { TemporalClient, WorkflowDisabledError } from "./temporal-client.js";
+import { TemporalClient } from "./temporal-client.js";
 import { createTemporalCore } from "./temporal-core.js";
 import { startWorker } from "./worker.js";
+import { createWorkflowApi } from "./api/workflow-api.js";
 
 export interface MountContext {
   bus: Eventing;
@@ -109,44 +109,9 @@ export const mount = (app: Express, ctx: MountContext): TemporalClient => {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // Control surface: the host's /workflow/* routes, served by the Temporal client
-  // ---------------------------------------------------------------------------
-
-  app.post("/workflow/process", (req: Request, res: Response) => {
-    // Temporal needs a WorkflowId, so mint one if the caller didn't supply a workId
-    const workflowType = req.body?.workflowType ?? config.defaultWorkflowType;
-    const workId = req.body?.workId ?? randomUUID();
-    const variables = req.body?.variables ?? {};
-    client
-      .startProcess(workflowType, workId, variables)
-      .then((record) => res.status(201).json(record))
-      .catch((err) => {
-        // a disabled workflow is a client-side refusal (403), not a server outage (503)
-        const status = err instanceof WorkflowDisabledError ? 403 : 503;
-        res.status(status).json({ error: String(err) });
-      });
-  });
-
-  app.get("/workflow/process/:key", (req: Request, res: Response) => {
-    client
-      .getInstance(req.params.key)
-      .then((record) => {
-        if (!record) {
-          res.status(404).json({ error: "unknown execution" });
-          return;
-        }
-        res.json(record);
-      })
-      .catch((err) => res.status(503).json({ error: String(err) }));
-  });
-
-  app.get("/workflow/healthz", (_req: Request, res: Response) => {
-    res.status(client.connected ? 200 : 503).json({
-      connected: client.connected,
-      taskQueue: config.taskQueue,
-    });
-  });
+  // the host's /workflow/* HTTP control surface lives in api/workflow-api.ts; mount it as a Router so this seam
+  // stays bus wiring only
+  app.use(createWorkflowApi(client, config));
 
   return client;
 };

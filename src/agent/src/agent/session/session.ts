@@ -88,6 +88,9 @@ export interface Session {
   user?: Principal;
   // per-role hash into <contextsDir>/<hash>.json, recording what each role ran on; stamped by ContextMiddleware
   contextHashes?: Record<string, string>;
+  // opaque caller-owned reference (the host passes its workId at /session/create), set once at creation so the
+  // agent can be traced back to the external unit that opened it without a host round-trip. Never rewritten.
+  externalReferenceKey?: string;
 }
 
 // the memomcp collection (store namespace) a session reads and writes — the unit of memory segregation.
@@ -104,6 +107,7 @@ export interface CreateSessionParams {
   workspaceId: string;
   conversationId: string;
   parentSessionId?: string;
+  externalReferenceKey?: string;
 }
 
 // pure: persistence and id minting stay with the caller, so this touches neither disk nor randomness
@@ -114,6 +118,7 @@ export function createSession(params: CreateSessionParams): Session {
     workspaceId: params.workspaceId,
     conversationId: params.conversationId,
     parentSessionId: params.parentSessionId,
+    externalReferenceKey: params.externalReferenceKey,
     memoryCollectionId: undefined,
     status: "idle",
     counters: { turns: 0 },

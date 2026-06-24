@@ -10,7 +10,7 @@ import { Heartbeat } from "./comms/heartbeat.js";
 import { RuntimeBuilder } from "./comms/runtime-builder.js";
 import { SseQueue } from "./comms/sse-queue.js";
 import { SseReceiver } from "./comms/ssereceiver.js";
-import { createSessionApi } from "./session-api.js";
+import { createSessionApi } from "./api/session-api.js";
 import { SessionRegistry } from "./session-registry.js";
 import { HttpResultSender } from "./comms/sender.js";
 import { LOGGER, SERVER_CONFIG, DB, SESSION_STORE } from "./container-tokens.js";

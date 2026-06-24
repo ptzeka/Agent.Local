@@ -46,12 +46,22 @@ export class SessionStore {
     // anonymous sessions have no Principal yet; "anonymous" keeps the (user_sub, session_id) PK satisfied
     const userSub = session.user?.sub ?? "anonymous";
     const status = STATUS_TO_DOMAIN[session.status] ?? "new";
+    // external_reference_key is intentionally NOT in the conflict-update set: it's stamped on the first insert
+    // and left alone on every later upsert, so the back-reference a session was created with can never drift
     this.db
       .prepare(
-        "INSERT INTO sessions (user_sub, session_id, status, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO sessions (user_sub, session_id, status, external_reference_key, payload, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT (user_sub, session_id) DO UPDATE SET status = excluded.status, payload = excluded.payload, updated_at = excluded.updated_at",
       )
-      .run(userSub, session.sessionId, status, JSON.stringify(session), session.createdAt, session.updatedAt);
+      .run(
+        userSub,
+        session.sessionId,
+        status,
+        session.externalReferenceKey ?? null,
+        JSON.stringify(session),
+        session.createdAt,
+        session.updatedAt,
+      );
   }
 
   // keyed by session_id alone: the store API carries no user_sub yet, so cross-user scoping waits for the

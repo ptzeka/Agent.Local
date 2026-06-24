@@ -26,14 +26,20 @@ export const AGENT_SCHEMA: SchemaSpec = {
         "user_sub TEXT NOT NULL",
         "session_id TEXT NOT NULL",
         "status TEXT NOT NULL",
+        // opaque caller-owned back-reference (the host's workId), set once at create; queryable projection of
+        // the same field in `payload`, so the agent can map a session to its external unit without the host
+        "external_reference_key TEXT",
         "payload TEXT NOT NULL",
         "created_at INTEGER NOT NULL",
         "updated_at INTEGER NOT NULL",
         "PRIMARY KEY (user_sub, session_id)",
       ],
       foreignKeys: [{ column: "status", references: "session_status", refColumn: "status" }],
-      // summaries() orders most-recent-first per owner; the index serves that scan
-      indexes: [{ name: "idx_sessions_user_updated", columns: "user_sub, updated_at DESC" }],
+      // summaries() orders most-recent-first per owner; the external-ref index serves lookup-by-work
+      indexes: [
+        { name: "idx_sessions_user_updated", columns: "user_sub, updated_at DESC" },
+        { name: "idx_sessions_external_ref", columns: "external_reference_key" },
+      ],
     },
     {
       name: "conversations",
