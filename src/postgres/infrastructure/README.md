@@ -1,18 +1,33 @@
 # Postgres infrastructure — provisioning
 
-Idempotent provisioning for the `agentlocal` database: roles/users, schemas, and every app table.
-Run **after** the stack is up (`npm start` in `src/postgres`):
+Idempotent provisioning for the `agentlocal` database: roles/users, schemas, and every app table — all
+plain SQL applied by [`provision.sh`](./provision.sh) via `psql` inside the running container. Run
+**after** the stack is up (`npm start` in `src/postgres`):
 
 ```bash
 npm run db:provision   # from src/postgres
 ```
 
-Re-runnable: every step is guarded or `IF NOT EXISTS`, so applying it twice is a no-op. It connects as
-the superuser the compose stack creates (`POSTGRES_USER` / `POSTGRES_PASSWORD`, default `agent`/`agent`).
+Re-runnable: every script is guarded or `CREATE ... IF NOT EXISTS`, so applying it twice is a no-op.
+`provision.sh` execs `psql` in the container (local socket = `trust` per `pg_hba.conf`, so no password).
 
-## What it creates
+## The scripts (applied in order)
 
-### Roles & users (`bootstrap/01_roles.sql`)
+| File | Target db | What |
+|---|---|---|
+| `sql/00_databases.sql` | `postgres` | create `agentlocal` if missing (`\gexec` guard; compose usually made it) |
+| `sql/01_roles.sql` | `agentlocal` | group roles + login users + group grants |
+| `sql/02_schemas.sql` | `agentlocal` | `code` / `memo` schemas + default privileges for future tables |
+| `sql/03_tables.sql` | `agentlocal` | extension `vector`, tables + hnsw/gin indexes |
+| `sql/04_grants.sql` | `agentlocal` | grants on the tables that now exist |
+
+Adding/changing schema = edit the relevant `sql/*.sql` (keep it `IF NOT EXISTS`) and re-run
+`db:provision`. Postgres can't `ADD COLUMN` idempotently in one stock statement before PG16; on PG18
+use `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. For destructive changes (rename, type change, backfill)
+write a one-off statement and apply it deliberately — `IF NOT EXISTS` scripts only move forward additively.
+
+## Roles & users
+
 Two NOLOGIN **group** roles bundle privilege; login users are granted into a group and never carry
 privileges directly. `app_readwrite` inherits `app_readonly` (a writer can also read).
 
@@ -22,19 +37,10 @@ privileges directly. `app_readwrite` inherits `app_readonly` (a writer can also 
 | `codeindex_rw` | `app_readwrite` | the codeindex indexer (writes commits + vectors) |
 | `memomcp_rw` | `app_readwrite` | the memo MCP server (remember + recall) |
 
-> **DEV passwords** equal the role name (`codemcp_ro` / `codeindex_rw` / `memomcp_rw`). Override before
-> any shared use. The read-only/read-write split mirrors the agent's structural tool privilege model.
+> **DEV passwords** equal the role name. Override before any shared use. The read-only/read-write split
+> mirrors the agent's structural tool privilege model.
 
-### Schemas (`bootstrap/02_schemas.sql`)
-`code` and `memo`, owned by `agent`. Default privileges are scoped `FOR ROLE agent`, so any table dbup
-later creates in these schemas is auto-granted to the two groups. `bootstrap/03_grants.sql` then grants
-on the tables that already exist (default privileges only cover *future* objects).
-
-### Tables (`migration/` — the dbup engine)
-Declarative, idempotent reconcile — the pg counterpart of `common/src/db.ts`. Each table is its own spec
-module under `migration/tables/`; `migration/schema.ts` composes them. Drift is **additive**
-(`ADD COLUMN IF NOT EXISTS`): pg can ALTER in place, so a redesign adds columns/indexes without dropping
-data. To add a table, write a module and list it in `schema.ts`.
+## Tables
 
 | Table | Notes |
 |---|---|

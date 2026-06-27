@@ -1,6 +1,6 @@
 -- Run against the target database (agentlocal). Creates the per-service schemas and the DEFAULT
--- privileges that future tables inherit. dbup creates tables as `agent`, so the default-privilege
--- grants are scoped FOR ROLE agent — anything agent later creates in these schemas is auto-granted.
+-- privileges that future tables inherit. Tables are created by `agent` (03_tables.sql), so the
+-- default-privilege grants are scoped FOR ROLE agent — anything agent later creates is auto-granted.
 
 CREATE SCHEMA IF NOT EXISTS code AUTHORIZATION agent;
 CREATE SCHEMA IF NOT EXISTS memo AUTHORIZATION agent;

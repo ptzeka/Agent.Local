@@ -2,8 +2,7 @@
   "name": "@agent-local/postgres",
   "version": "0.1.0",
   "private": true,
-  "type": "module",
-  "description": "Standalone local Postgres (pgvector) + pgAdmin (deploy + provisioning workspace): postgres with our config baked into the image, pgAdmin preconfigured, and an idempotent provisioner (roles/users/schemas/tables via dbup). Not part of the app lifecycle — own start/stop scripts.",
+  "description": "Standalone local Postgres (pgvector) + pgAdmin (deploy + provisioning workspace): postgres with our config baked into the image, pgAdmin preconfigured, and idempotent SQL provisioning (roles/users/schemas/tables). Not part of the app lifecycle — own start/stop scripts.",
   "scripts": {
     "build": "docker compose build",
     "docker:build": "docker compose build",
@@ -13,15 +12,6 @@
     "healthcheck": "docker exec agent-local-postgres pg_isready -U agent -d agentlocal",
     "logs": "docker compose logs -f",
     "psql": "docker exec -it agent-local-postgres psql -U agent -d agentlocal",
-    "db:provision": "tsx infrastructure/provision.ts",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "pg": "^8.13.1"
-  },
-  "devDependencies": {
-    "@types/pg": "^8.11.10",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "db:provision": "bash infrastructure/provision.sh"
   }
 }
