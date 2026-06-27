@@ -21,6 +21,7 @@ changes its paths/schema/commands (a stale runbook is worse than none):
 | `debug-work` | Tracing one work/job by id — wrong status, missing file, a step didn't run, a dispatch misbehaved. Covers the host `work`/`work_agent_session`/`work_temporal` tables, agent session+conversation, workspace, logs, and host/agent/Temporal health. |
 | `install-mcp-servers` | Installing/registering this repo's MCP servers (codemcp + memomcp) into the global Claude (`~/.claude.json`) / Cursor (`~/.cursor/mcp.json`) configs. |
 | `solid` | Writing or reviewing code against the project's SOLID conventions — where logic lives, second implementations behind interfaces, DI via registries/Runtime. |
+| `readability` | Making code speak for itself — naming functions/returns/variables so the call site reads as a sentence and the comment can be deleted. The naming half of `## Comments`. |
 
 Invocation is by exact name (`/debug-work`) when surfaced as a slash command; otherwise
 the file is the canonical reference — read it and follow its inline queries.

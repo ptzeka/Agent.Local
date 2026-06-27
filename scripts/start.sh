@@ -25,6 +25,8 @@ else
 fi
 TEMPORAL_HEALTH_NAME="agent-local-temporalhost"
 TEMPORAL_PORT="${TEMPORAL_PORT:-7233}"
+POSTGRES_HEALTH_NAME="agent-local-postgres"
+POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 WAIT_SECONDS=60
 
 # Bring the standalone Temporal server up before host/agent so the workflow engine is
@@ -57,6 +59,32 @@ ensure_temporal() {
     printf '.'; sleep 1; waited=$((waited + 1))
   done
   echo " reachable"
+}
+
+# Bring the standalone Postgres (pgvector) up and provision it (roles/users/schemas/tables via dbup),
+# same best-effort + idempotent contract as ensure_temporal: docker/colima absent or unreachable is a
+# warning, never a hard stop. Nothing in the running app connects to it yet — wired ahead of migration.
+ensure_postgres() {
+  [ "${START_POSTGRES:-1}" = "1" ] || { echo "[start] START_POSTGRES=0 — skipping postgres"; return 0; }
+  command -v docker >/dev/null 2>&1 || { echo "[start] docker not found — skipping postgres (see COMMANDS.md)"; return 0; }
+  if ! docker info >/dev/null 2>&1; then
+    command -v colima >/dev/null 2>&1 || { echo "[start] WARN: docker daemon unreachable, colima not installed — skipping postgres"; return 0; }
+    echo "[start] docker daemon unreachable — starting colima..."
+    colima start || { echo "[start] WARN: colima start failed — skipping postgres"; return 0; }
+  fi
+  echo "[start] ensuring postgres is up..."
+  ( cd "$ROOT/src/postgres" && docker compose up -d ) || { echo "[start] WARN: postgres compose up failed — continuing without it"; return 0; }
+  local waited=0
+  printf '[start] waiting for postgres health'
+  while [ "$(docker inspect -f '{{.State.Health.Status}}' "$POSTGRES_HEALTH_NAME" 2>/dev/null || echo none)" != "healthy" ]; do
+    if [ "$waited" -ge 90 ]; then echo; echo "[start] WARN: postgres not healthy after 90s — continuing"; return 0; fi
+    printf '.'; sleep 3; waited=$((waited + 3))
+  done
+  echo " up"
+  # provision is idempotent (guards + IF NOT EXISTS), so re-running on every start is a no-op; a failure
+  # here only warns — the app does not depend on postgres yet.
+  echo "[start] provisioning postgres (roles/users/schemas/tables)..."
+  npm run db:provision --prefix "$ROOT" -w @agent-local/postgres || echo "[start] WARN: postgres provision failed — continuing"
 }
 
 # poll a TCP port until something accepts connections, or give up after WAIT_SECONDS
@@ -114,7 +142,6 @@ npm run build --if-present --prefix "$ROOT" \
   -w @agent-local/vectorstore \
   -w @agent-local/fsmcp \
   -w @agent-local/openclaw-runner \
-  -w @agent-local/postgres \
   -w @agent-local/temporalhost \
   -w @agent-local/mcp \
   -w @agent-local/web \
@@ -130,6 +157,7 @@ echo "[start] initializing databases (host.sqlite, agent.sqlite)..."
 npm run db:init --prefix "$ROOT"
 
 ensure_temporal
+ensure_postgres
 
 echo "[start] launching auth service on :$AUTH_PORT..."
 AUTH_PORT="$AUTH_PORT" npm start --prefix "$ROOT" -w @agent-local/auth >"$RUN_DIR/auth.log" 2>&1 &
@@ -159,4 +187,5 @@ echo "  host + Temporal worker : $RUN_DIR/host.log"
 echo "  agent server           : $RUN_DIR/agent.log"
 echo "  agent CLI / REPL       : $ROOT/logs/agent-<MDYYYY>.log   (override: AGENT_LOG_FILE)"
 echo "  Temporal server        : docker logs $TEMPORAL_HEALTH_NAME"
+echo "  Postgres               : docker logs $POSTGRES_HEALTH_NAME   (pgAdmin http://localhost:5050)"
 echo "  verbosity              : LOG_LEVEL=error|warn|info|debug  (or DEBUG=1)"

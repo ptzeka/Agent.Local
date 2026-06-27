@@ -45,7 +45,7 @@ Workflow code figures out whether the work is done and what runs next. `reportRe
 
 - The real `@temporalio/client` + `@temporalio/worker` adapter (the `TemporalCore` impl) and the
   `worker.ts` that registers `workflows/` + activities. The Workflow/Activity *definitions* now exist
-  (`workflows/user-table-test.ts`); what's deferred is running them against a live server.
+  (`workflows/user-table-test/v1/index.ts`, aggregated by `workflows/index.ts`); what's deferred is running them against a live server.
 - The host engine-switch (`WORKFLOW_ENGINE=camunda|temporal`) at the composition root.
 - Self-managed Temporal Server compose + the live `TestWorkflowEnvironment` E2E.
 - The engine-neutral `camundaId → executionId` rename (M7-9 "prove first, rename later").

@@ -15,9 +15,12 @@
     "./filelogger": { "types": "./dist/filelogger.d.ts", "default": "./dist/filelogger.js" },
     "./appsettings": { "types": "./dist/appsettings.d.ts", "default": "./dist/appsettings.js" },
     "./jwt": { "types": "./dist/jwt.d.ts", "default": "./dist/jwt.js" },
-    "./db": { "types": "./dist/db.d.ts", "default": "./dist/db.js" }
+    "./db": { "types": "./dist/db.d.ts", "default": "./dist/db.js" },
+    "./telemetry": { "types": "./dist/telemetry/index.d.ts", "default": "./dist/telemetry/index.js" }
   },
   "dependencies": {
+    "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/api-logs": "^0.205.0",
     "better-sqlite3": "^12.11.1",
     "jose": "^6.2.3"
   },

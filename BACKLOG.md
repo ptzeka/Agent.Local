@@ -1088,6 +1088,45 @@ the user and the executor — while memomcp remains a general-use MCP.
 
 ## M4 — Service mode + observability (≈ 2.5–3 weeks)
 
+### M4-0 · Telemetry foundation (`@agent-local/common/telemetry`) — `~0.5d` · P1
+Standalone OpenTelemetry seam in `src/common/telemetry`, scaffold-only: the
+`ILogger`/`IMetrics` surfaces and OTel-backed implementations land now, exporters
+and env wiring come later (this is the substrate M4-3/M4-4 build on). Everything is
+agnostic — config is **constructor-injected**, never read from `process.env` inside
+the classes — and each constructed instance is **added to a `TelemetryRegistry`** so
+consumers resolve `logger()`/`metrics()` by intent without knowing the source.
+OTel's `@opentelemetry/api` + `@opentelemetry/api-logs` default to **no-op** providers
+until an SDK is registered, so "empty for now" needs no exporter code — just the API.
+- [ ] `telemetry/imetrics.ts` — `IMetrics` interface (counter add / histogram
+      record by name + attributes), OTel-shaped.
+- [ ] `telemetry/otel-metrics.ts` — `OtelMetrics implements IMetrics` over
+      `metrics.getMeter(...)`; **empty / no-op** today (no env, NO fallback — an
+      unexported metric has nothing sane to fall back to).
+- [ ] `telemetry/otel-logger.ts` — `OtelLogger implements ILogger` emitting an OTel
+      log record via `logs.getLogger(...)` (no-op until an SDK lands), **with no env**,
+      and **falling back to `FileLogger`** for real output now (logs are still
+      file-only — there is no SQLite log sink; `agent.sqlite`/`host.sqlite` cover
+      sessions/conversations/messages/metrics/jobs, not logs). Liskov-substitutable
+      for `FileLogger` so existing `ILogger` call sites are untouched.
+- [ ] `telemetry/telemetry-registry.ts` — stateless holder/lookup (mirrors the
+      registries pattern); `add({ logger, metrics })` once at bootstrap; exposes
+      `logger()` / `metrics()`. Dumb lookup by intent; consumers compose.
+- [ ] `package.json` — add `@opentelemetry/api` + `@opentelemetry/api-logs`; barrel
+      + `./telemetry` subpath export.
+- [ ] Tests: `OtelLogger` satisfies `ILogger` and forwards every level to the
+      `FileLogger` fallback; `OtelMetrics` no-ops without throwing; the registry
+      returns the added instances.
+
+**Done when:** a process constructs `OtelLogger`/`OtelMetrics`, adds them to a
+`TelemetryRegistry`, and code resolves an `ILogger`/`IMetrics` through the registry —
+logs reach the file fallback, metrics no-op silently, and no class reads
+`process.env`. Exporter/OTLP/env wiring is explicitly out of scope (later story).
+
+> **Reframes M4-3/M4-4 (2026-06-27):** M4-3's Pino implementation is superseded —
+> the registered `ILogger` becomes `OtelLogger` (file fallback) here, not Pino.
+> M4-4's per-turn spans + metrics ride on this foundation's meter/logger once the
+> exporter/env wiring lands.
+
 ### M4-1 · HTTP/SSE transport — `~3d` · P0
 - [ ] Fastify (or hono) app exposing: `POST /sessions`,
       `POST /sessions/:id/dispatch` (SSE stream of runner events → final

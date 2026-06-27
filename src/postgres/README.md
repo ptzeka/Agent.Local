@@ -1,12 +1,15 @@
 # @agent-local/postgres
 
-Standalone local **Postgres + pgAdmin** for ad-hoc querying. Deploy-only workspace — no Node/agent code.
-It is **not** part of the app lifecycle (`npm start` at the repo root does not touch it); bring it up and
-down with this workspace's own scripts.
+Standalone local **Postgres (pgvector) + pgAdmin**. Brings up the database and provisions it. It is
+**not** part of the app lifecycle (`npm start` at the repo root does not touch it); bring it up and down
+with this workspace's own scripts.
 
-The Postgres config (`postgresql.conf`, `pg_hba.conf`) is **baked into the image** at build time (see
-[`Dockerfile`](./Dockerfile)), so auth/server policy is versioned with the repo, not stored in the data
-volume.
+The image is [`pgvector/pgvector:pg16`](./Dockerfile) (pgvector is required by `@agent-local/vectorstore`)
+with our config (`postgresql.conf`, `pg_hba.conf`) **baked in** at build time, so auth/server policy is
+versioned with the repo, not stored in the data volume.
+
+Once the stack is healthy, provision roles/users/schemas/tables with
+[`npm run db:provision`](./infrastructure/README.md) — idempotent and re-runnable.
 
 ## Requires a Docker runtime
 
@@ -25,6 +28,7 @@ npm start            # build image (config baked in) + compose up + wait for hea
 npm stop             # compose down (data volume preserved)
 npm stop -- --wipe   # compose down AND drop the data volume (all data lost)
 npm run build        # (re)build the image after editing Dockerfile/config
+npm run db:provision # create roles/users/schemas/tables in agentlocal (idempotent)
 npm run healthcheck  # pg_isready against the running container
 npm run ssh          # open a shell (sh) inside the container
 npm run psql         # open a psql shell inside the container

@@ -11,3 +11,4 @@ export * from "./comms.js";
 export * from "./jwt.js";
 export * from "./access-token-provider.js";
 export * from "./access-token-validator.js";
+export * from "./telemetry/index.js";

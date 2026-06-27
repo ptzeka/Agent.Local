@@ -13,9 +13,8 @@ export {
   USER_TABLE_FAIL_TEST_WORKFLOW_TYPE,
   agentResultSignal,
   injectSignal,
-} from "./workflows/user-table-test.js";
-export type { UserTableTestArgs } from "./workflows/user-table-test.js";
-export { createAgentActivities } from "./workflows/activities.js";
-export type { AgentActivities, DispatchAgentTaskInput } from "./workflows/activities.js";
-export { WORKFLOW_TEMPLATES } from "./workflows/index.js";
-export type { WorkflowTemplate } from "./workflows/index.js";
+  WORKFLOW_TEMPLATES,
+} from "./workflows/index.js";
+export type { UserTableTestArgs, WorkflowTemplate } from "./workflows/index.js";
+export { createAgentActivities } from "./workflows/_shared/activities.js";
+export type { AgentActivities, DispatchAgentTaskInput } from "./workflows/_shared/activities.js";

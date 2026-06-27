@@ -3,7 +3,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import type { Eventing } from "@agent-local/common";
 import type { ILogger } from "@agent-local/common/ilogger";
 import type { TemporalConfig } from "./config.js";
-import { createAgentActivities } from "./workflows/activities.js";
+import { createAgentActivities } from "./workflows/_shared/activities.js";
 
 // host-side worker: long-polls the task queue and executes the workflow + activity code the server dispatches.
 // MUST run in the host process (not temporalhost) because dispatchAgentTask publishes onto the host bus.
@@ -19,8 +19,8 @@ export async function startWorker(cfg: TemporalConfig, bus: Eventing, logger: IL
     connection,
     namespace: cfg.namespace,
     taskQueue: cfg.taskQueue,
-    // resolved against dist at runtime; the SDK bundles this module into the isolated workflow sandbox
-    workflowsPath: fileURLToPath(new URL("./workflows/user-table-test.js", import.meta.url)),
+    // resolved against dist at runtime; the SDK bundles this barrel (and every workflow it re-exports) into the sandbox
+    workflowsPath: fileURLToPath(new URL("./workflows/index.js", import.meta.url)),
     // activities run on the main event loop, so the bus publish in dispatchAgentTask reaches the agent
     activities: createAgentActivities(bus),
   });
