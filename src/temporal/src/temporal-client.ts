@@ -6,36 +6,29 @@ import type { TemporalConfig } from "./config.js";
 // Types
 // ---------------------------------------------------------------------------
 
-// Temporal execution status normalized to the engine-neutral shape the control surface returns
 export type ExecutionStatus = "running" | "completed" | "failed" | "canceled" | "terminated" | "timedOut";
 
-// the terminal outcome of awaiting a workflow: `completed` carries the return value; `canceled` is a user stop
-// (no terminal publish — the host already recorded it); `failed` carries the error for the host to mark stuck
+// `canceled` is folded apart from `failed` so a user stop never overwrites the host's `stopped` with `stuck`
 export type TerminalOutcome =
   | { outcome: "completed"; result: unknown }
   | { outcome: "canceled" }
   | { outcome: "failed"; error: string };
 
-// @temporalio/client is handle-oriented and typed loosely across versions; pin the few ops we call behind a local
-// shape so tests inject a fake and the real SDK adapter lands later with the worker ("add workflow later", M7-9)
+// local shape over @temporalio/client so tests inject a fake and the real SDK adapter lands later (M7-9)
 export interface TemporalCore {
   connect(): Promise<void>;
   start(req: { workflowType: string; workflowId: string; args: Record<string, unknown> }): Promise<{ runId: string }>;
   describe(workflowId: string): Promise<{ runId: string; workflowType: string; status: ExecutionStatus } | undefined>;
   cancel(workflowId: string): Promise<void>;
   terminate(workflowId: string, reason: string): Promise<void>;
-  // reset re-runs the workflow from its last workflow-task boundary, re-executing the most recent step with the
-  // same inputs; returns the new runId. the engine refuses a reset on a still-running execution by design.
+  // re-runs from the last workflow-task boundary with the same inputs; refused on a still-running execution
   reset(workflowId: string, reason: string): Promise<{ runId: string }>;
-  // reset to the boundary just before a chosen step's scheduled event, so that step (and everything after it)
-  // re-runs; post-reset signals are dropped so the rerun re-dispatches fresh rather than replaying old answers
+  // resets to before a chosen step so it (and everything after) re-runs; post-reset signals are dropped so the
+  // rerun re-dispatches fresh rather than replaying old answers
   resetToStep(workflowId: string, stepId: string, reason: string): Promise<{ runId: string }>;
-  // awaits the workflow's terminal outcome; `canceled` is folded apart from `failed` so a user stop never
-  // overwrites the host's `stopped` with `stuck` (the adapter classifies cancel/terminate as canceled)
   result(workflowId: string): Promise<TerminalOutcome>;
   signal(req: { workflowId: string; name: string; payload: Record<string, unknown> }): Promise<void>;
   query<T>(req: { workflowId: string; name: string; args?: unknown }): Promise<T>;
-  // the execution's full event history, mapped to engine-neutral records the client folds into steps
   history(workflowId: string): Promise<HistoryEvent[]>;
   close(): Promise<void>;
 }
@@ -48,7 +41,6 @@ export class WorkflowDisabledError extends Error {
   }
 }
 
-// engine truth for one execution; Temporal's visibility owns real state, this is the shape we expose outward
 export interface ExecutionRecord {
   workflowId: string;
   runId: string;
@@ -57,8 +49,7 @@ export interface ExecutionRecord {
   startedAt: number;
 }
 
-// one Temporal history event, narrowed to the activity-lifecycle fields step reconstruction needs. engine-neutral
-// so the client groups these into steps without importing the SDK's protobuf event shapes (the core does that map)
+// engine-neutral history event so the client folds steps without importing the SDK's protobuf event shapes
 export interface HistoryEvent {
   eventId: string;
   type: string;
@@ -66,26 +57,21 @@ export interface HistoryEvent {
   scheduledEventId?: string;
   activityType?: string;
   detail?: string;
-  // a scheduled event's decoded intent (our dispatchAgentTask passes the step's prompt) — distinguishes steps
-  // that otherwise all read as the bare activity type
+  // decoded intent (the dispatched prompt) — distinguishes steps that otherwise all read as the bare activity type
   summary?: string;
-  // the signal name on a WorkflowExecutionSignaled event; `agentResult` marks one step's round-trip answered
   signalName?: string;
-  // on an `agentResult` signal: the answer's decoded verdict — the envelope `status` the workflow gates on
-  // (`success` advances; anything else fails the step). getSteps uses it to fail the paired dispatch step, since the
-  // fire-and-forget activity's own completion only proves the job was published, not that the agent succeeded.
+  // on an `agentResult` signal: the envelope verdict; getSteps uses it to fail the paired dispatch step, since the
+  // fire-and-forget activity's own `completed` only proves the job was published, not that the agent succeeded
   verdict?: string;
-  // on an `agentResult` signal: the agent's final structured answer (the report_result payload), stringified — the
-  // step's "what did the LLM say" surfaced alongside its status.
+  // on an `agentResult` signal: the agent's final structured answer (report_result payload), stringified
   response?: string;
 }
 
-// the engine's own activity status for a step — deliberately NOT the host work-status catalog, which describes the
-// overall work, not its individual steps (a running work can hold a completed and a running step at once)
+// the engine's per-step status, NOT the host work-status catalog (a running work can hold completed + running steps)
 export type StepStatus = "scheduled" | "running" | "completed" | "failed" | "timedOut" | "canceled";
 
-// a reconstructed work step: one activity invocation folded from its scheduled -> started -> terminal events.
-// parentId is null today (activities are siblings under the root); kept so child-workflow steps nest under it later.
+// one activity invocation folded from its scheduled -> started -> terminal events
+// parentId is null today (activities are siblings under root); kept so child-workflow steps nest under it later
 export interface WorkflowStep {
   id: string;
   name: string;
@@ -93,11 +79,9 @@ export interface WorkflowStep {
   parentId: string | null;
   startedAt: string;
   detail: string | null;
-  // the step's intent decoded from the activity input (the dispatched prompt); null when the input carried none.
-  // `name` stays the activity type; this is what makes two dispatchAgentTask steps tell themselves apart.
+  // intent decoded from the activity input; what makes two dispatchAgentTask steps tell themselves apart
   description: string | null;
-  // the agent's final structured answer for a dispatch step (the report_result payload), stringified; null until the
-  // step's agentResult signal has landed (or for non-dispatch steps that carry no answer).
+  // the agent's final structured answer; null until the step's agentResult signal has landed
   response: string | null;
 }
 
@@ -122,8 +106,7 @@ function notWiredCore(): TemporalCore {
   };
 }
 
-// the dispatch activity (createAgentActivities in workflows/activities.ts) and the answer signal it round-trips to
-// (TemporalClient.reportResult). getSteps pairs them so a step isn't `completed` until its answer signal lands.
+// getSteps pairs the dispatch activity with its answer signal so a step isn't `completed` until the signal lands
 const AGENT_DISPATCH_ACTIVITY = "dispatchAgentTask";
 const AGENT_RESULT_SIGNAL = "agentResult";
 
@@ -151,7 +134,6 @@ function mapStepStatus(type: string): StepStatus | null {
 
 // owns the single Temporal connection: starts executions, signals them, reflects state outward
 // STATELESS — Temporal's visibility is authoritative, so it keeps no local instance map (unlike ZeebeClient)
-// ownership is the host's concern (WorkStore keyed by userId), never the engine's
 export class TemporalClient {
   private readonly core: TemporalCore;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
@@ -169,7 +151,7 @@ export class TemporalClient {
     this.core = core ?? notWiredCore();
   }
 
-  // boot: connect; resilient — a server down at boot schedules a retry, never throws up
+  // resilient — a server down at boot schedules a retry, never throws up
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -217,11 +199,8 @@ export class TemporalClient {
     return { workflowId: workId, runId, workflowType, status: "running", startedAt: Date.now() };
   }
 
-  // await the workflow's terminal outcome and fold it onto the bus: a return value -> workflow.completed (the host
-  // marks done -> complete), a failure -> workflow.failed (the host marks stuck), a user cancel -> workflow.stopped
-  // (the host runs its post-stop cleanup and settles `cancelled`). cancel is published, NOT swallowed: the host's
-  // `stopped` is only an ack — this confirmation is what advances it. it never resolves to `failed`, so it cannot
-  // overwrite the stop with stuck.
+  // await the terminal outcome and fold it onto the bus. cancel is published, NOT swallowed: the host's `stopped`
+  // is only an ack and this confirmation advances it; it never resolves to `failed` so it can't overwrite with stuck
   private watchResult(workId: string): void {
     this.core
       .result(workId)
@@ -250,15 +229,13 @@ export class TemporalClient {
     await this.core.terminate(workId, reason);
   }
 
-  // re-execute a stuck work: Reset re-runs the failed step with the same parameters. the reset spawns a NEW run,
-  // so re-arm the terminal watcher to fold its completion/failure back onto the bus (the original watcher resolved)
+  // the reset spawns a NEW run (the original watcher resolved), so re-arm the terminal watcher
   async resetProcess(workId: string, reason = "re-execute stuck step"): Promise<void> {
     await this.core.reset(workId, reason);
     this.watchResult(workId);
   }
 
-  // rerun a work from a chosen step: Reset to the boundary before that step, re-running it and everything after.
-  // the reset spawns a NEW run (the original watcher resolved), so re-arm the terminal watcher to fold its outcome.
+  // the reset spawns a NEW run (the original watcher resolved), so re-arm the terminal watcher
   async rerunFromStep(workId: string, stepId: string, reason = "rerun from step"): Promise<void> {
     await this.core.resetToStep(workId, stepId, reason);
     this.watchResult(workId);
@@ -280,18 +257,13 @@ export class TemporalClient {
     return this.core.query<T>({ workflowId: workId, name, args });
   }
 
-  // reconstruct the work's steps from Temporal history: each activity invocation is one step, folded from its
-  // scheduled -> started -> terminal events (grouped by the scheduledEventId those later events carry). the last
-  // event for a group sets the status, so a terminal supersedes the earlier running/scheduled. ordered by schedule time.
+  // reconstruct steps from history: each activity folded from its scheduled -> started -> terminal events (grouped
+  // by scheduledEventId), the last event setting the status; ordered by schedule time
   async getSteps(workId: string): Promise<WorkflowStep[]> {
     const events = await this.core.history(workId);
     const steps = new Map<string, WorkflowStep>();
-    // dispatch steps in schedule order, paired against the agentResult signals as they arrive — the workflow
-    // serializes dispatch -> await answer, so the Nth signal answers the Nth dispatch (see user-table-test.ts)
+    // the workflow serializes dispatch -> await answer, so the Nth signal answers the Nth dispatch (paired below)
     const dispatchSteps: WorkflowStep[] = [];
-    // each agentResult signal's answer in arrival order — the Nth answers the Nth dispatch (the workflow serializes
-    // dispatch -> await). Paired below so a non-success verdict fails the dispatch step the activity reported
-    // `completed`, and the agent's response surfaces on the step.
     const answers: { verdict?: string; response?: string }[] = [];
     let answeredCount = 0;
     for (const ev of events) {
@@ -321,10 +293,8 @@ export class TemporalClient {
       step.status = mapStepStatus(ev.type) ?? step.status;
       if (ev.detail) step.detail = ev.detail;
     }
-    // a dispatch activity is fire-and-forget (it returns the instant the job is published), so ActivityTaskCompleted
-    // marks it `completed` too early — the real round-trip lands as the agentResult signal. Reconcile each dispatch
-    // against its answer: unanswered ones stay `running`; an answered one with a non-success verdict is `failed` (the
-    // agent reported the step's goal unmet — the workflow throws on the same verdict), not the activity's false `completed`.
+    // a dispatch activity is fire-and-forget, so ActivityTaskCompleted marks it `completed` too early — the real
+    // round-trip is the agentResult signal: unanswered ones stay `running`, a non-success verdict is `failed`
     dispatchSteps.forEach((step, index) => {
       if (index >= answeredCount) {
         if (step.status === "completed") step.status = "running";
@@ -351,10 +321,8 @@ export class TemporalClient {
     await this.core.signal({ workflowId: workId, name, payload });
   }
 
-  // the agent reports results back; the WORKFLOW decides done/next. just a named signal — NOT a job completion,
-  // so it does NOT publish workflow.completed: the terminal publish lands with the worker once the Workflow returns.
-  // outcome (the turn's success/failure verdict) rides along when known so the workflow can fail a step on a
-  // non-satisfied turn; omitted from the payload when absent to keep the signal shape clean.
+  // just a named signal, NOT a job completion: the terminal publish lands with the worker once the Workflow returns.
+  // outcome rides along when known so the workflow can fail a step; omitted when absent to keep the shape clean
   async reportResult(workId: string, result: unknown, outcome?: string): Promise<void> {
     const payload = outcome === undefined ? { result } : { result, outcome };
     await this.core.signal({ workflowId: workId, name: "agentResult", payload });
