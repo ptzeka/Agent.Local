@@ -9,6 +9,7 @@ import { walkRepository } from '../indexer/walker.js';
 import { chunkFile } from '../indexer/chunkers/index.js';
 import { areaForPath, claudeMdLineageForFile, languageForPath } from '../indexer/metadata.js';
 import { readGitContext } from './git.js';
+import type { IParser } from '../indexer/parsers/types.js';
 
 const EMBED_BATCH_SIZE = 32;
 
@@ -27,11 +28,12 @@ export interface PublishDeps {
   factory: DbConnectionFactory;
   repo: CommitRepository;
   embedder: IVectorService;
+  parser: IParser;
   log?: (msg: string) => void;
 }
 
 export async function publish(deps: PublishDeps): Promise<PublishResult> {
-  const { config, vectorStore, factory, repo, embedder } = deps;
+  const { config, vectorStore, factory, repo, embedder, parser } = deps;
   const log = deps.log ?? (() => undefined);
 
   const rootDir = resolve(config.rootDir);
@@ -51,7 +53,7 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
         relativePath: file.relativePath,
         area,
         language,
-      });
+      }, parser);
       rawChunks.push(...fileChunks);
     } catch (err) {
       log(`WARN  failed to chunk ${file.relativePath}: ${(err as Error).message}`);

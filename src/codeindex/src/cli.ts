@@ -4,7 +4,7 @@ import { loadConfig, type Backend, type CliOverrides } from './config.js';
 import { MigrationRunner } from './publisher/migrate.js';
 import { publish } from './publisher/publish.js';
 import { VectorService, type EmbedProvider } from '@agent-local/vectorizer';
-import { wireWriter } from './wiring.js';
+import { wireWriter, wireParser } from './wiring.js';
 
 const program = new Command();
 
@@ -119,6 +119,7 @@ program
         factory,
         repo,
         embedder,
+        parser: wireParser(),
         log: (m) => process.stdout.write(`[codeindex] ${m}\n`),
       });
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');

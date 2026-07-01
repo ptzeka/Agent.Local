@@ -156,7 +156,15 @@
       "Bash(node -e \"const p=require\\('./src/agent/package.json'\\);console.log\\(JSON.stringify\\(p.dependencies,null,1\\)\\)\")",
       "Bash(node -e \"console.log\\(require\\('./src/host/package.json'\\).scripts.test\\)\")",
       "Bash(npx jest *)",
-      "Bash(echo \"JEST=$?\")"
+      "Bash(echo \"JEST=$?\")",
+      "Bash(npm view *)",
+      "Bash(npm install *)",
+      "Bash(node -e \"console.log\\(process.versions.napi, process.platform, process.arch\\)\")",
+      "Bash(tar tzf *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm pack *)",
+      "Bash(grep -iE \"\\\\.node$|prebuild\")",
+      "Bash(node -e ' *)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import type { Area, RawChunk } from '../../types.js';
 import { chunkMarkdown } from './markdown.js';
 import { chunkCSharp } from './csharp.js';
-import { chunkTypeScript } from './typescript.js';
 import { chunkSql } from './sql.js';
 import { chunkProto } from './proto.js';
 import { chunkFallback } from './fallback.js';
+import type { IParser } from '../parsers/types.js';
 
 export interface ChunkFileInput {
   absolutePath: string;
@@ -14,7 +14,9 @@ export interface ChunkFileInput {
   language: string;
 }
 
-export function chunkFile(input: ChunkFileInput): RawChunk[] {
+// `parser` handles typescript/tsx/javascript/jsx only (the languages with a symbol-aware
+// IParser split); every other language keeps its single regex chunker, dispatched here directly
+export function chunkFile(input: ChunkFileInput, parser: IParser): RawChunk[] {
   const content = readFileSync(input.absolutePath, 'utf-8');
   switch (input.language) {
     case 'markdown':
@@ -25,7 +27,13 @@ export function chunkFile(input: ChunkFileInput): RawChunk[] {
     case 'tsx':
     case 'javascript':
     case 'jsx':
-      return chunkTypeScript({ path: input.relativePath, area: input.area, language: input.language, content });
+      return parser.parse({
+        path: input.relativePath,
+        absolutePath: input.absolutePath,
+        area: input.area,
+        language: input.language,
+        content,
+      });
     case 'sql':
       return chunkSql({ path: input.relativePath, area: input.area, content });
     case 'protobuf':
