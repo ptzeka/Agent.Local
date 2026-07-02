@@ -48,8 +48,9 @@ export class PgVectorStore implements IVectorStore {
   // accepts a connection string or a ready factory so consumers can share one pool across stores
   constructor(connection: string | DbConnectionFactory, options: PgVectorStoreOptions = {}) {
     this.table = options.table ?? DEFAULT_TABLE;
-    // interpolated into SQL, so it must be a bare identifier — reject anything that could inject
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(this.table)) {
+    // interpolated into SQL, so it must be a bare identifier (with an optional schema prefix, e.g.
+    // "code.vector_records" for the provisioned per-service schemas) — reject anything that could inject
+    if (!/^([A-Za-z_][A-Za-z0-9_]*\.)?[A-Za-z_][A-Za-z0-9_]*$/.test(this.table)) {
       throw new Error(`Invalid table name: ${this.table}`);
     }
     this.factory = typeof connection === 'string' ? new PgConnectionFactory(connection) : connection;

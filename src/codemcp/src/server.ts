@@ -127,7 +127,7 @@ async function serve(overrides: CliOverrides): Promise<void> {
     process.stderr.write(
       `codemcp: ${config.repositories.length} file-backend repos registered (${names}). ` +
       `Each is searchable: pass tool argument repository="<name>" (see names above). ` +
-      `If omitted, search_code / find_symbol / get_file_context use git origin when it matches a name, ` +
+      `If omitted, search_code / get_symbol / get_file_context use git origin when it matches a name, ` +
       `else the first: "${currentRepository ?? ''}". ` +
       `list_commits with no repository filter aggregates all.\n`,
     );

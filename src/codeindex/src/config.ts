@@ -49,6 +49,8 @@ const DEFAULTS = {
     '**/obj/**',
     '**/publish/**',
     '**/.git/**',
+    // the file backend's own store — without this a republish indexes the previous snapshot's json
+    '**/data/**',
   ] as string[],
 };
 
@@ -60,6 +62,13 @@ export function packageRoot(): string {
 
 export function defaultFileDir(): string {
   return resolve(packageRoot(), 'data');
+}
+
+// repo-first layout: every repository keeps its snapshots + migration journal in its own
+// subtree, data/<owner>/<repo>/, so one data dir can host many indexed repositories
+export function repoScopedFileDir(fileDir: string, repositoryId: string): string {
+  const segments = repositoryId.split('/').filter(s => s.length > 0);
+  return resolve(fileDir, ...segments);
 }
 
 export function loadConfig(overrides: CliOverrides = {}): CodeIndexConfig {

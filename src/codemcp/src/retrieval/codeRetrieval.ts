@@ -14,7 +14,7 @@ export function chunkRecordId(path: string, startLine: number, endLine: number):
 
 // the retrieval contract over the shared vector store: chunk ops map generic VectorRecords back
 // into code-shaped ChunkRows, keeping codemcp ignorant of the backend behind IVectorStore
-// search_code ranks by embedding; find_symbol/get_file_context are exact-match list() reads
+// search_code ranks by embedding; get_symbol/get_file_context are exact-match list() reads
 export class CodeRetrieval {
   constructor(private readonly store: IVectorStore) {}
 

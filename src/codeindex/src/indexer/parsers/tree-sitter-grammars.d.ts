@@ -2,9 +2,8 @@
 // and have no @types package on npm — minimal ambient shapes for what we call.
 declare module 'tree-sitter-typescript' {
   import type Parser from 'tree-sitter';
-  // Node's native ESM loader doesn't reliably surface this CJS package's named exports
-  // (works under ts-jest's CJS transform, fails under `node --experimental-vm-modules`-style
-  // real ESM) — import the default and destructure at runtime instead, see treeLineParser.ts
+  // Node's ESM loader misses this CJS package's named exports (ts-jest tolerates it, real
+  // node does not) — import the default and destructure at runtime, see treeLineParser.ts
   interface TypeScriptGrammars {
     typescript: Parser.Language;
     tsx: Parser.Language;

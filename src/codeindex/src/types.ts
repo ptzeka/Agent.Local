@@ -39,3 +39,15 @@ export interface RawChunk {
   content: string;
   imports: string[];
 }
+
+export type EdgeType = 'imports' | 'calls' | 'implements' | 'extends';
+
+// one relationship fact, published per commit as edges.jsonl. Endpoints are stable
+// entity ids — `<path>` (file), `<path>#Symbol`, `<path>#Class.method`, `external:<module>`,
+// `unresolved:<name>` — never line ranges, so edges stay joinable across snapshots
+export interface CodeEdge {
+  from: string;
+  to: string;
+  type: EdgeType;
+  line: number;
+}

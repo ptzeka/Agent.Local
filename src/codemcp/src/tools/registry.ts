@@ -2,7 +2,8 @@ import { z } from 'zod';
 import type { IVectorService } from '@agent-local/vectorizer';
 import type { WiredReader } from '../wiring.js';
 import { searchCode, searchCodeSchema } from './search_code.js';
-import { findSymbol, findSymbolSchema } from './find_symbol.js';
+import { getSymbol, getSymbolSchema } from './get_symbol.js';
+import { getRelationships, getRelationshipsSchema } from './get_relationships.js';
 import { getFileContext, getFileContextSchema } from './get_file_context.js';
 import { listCommits, listCommitsSchema } from './list_commits.js';
 import { relatedCode, relatedCodeSchema } from './related_code.js';
@@ -69,8 +70,8 @@ export const TOOLS: ToolDef[] = [
     handler: (input, deps) => searchCode(searchCodeSchema.parse(input), deps),
   },
   {
-    name: 'find_symbol',
-    description: 'Exact-match symbol lookup (class, function, component, message, etc.) across the indexed repository. Faster and more precise than search_code when you know the name. With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    name: 'get_symbol',
+    description: 'Exact-match symbol lookup (class, function, component, message, etc.) across the indexed repository, returning each definition\'s full body. Faster and more precise than search_code when you know the name. With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -80,8 +81,25 @@ export const TOOLS: ToolDef[] = [
       },
       required: ['name'],
     },
-    zodSchema: findSymbolSchema,
-    handler: (input, deps) => findSymbol(findSymbolSchema.parse(input), deps),
+    zodSchema: getSymbolSchema,
+    handler: (input, deps) => getSymbol(getSymbolSchema.parse(input), deps),
+  },
+  {
+    name: 'get_relationships',
+    description: 'Relationship edges for an entity, from the per-commit edges.jsonl graph: who calls / imports / implements / extends it (incoming) and what it calls / imports / implements / extends (outgoing). Pass a symbol name (wireParser), an entity id (src/x.ts#Class.method), or a file path. Extracted from the AST for TS/JS; complements vector search, which cannot answer relationship questions. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Symbol name (e.g. wireParser), entity id (path#Class.method), or file path.' },
+        type: { type: 'string', enum: ['imports', 'calls', 'implements', 'extends'], description: 'Restrict to one edge type.' },
+        direction: { type: 'string', enum: ['out', 'in', 'both'], default: 'both', description: 'out = what the entity calls/imports/implements; in = who calls/imports/implements it.' },
+        repository: { type: 'string', description: 'Repository id to query; must match a registered name when several exist (CLI or auto-discovered). Defaults to matching git `origin` when possible, else the first registration. REQUIRED when auto-detection failed.' },
+        commit: { type: 'string', description: 'Specific commit SHA. Defaults to the sole indexed snapshot on `--branch` for this repository when unambiguous. REQUIRED when more than one distinct SHA is indexed for the same repository and branch — use `list_commits` or ask the user, then pass the full SHA.' },
+      },
+      required: ['name'],
+    },
+    zodSchema: getRelationshipsSchema,
+    handler: (input, deps) => getRelationships(getRelationshipsSchema.parse(input), deps),
   },
   {
     name: 'get_file_context',
@@ -100,7 +118,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'list_commits',
-    description: 'Enumerate indexed commit snapshots. With multiple file-backend registrations and no `repository` filter, aggregates across all of them. Use this to discover which repository names and commits are available before calling search_code / find_symbol / get_file_context.',
+    description: 'Enumerate indexed commit snapshots. With multiple file-backend registrations and no `repository` filter, aggregates across all of them. Use this to discover which repository names and commits are available before calling search_code / get_symbol / get_file_context.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -154,7 +172,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'locate_symbol',
-    description: 'Exact-match locate tier: every definition of a symbol as content-free summaries (citation + line range). Like find_symbol but without bodies — use to see where a symbol lives, then expand_chunk the one you need. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    description: 'Exact-match locate tier: every definition of a symbol as content-free summaries (citation + line range). Like get_symbol but without bodies — use to see where a symbol lives, then expand_chunk the one you need. With multiple registered repositories, pass `repository`. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
     inputSchema: {
       type: 'object',
       properties: {

@@ -18,6 +18,25 @@ export const CLASS_SRC = `export class Greeter {
 }
 `;
 
+export const CLASS_WITH_ARROW_FIELD_SRC = `export class Ticker {
+  onTick = (elapsed: number) => {
+    return elapsed + 1;
+  };
+
+  limit = 5;
+}
+`;
+
+export const DOC_COMMENTED_METHOD_SRC = `export class Repo {
+  /**
+   * Saves the row.
+   */
+  save(): void {
+    return;
+  }
+}
+`;
+
 export const ARROW_CONST_SRC = `export const multiply = (a, b) => {
   return a * b;
 };
@@ -50,4 +69,26 @@ export function useThem(): void {
 `;
 
 export const NO_SYMBOLS_SRC = `export const x = 5;
+`;
+
+// exercises every edge type at once: named/default/external imports, extends +
+// implements through import bindings, and calls via identifier, this.method, and new
+export const RELATIONSHIPS_SRC = `import { BaseThing, IThing } from './contracts.js';
+import helper from '../util/helper.js';
+import { z } from 'zod';
+
+export function makeThing(): Thing {
+  return new Thing();
+}
+
+export class Thing extends BaseThing implements IThing {
+  run(): number {
+    this.step();
+    return helper();
+  }
+
+  step(): void {
+    makeThing();
+  }
+}
 `;

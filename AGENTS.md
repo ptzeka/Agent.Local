@@ -50,6 +50,25 @@ Persist decisions, conventions, and preferences as **repo artifacts** — backlo
 decisions in BACKLOG.md, behavioral rules here in AGENTS.md, reusable know-how as
 a local skill/rule. **Do not write to global memory** for this project.
 
+### Agent memory: `memomcp` takes precedence over Claude's global auto-memory
+
+This repo ships its own memory server, `memomcp` (`mcp__memomcp__remember` /
+`recall` / `recall_expand` / `recall_locate`), for agent-memory-shaped facts —
+who the user is, standing preferences, running context worth recalling across
+sessions. When that kind of fact comes up:
+
+- **Save it via `memomcp`, never Claude Code's global auto-memory** (the
+  `~/.claude/projects/**/memory/MEMORY.md` file-based system). That system is
+  for cross-project assistant memory; this repo's own memory belongs in its own
+  memory store so it stays scoped to this project and queryable by any agent
+  hitting the MCP server, not just Claude Code.
+- If `memomcp` tools aren't registered in the current session, say so and ask
+  before falling back to anything else — don't silently write to global memory
+  as a substitute.
+- Decisions/conventions still go to BACKLOG.md/AGENTS.md/skills per above;
+  `memomcp` is specifically for memory-shaped facts (identity, preference,
+  recall-later context), not process or architecture decisions.
+
 ## Code search: always use codemcp first
 
 ** When discussing solutions its best we focus on ontopic disucssions in a not too long thread - OFFER SUMMARY of options not entire paragraphs of solutions. Simply stay on topic then add below: concern, other options, why it fits best practices, why it diverges etc, if further discussion is needed the user will initiate or dig deeper. Keep discussions brief while hinting further expansions.
@@ -68,7 +87,8 @@ The following repositories are indexed and cached:
 | Goal | Use |
 |---|---|
 | Find code by intent / behavior | `search_code` |
-| Look up a known symbol by name | `find_symbol` |
+| Look up a known symbol by name | `get_symbol` |
+| Who calls / imports / implements / extends X | `get_relationships` |
 | Get full context for a file before editing | `get_file_context` |
 | List available indexed snapshots | `list_commits` |
 | Literal string match, codemcp returned no results | `grep` (fallback only) |

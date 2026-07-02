@@ -14,7 +14,7 @@
       "Bash(Remove-Item \"c:\\\\www\\\\Agent.Local\\\\agent.ai\")",
       "PowerShell(git -C c:\\\\www\\\\Agent.Local diff --stat)",
       "PowerShell(git -C c:\\\\www\\\\Agent.Local diff)",
-      "mcp__codemcp__find_symbol",
+      "mcp__codemcp__get_symbol",
       "mcp__codemcp__search_code",
       "PowerShell(npm run build --prefix c:\\\\www\\\\Agent.Local\\\\src\\\\agent)",
       "PowerShell(npm test --prefix c:\\\\www\\\\Agent.Local\\\\src\\\\agent)",

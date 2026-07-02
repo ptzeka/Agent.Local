@@ -41,3 +41,6 @@ src/host/jobs/
 scripts/.run/
 /src/workspace
 /src/openclaw/.openclaw/agents/main/sessions
+
+# Local machine cache for INSTALL.md
+deps.md

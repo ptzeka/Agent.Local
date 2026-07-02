@@ -6,10 +6,12 @@ import { FileVectorStore, type VectorRecord } from "@agent-local/vectorstore";
 import { VectorService } from "@agent-local/vectorizer";
 import { CodeRetrieval } from "../src/retrieval/codeRetrieval.js";
 import { FileMetadataRepository } from "../src/metadata/fileMetadataRepository.js";
+import { FileEdgeRepository } from "../src/edges/fileEdgeRepository.js";
+import type { EdgeRow } from "../src/edges/types.js";
 import type { WiredReader } from "../src/wiring.js";
 import type { ToolDeps } from "../src/tools/registry.js";
 import { searchCode } from "../src/tools/search_code.js";
-import { findSymbol } from "../src/tools/find_symbol.js";
+import { getSymbol } from "../src/tools/get_symbol.js";
 import { getFileContext } from "../src/tools/get_file_context.js";
 import { listCommits } from "../src/tools/list_commits.js";
 import { relatedCode } from "../src/tools/related_code.js";
@@ -17,6 +19,7 @@ import { locateCode } from "../src/tools/locate_code.js";
 import { locateSymbol } from "../src/tools/locate_symbol.js";
 import { locateFile } from "../src/tools/locate_file.js";
 import { expandChunk } from "../src/tools/expand_chunk.js";
+import { getRelationships } from "../src/tools/get_relationships.js";
 
 // 40-hex sha so the file metadata reader recognises the commit dir
 const SHA = "a".repeat(40);
@@ -95,11 +98,20 @@ beforeAll(async () => {
     "utf-8",
   );
 
+  // edges.jsonl in the CodeEdge shape codeindex publishes alongside chunks
+  const EDGES: EdgeRow[] = [
+    { from: "src/a.ts", to: "src/b.ts#computeSum", type: "imports", line: 1 },
+    { from: "src/a.ts#computeProduct", to: "src/a.ts#computeSum", type: "calls", line: 8 },
+    { from: "src/a.ts#Widget", to: "external:react#Component", type: "extends", line: 3 },
+  ];
+  writeFileSync(join(commitDir, "edges.jsonl"), EDGES.map(e => JSON.stringify(e)).join("\n") + "\n", "utf-8");
+
   const reader: WiredReader = {
     retrieval: new CodeRetrieval(
       new FileVectorStore({ baseDir, partitionDir: "commits", recordsFile: "chunks.jsonl" }),
     ),
     metadata: new FileMetadataRepository(baseDir),
+    edges: new FileEdgeRepository(baseDir),
   };
   deps = {
     reader,
@@ -122,8 +134,8 @@ describe("codemcp tools over the shared file store", () => {
     expect(out).toContain("branch=main");
   });
 
-  test("find_symbol returns every definition, ordered by path then line", async () => {
-    const out = await findSymbol({ name: "computeSum" }, deps);
+  test("get_symbol returns every definition, ordered by path then line", async () => {
+    const out = await getSymbol({ name: "computeSum" }, deps);
     const aIdx = out.indexOf("src/a.ts:1-5");
     const bIdx = out.indexOf("src/b.ts:1-4");
     expect(aIdx).toBeGreaterThanOrEqual(0);
@@ -207,5 +219,33 @@ describe("codemcp tools over the shared file store", () => {
   test("expand_chunk reports an unmatched line range", async () => {
     const out = await expandChunk({ path: "src/a.ts", startLine: 2, endLine: 9 }, deps);
     expect(out).toContain("no chunk at src/a.ts:2-9");
+  });
+
+  test("get_relationships answers by leaf symbol name; empty directions are omitted", async () => {
+    const out = await getRelationships({ name: "computeSum", direction: "both" }, deps);
+    // computeSum is only ever a target in the fixture: callers and importers point at it
+    expect(out).toContain("incoming:");
+    expect(out).not.toContain("outgoing:");
+    expect(out).toContain("src/a.ts#computeProduct -[calls]-> src/a.ts#computeSum");
+    expect(out).toContain("src/a.ts -[imports]-> src/b.ts#computeSum");
+  });
+
+  test("get_relationships filters by type and direction", async () => {
+    const onlyCallsIn = await getRelationships({ name: "computeSum", type: "calls", direction: "in" }, deps);
+    expect(onlyCallsIn).toContain("-[calls]->");
+    expect(onlyCallsIn).not.toContain("-[imports]->");
+    expect(onlyCallsIn).not.toContain("outgoing:");
+  });
+
+  test("get_relationships matches full entity ids and external targets", async () => {
+    const byId = await getRelationships({ name: "src/a.ts#Widget", direction: "out" }, deps);
+    expect(byId).toContain("-[extends]-> external:react#Component");
+    const byExternalLeaf = await getRelationships({ name: "Component", direction: "in" }, deps);
+    expect(byExternalLeaf).toContain("src/a.ts#Widget");
+  });
+
+  test("get_relationships reports a miss", async () => {
+    const out = await getRelationships({ name: "nonexistent", direction: "both" }, deps);
+    expect(out).toContain("(no relationships for nonexistent)");
   });
 });

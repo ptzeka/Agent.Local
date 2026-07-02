@@ -39,6 +39,23 @@ describe("PgVectorStore SQL marshalling", () => {
     );
   });
 
+  it("accepts a schema-qualified table name", async () => {
+    const factory = new FakeFactory();
+    const store = new PgVectorStore(factory, { table: "code.vector_records" });
+
+    await store.upsert([
+      { id: "a", namespace: "ns", content: "c", embedding: [1, 2, 3], metadata: {} },
+    ]);
+
+    expect(factory.conn.calls.at(-1)!.sql).toContain("INSERT INTO code.vector_records");
+  });
+
+  it("rejects a schema-qualified name with an invalid segment", () => {
+    expect(() => new PgVectorStore(new FakeFactory(), { table: "code.recs; DROP TABLE x" })).toThrow(
+      /Invalid table name/,
+    );
+  });
+
   it("upserts with a vector literal and jsonb metadata via ON CONFLICT", async () => {
     const factory = new FakeFactory();
     const store = new PgVectorStore(factory, { table: "recs" });

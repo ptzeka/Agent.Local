@@ -133,7 +133,7 @@ A single backend can hold commits from multiple repositories. Every commit row c
 
 - With **explicit** registrations, each gets its own on-disk reader; **all are searchable** by passing the tool argument `repository` equal to that registration's **`name`** (the part before the first `:` in each pair).
 - With **no** `--repository` flags and a migrated file index (`schema_versions.json` under the default data dir), the server **scans published commits** and registers every distinct `repository` field (same as listing each name with `--repository`). All share one physical tree when using sibling `tools/codeindex/data`.
-- **`search_code`**, **`find_symbol`**, and **`get_file_context`** query **one** repo per call. If you omit `repository`, they use **git `origin`** when it matches a registered name, else the **first** registration (explicit order or sorted discovery order).
+- **`search_code`**, **`get_symbol`**, and **`get_file_context`** query **one** repo per call. If you omit `repository`, they use **git `origin`** when it matches a registered name, else the **first** registration (explicit order or sorted discovery order).
 - **`list_commits`** with no `repository` filter **aggregates** every registered repo (sorted by `indexed_at`); pass `repository` to narrow to one name.
 
 **Postgres backend:** one connection; multiple logical repos live in the same DB and are distinguished by the `repository` column. Pass `repository` on tool calls to target the right rows.
@@ -177,7 +177,7 @@ probe search_code '{\"query\":\"migration runner with checksum\",\"k\":3,\"area\
 
 ---
 
-### `find_symbol`
+### `get_symbol`
 
 Exact-match symbol lookup. **Prefer this over `grep` for known symbol names.** Faster and more precise than `search_code` when you already know the name.
 
@@ -193,12 +193,47 @@ Exact-match symbol lookup. **Prefer this over `grep` for known symbol names.** F
 
 ```bash
 # bash / zsh / git-bash
-probe find_symbol '{"name":"PgConnectionFactory"}'
+probe get_symbol '{"name":"PgConnectionFactory"}'
 ```
 
 ```powershell
 # PowerShell
-probe find_symbol '{\"name\":\"PgConnectionFactory\"}'
+probe get_symbol '{\"name\":\"PgConnectionFactory\"}'
+```
+
+---
+
+### `get_relationships`
+
+Relationship edges for an entity, read from the per-commit `edges.jsonl` graph the
+indexer publishes beside `chunks.jsonl`: **who calls / imports / implements / extends X**
+(incoming) and what X calls / imports / implements / extends (outgoing). AST-extracted
+for TS/JS (file backend only); vector search cannot answer these questions.
+
+Edge endpoints are stable entity ids — `<path>` (file), `<path>#Symbol`,
+`<path>#Class.method`, `external:<module>#<name>`, `unresolved:<name>` — so the graph
+stays joinable across snapshots and can be bulk-loaded into a graph store later.
+
+**Input**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `name` | string | yes | Leaf symbol name (`wireParser`), full entity id (`src/x.ts#Class.method`), or file path. |
+| `type` | string | no | One of `imports` / `calls` / `implements` / `extends`. |
+| `direction` | string | no | `out`, `in`, or `both` (default). |
+| `repository` | string | no | Repo id; match a `--repository` **name** when several are registered. |
+| `commit` | string | no | Full SHA; required with more than one snapshot per repository + branch. |
+
+**Probe example**
+
+```bash
+# bash / zsh / git-bash — who implements/imports IParser?
+probe get_relationships '{"name":"IParser","direction":"in"}'
+```
+
+```powershell
+# PowerShell
+probe get_relationships '{\"name\":\"IParser\",\"direction\":\"in\"}'
 ```
 
 ---
@@ -264,7 +299,12 @@ See [mcp.json.example](./mcp.json.example). Run `npm install && npm run build` u
 
 ### File data for name-only `--repository`
 
-With **`--repository Platform/Rxo.Platform.Web.Sandbox`** (no `:path`), codemcp **prefers** the sibling indexer output **`tools/codeindex/data/`** when `schema_versions.json` exists there (normal layout after `npm run migrate:file` / `publish:file` in `tools/codeindex`). No copy into `tools/codemcp/data/...` is required in that setup.
+The data layout is **repo-first everywhere**: every repository owns the subtree
+`<dataRoot>/<owner>/<repo>/` containing its own `schema_versions.json` and
+`commits/<sha>/{chunks.jsonl, commit.json, edges.jsonl}`. Repository ids are
+discovered from that directory structure (no commit.json scanning).
+
+With **`--repository Platform/Rxo.Platform.Web.Sandbox`** (no `:path`), codemcp **prefers** the sibling indexer output **`tools/codeindex/data/<owner>/<repo>/`** when `schema_versions.json` exists there (normal layout after `npm run publish:file` in `tools/codeindex`). No copy into `tools/codemcp/data/...` is required in that setup.
 
 If you keep index files only under `tools/codemcp/data/<owner>/<repo>/` instead, ensure that tree includes `schema_versions.json` (and `commits/<sha>/...`) — codemcp does **not** create that directory for you.
 
@@ -296,9 +336,9 @@ Both implement the same `PgReaderRepository` interface; you can switch on a sing
 
 
 ## COMMANDS 
-node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe find_symbol '{"name":"PgConnectionFactory"}'
+node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe get_symbol '{"name":"PgConnectionFactory"}'
 node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe get_file_context '{\"path\":\"src/codemcp/src/db/connectionFactory.ts\"}'
-node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe find_symbol '{\"name\":\"PgConnectionFactory\"}'
+node src/codemcp/dist/server.js --backend file --branch feature/add_solution probe get_symbol '{\"name\":\"PgConnectionFactory\"}'
 
 # Example do not delete:
 powershell.exe -ExecutionPolicy Bypass -File c:\www\agent.local\scripts\publish-codeindex.ps1 c:\www\agent.local

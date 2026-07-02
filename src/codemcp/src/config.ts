@@ -15,14 +15,15 @@ export interface RepositoryEntry {
   localPath?: string;
 }
 
-// name-only prefers the sibling ../codeindex/data when already migrated (shared with codeindex publish, no copy step)
+// repo-first layout everywhere: a repository's data root is <dataRoot>/<owner>/<repo>/.
+// Name-only prefers the sibling ../codeindex/data subtree when codeindex published there
 export function repoFileDir(entry: RepositoryEntry): string {
   const segments = entry.name.split('/').filter(s => s.length > 0);
   const lp = entry.localPath?.trim();
   if (!lp) {
-    const codeindexData = join(packageRoot(), '..', 'codeindex', 'data');
-    if (existsSync(join(codeindexData, 'schema_versions.json'))) {
-      return codeindexData;
+    const codeindexRepoDir = join(packageRoot(), '..', 'codeindex', 'data', ...segments);
+    if (existsSync(join(codeindexRepoDir, 'schema_versions.json'))) {
+      return codeindexRepoDir;
     }
     return join(packageRoot(), 'data', ...segments);
   }
@@ -75,26 +76,23 @@ export function defaultFileDir(): string {
   return resolve(packageRoot(), 'data');
 }
 
-// default file-backend root with no --repository flags: sibling codeindex/data if migrated there, else defaultFileDir
+// default file-backend data root with no --repository flags: sibling codeindex/data when it
+// holds at least one repo-first subtree (<owner>/<repo>/schema_versions.json), else this package's
 export function resolveDefaultFileBackendBaseDir(): string {
   const codeindexData = join(packageRoot(), '..', 'codeindex', 'data');
-  if (existsSync(join(codeindexData, 'schema_versions.json'))) {
+  if (listIndexedRepositoryIds(codeindexData).length > 0) {
     return codeindexData;
   }
   return defaultFileDir();
 }
 
-// with --backend file and no --repository, treat each distinct published repository id as a name-only repo; explicit CLI wins
+// with --backend file and no --repository, every <owner>/<repo>/ subtree under the data root
+// becomes a name-only repo; explicit CLI wins
 export function discoverFileRepositoriesIfUnset(config: CodeMcpConfig): CodeMcpConfig {
   if (config.backend !== 'file') return config;
   if (config.repositories.length > 0) return config;
 
-  const base = resolveDefaultFileBackendBaseDir();
-  if (!existsSync(join(base, 'schema_versions.json'))) {
-    return config;
-  }
-
-  const ids = listIndexedRepositoryIds(base);
+  const ids = listIndexedRepositoryIds(resolveDefaultFileBackendBaseDir());
   if (ids.length === 0) return config;
 
   return {

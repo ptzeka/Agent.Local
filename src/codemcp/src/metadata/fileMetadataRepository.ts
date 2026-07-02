@@ -53,15 +53,26 @@ export class FileMetadataRepository implements IMetadataRepository {
   }
 }
 
-// distinct non-empty `repository` values under baseDir; used to auto-register every indexed
-// repo when the file backend starts with no --repository flags
-export function listIndexedRepositoryIds(baseDir: string): string[] {
-  const seen = new Set<string>();
-  for (const row of readAllCommits(baseDir)) {
-    const id = row.repository?.trim();
-    if (id && id.length > 0) seen.add(id);
+// repo-first layout: every repository owns the subtree data/<owner>/<repo>/ marked by its
+// schema_versions.json, so the directory path IS the repository id — no commit.json reads.
+// Used to auto-register every indexed repo when the file backend starts with no --repository flags
+export function listIndexedRepositoryIds(dataRoot: string): string[] {
+  const ids: string[] = [];
+  collectRepositoryDirs(dataRoot, [], ids, 6);
+  return ids.sort((a, b) => a.localeCompare(b));
+}
+
+function collectRepositoryDirs(dir: string, segments: string[], ids: string[], depthLeft: number): void {
+  if (!existsSync(dir)) return;
+  if (segments.length > 0 && existsSync(join(dir, 'schema_versions.json'))) {
+    ids.push(segments.join('/'));
+    return;
   }
-  return [...seen].sort((a, b) => a.localeCompare(b));
+  if (depthLeft === 0) return;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === 'commits') continue;
+    collectRepositoryDirs(join(dir, entry.name), [...segments, entry.name], ids, depthLeft - 1);
+  }
 }
 
 function readSchemaVersions(base: string): SchemaVersionEntry[] {

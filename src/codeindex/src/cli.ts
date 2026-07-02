@@ -1,10 +1,23 @@
 #!/usr/bin/env node
 import { Command, Option } from 'commander';
-import { loadConfig, type Backend, type CliOverrides } from './config.js';
+import { loadConfig, repoScopedFileDir, type Backend, type CliOverrides, type CodeIndexConfig } from './config.js';
 import { MigrationRunner } from './publisher/migrate.js';
 import { publish } from './publisher/publish.js';
+import { readGitContext } from './publisher/git.js';
 import { VectorService, type EmbedProvider } from '@agent-local/vectorizer';
 import { wireWriter, wireParser } from './wiring.js';
+
+// the file backend nests everything under data/<owner>/<repo>/, so the repository id
+// must be resolved before the writer is wired — not inside publish()
+function scopeFileDirToRepository(config: CodeIndexConfig): CodeIndexConfig {
+  if (config.backend !== 'file') return config;
+  const git = readGitContext(config.rootDir, config.branch, config.repository);
+  return {
+    ...config,
+    repository: git.repository,
+    fileDir: repoScopedFileDir(config.fileDir, git.repository),
+  };
+}
 
 const program = new Command();
 
@@ -76,7 +89,7 @@ program
   .description('Apply pending SQL migrations (file backend: seed schema_versions journal).')
   .option('--status', 'show applied / pending migrations without applying anything')
   .action(async (opts: { status?: boolean }) => {
-    const config = loadConfig(readOverrides());
+    const config = scopeFileDirToRepository(loadConfig(readOverrides()));
     const { factory, repo, supportsSql } = wireWriter(config);
     const runner = new MigrationRunner(factory, repo, { executeSql: supportsSql });
     try {
@@ -105,7 +118,7 @@ program
   .command('publish')
   .description('Run migrations, then chunk + embed + upsert the current commit.')
   .action(async () => {
-    const config = loadConfig(readOverrides());
+    const config = scopeFileDirToRepository(loadConfig(readOverrides()));
     const { vectorStore, factory, repo, supportsSql, ensureVectorSchema } = wireWriter(config);
     const runner = new MigrationRunner(factory, repo, { executeSql: supportsSql });
     try {

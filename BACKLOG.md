@@ -792,7 +792,7 @@ together itself.
   `vectorId`s — zero renaming, the relationship was explicit from day one.
 
 ### M3-8 · codemcp streaming — `~1d` · P2
-Today `search_code` / `find_symbol` embed the query, rank the whole result set,
+Today `search_code` / `get_symbol` embed the query, rank the whole result set,
 then return one buffered payload. Large `k` or big chunks block the caller until
 the last hit is serialized. Stream hits as they rank so the agent can act on the
 first result while the tail is still coming.
@@ -840,7 +840,7 @@ duplicating it.
 
 ### M3-10 · Store-level AI retrieval — projection, two-tier & related search (progressive disclosure) — umbrella · P2
 Retrieval today returns full records in one shot: `search_code` returns `k` whole
-chunks, `find_symbol`/`get_file_context` return ALL matching chunk **bodies**, and
+chunks, `get_symbol`/`get_file_context` return ALL matching chunk **bodies**, and
 memomcp `recall` pulls every `core` record in full — and every read also drags the
 **embedding** across the wire only to throw it away (codemcp `toChunkRow`, memomcp
 `toRecalled` at [memoryRepository.ts](src/memomcp/src/memory/memoryRepository.ts)).
@@ -875,6 +875,14 @@ refinement is justified now. **Split into three sequenced phases, each its own s
 servers retrieve in two tiers (summary locate → by-id expand), and codemcp answers
 "related to this" by composing vector neighbors + structural metadata, with no body
 shipped until the caller asks to expand.
+
+### M3-19 · pg edge parity — edges table + PgEdgeRepository — `~0.5d` · P2
+The relationship graph shipped file-backend-only (2026-07-02): codeindex writes
+`edges.jsonl` per snapshot and codemcp's `get_relationships` reads it; on pg,
+`PgCommitRepositoryImpl.writeEdges` WARNs and drops, and codemcp wires
+`NoEdgeRepository` (always empty). Parity needs: migration `003_add_edges.sql`
+(commit_sha, from_id, to_id, type, line), pg writeEdges upsert (delete-then-insert
+per sha), a `PgEdgeRepository` reader, and a tools test against pg.
 
 ### M3-11 · Indexer → codemcp index bundle (publish + handoff) — `~0.5d` · P2
 The vector store and the metadata sidecar are written by the indexer but disagree on
@@ -952,7 +960,7 @@ composes the store primitives in `CodeRetrieval` — no new store method, no ass
       of one symbol; cap per `path`/`symbol` or MMR re-rank so related results span files.
       Quality heuristic lives in `CodeRetrieval`, not the store.
 - [ ] **Boost exact-symbol matches.** A query string equal to a stored `symbol` outranks
-      pure vector neighbors — merge `find_symbol` into `search_code` ranking, not a separate
+      pure vector neighbors — merge `get_symbol` into `search_code` ranking, not a separate
       tool path.
 - [ ] Tests: structural queries hit metadata only (no embed); MMR caps per-path duplicates;
       a symbol-exact hit ranks first.

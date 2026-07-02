@@ -5,16 +5,20 @@ import { CodeRetrieval } from './retrieval/codeRetrieval.js';
 import type { IMetadataRepository } from './metadata/types.js';
 import { PgMetadataRepository } from './metadata/pgMetadataRepository.js';
 import { FileMetadataRepository } from './metadata/fileMetadataRepository.js';
+import type { IEdgeRepository } from './edges/types.js';
+import { FileEdgeRepository, NoEdgeRepository } from './edges/fileEdgeRepository.js';
 
-// code chunks live under the commit-sha namespace as data/commits/<sha>/chunks.jsonl, matching
-// what codeindex publishes through the same vectorstore file backend
+// repo-first layout: each repository's data lives under data/<owner>/<repo>/, snapshots under
+// commits/<sha>/chunks.jsonl — mirrors what codeindex publishes through the same file backend
 const PARTITION_DIR = 'commits';
 const RECORDS_FILE = 'chunks.jsonl';
 
-// a backend-agnostic reader pair: chunk retrieval over the shared store + the snapshot sidecar
+// a backend-agnostic reader triple: chunk retrieval over the shared store, the snapshot
+// sidecar, and the relationship sidecar (edges.jsonl)
 export interface WiredReader {
   retrieval: CodeRetrieval;
   metadata: IMetadataRepository;
+  edges: IEdgeRepository;
 }
 
 // Primary backend reader, kept as a fallback / for Postgres; multi-repo callers
@@ -29,6 +33,7 @@ export function wireReader(config: CodeMcpConfig): WiredReader {
   return {
     retrieval: new CodeRetrieval(new PgVectorStore(config.connectionString)),
     metadata: new PgMetadataRepository(config.connectionString),
+    edges: new NoEdgeRepository(),
   };
 }
 
@@ -47,5 +52,6 @@ function wireFileReader(dir: string): WiredReader {
       new FileVectorStore({ baseDir: dir, partitionDir: PARTITION_DIR, recordsFile: RECORDS_FILE }),
     ),
     metadata: new FileMetadataRepository(dir),
+    edges: new FileEdgeRepository(dir),
   };
 }

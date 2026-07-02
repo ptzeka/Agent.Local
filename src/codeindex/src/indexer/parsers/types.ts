@@ -1,15 +1,21 @@
-import type { Area, RawChunk } from '../../types.js';
+import type { Area, CodeEdge, RawChunk } from '../../types.js';
+
+export type ParserLanguage = 'typescript' | 'tsx' | 'javascript' | 'jsx';
 
 export interface ParserInput {
-  path: string;          // relativePath, forward-slash
+  path: string;          // repo-relative, forward-slash
   absolutePath: string;
   area: Area;
-  language: string;      // 'typescript' | 'tsx' | 'javascript' | 'jsx'
+  language: ParserLanguage;
   content: string;
 }
 
-// swappable TS/JS symbol extraction: RegexParser (heuristic, today's behavior)
-// vs TreeLineParser (tree-sitter AST, exact class-method symbols)
+export interface ParseResult {
+  chunks: RawChunk[];
+  edges: CodeEdge[];
+}
+
+// the seam that lets AST and regex extraction swap without callers noticing
 export interface IParser {
-  parse(input: ParserInput): RawChunk[];
+  parse(input: ParserInput): ParseResult;
 }

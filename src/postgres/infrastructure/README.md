@@ -58,8 +58,10 @@ The provisioner is authoritative, but the consumers still point elsewhere:
 
 - codemcp/memomcp/codeindex default DSNs name `codeindex`/`memomcp` databases and `CHANGE_ME` passwords —
   repoint them at `agentlocal` with the matching login user.
-- `@agent-local/vectorstore` `PgVectorStore.ensureSchema` still issues `CREATE TABLE … VECTOR` (unpinned,
-  public schema). It must target `code`/`memo` schemas and stop creating its own table so the pinned,
-  indexed tables here win.
 - codeindex's forward-only `MigrationRunner` (`commits` / `schema_versions`) overlaps `code.commits` —
   decide whether to retire it.
+
+`@agent-local/vectorstore`'s `PgVectorStore` now *accepts* a schema-qualified `table` option (e.g.
+`{ table: "code.vector_records" }`), so a consumer can target these pinned, indexed tables instead of
+issuing its own unpinned `public.vector_records` — but no consumer passes that option yet, so
+`ensureSchema()` still falls back to creating the unpinned public table when the provisioner hasn't run.

@@ -57,8 +57,7 @@ export function wireWriter(config: CodeIndexConfig): WiredWriter {
   };
 }
 
-// the active TS/JS parser: tree-sitter AST extraction (exact class-method symbols), falling
-// back to the regex heuristic on a parse exception — see indexer/parsers/treeLineParser.ts
+// AST extraction is the default; the regex heuristic keeps unparseable files indexed
 export function wireParser(): IParser {
   return new TreeLineParser(new RegexParser());
 }

@@ -3,7 +3,7 @@
 // snapshot bookkeeping (commits) and the migration journal (schema_versions).
 
 import type { DbConnection } from './types.js';
-import type { CommitRow } from '../types.js';
+import type { CodeEdge, CommitRow } from '../types.js';
 
 export interface AppliedMigration {
   scriptName: string;
@@ -20,6 +20,8 @@ export interface CommitRepository {
   releaseAdvisoryLock(conn: DbConnection, key: number): Promise<void>;
 
   upsertCommit(conn: DbConnection, commit: CommitRow): Promise<void>;
+  // relationship sidecar for the snapshot; replaces whatever the sha had before
+  writeEdges(conn: DbConnection, commitSha: string, edges: CodeEdge[]): Promise<void>;
 }
 
 const SQL = {
@@ -91,5 +93,12 @@ export class PgCommitRepositoryImpl implements CommitRepository {
       commit.fileCount,
       commit.chunkCount,
     ]);
+  }
+
+  async writeEdges(_conn: DbConnection, commitSha: string, edges: CodeEdge[]): Promise<void> {
+    // pg has no edges table yet (BACKLOG: pg edge parity) — dropping them silently would hide data loss
+    if (edges.length > 0) {
+      process.stderr.write(`[codeindex] WARN ${edges.length} edges for ${commitSha} not persisted: pg backend has no edges table yet\n`);
+    }
   }
 }

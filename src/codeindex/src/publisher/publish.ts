@@ -4,7 +4,7 @@ import type { CodeIndexConfig } from '../config.js';
 import type { DbConnectionFactory, IVectorStore, VectorRecord } from '@agent-local/vectorstore';
 import type { CommitRepository } from '../db/pgRepository.js';
 import type { IVectorService } from '@agent-local/vectorizer';
-import type { CommitRow, RawChunk } from '../types.js';
+import type { CodeEdge, CommitRow, RawChunk } from '../types.js';
 import { walkRepository } from '../indexer/walker.js';
 import { chunkFile } from '../indexer/chunkers/index.js';
 import { areaForPath, claudeMdLineageForFile, languageForPath } from '../indexer/metadata.js';
@@ -19,6 +19,7 @@ export interface PublishResult {
   repository: string;
   fileCount: number;
   chunkCount: number;
+  edgeCount: number;
   modelId: string;
 }
 
@@ -44,22 +45,24 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
   log(`walked ${files.length} indexable files`);
 
   const rawChunks: RawChunk[] = [];
+  const edges: CodeEdge[] = [];
   for (const file of files) {
     const language = languageForPath(file.relativePath);
     const area = areaForPath(file.relativePath);
     try {
-      const fileChunks = chunkFile({
+      const parsed = chunkFile({
         absolutePath: file.absolutePath,
         relativePath: file.relativePath,
         area,
         language,
       }, parser);
-      rawChunks.push(...fileChunks);
+      rawChunks.push(...parsed.chunks);
+      edges.push(...parsed.edges);
     } catch (err) {
       log(`WARN  failed to chunk ${file.relativePath}: ${(err as Error).message}`);
     }
   }
-  log(`produced ${rawChunks.length} raw chunks`);
+  log(`produced ${rawChunks.length} raw chunks, ${edges.length} edges`);
 
   const records: VectorRecord[] = [];
   for (let i = 0; i < rawChunks.length; i += EMBED_BATCH_SIZE) {
@@ -95,15 +98,19 @@ export async function publish(deps: PublishDeps): Promise<PublishResult> {
   // deleteNamespace clears the dir, so commit metadata must be written afterwards
   await vectorStore.deleteNamespace(commit.commitSha);
   await vectorStore.upsert(records);
-  await factory.withTransaction(conn => repo.upsertCommit(conn, commit));
+  await factory.withTransaction(async conn => {
+    await repo.upsertCommit(conn, commit);
+    await repo.writeEdges(conn, commit.commitSha, edges);
+  });
 
-  log(`published ${records.length} chunks for ${commit.commitSha} (${commit.repository}) using ${embedder.modelId}`);
+  log(`published ${records.length} chunks + ${edges.length} edges for ${commit.commitSha} (${commit.repository}) using ${embedder.modelId}`);
   return {
     commitSha: commit.commitSha,
     branch: commit.branch,
     repository: commit.repository,
     fileCount: commit.fileCount,
     chunkCount: commit.chunkCount,
+    edgeCount: edges.length,
     modelId: embedder.modelId,
   };
 }
