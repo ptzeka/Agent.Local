@@ -12,20 +12,16 @@
     "dev": "tsc -p tsconfig.json --watch",
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\"",
     "test": "jest",
-
     "start": "node dist/cli.js",
-
     "plan": "node dist/cli.js plan",
     "plan:file": "node dist/cli.js --backend file plan",
     "plan:pg": "node dist/cli.js --backend pg plan",
-
     "migrate": "node dist/cli.js migrate",
     "migrate:file": "node dist/cli.js --backend file migrate",
     "migrate:pg": "node dist/cli.js --backend pg migrate",
     "migrate:status": "node dist/cli.js migrate --status",
     "migrate:status:file": "node dist/cli.js --backend file migrate --status",
     "migrate:status:pg": "node dist/cli.js --backend pg migrate --status",
-
     "publish": "node dist/cli.js publish",
     "publish:file": "node dist/cli.js --backend file publish",
     "publish:pg": "node dist/cli.js --backend pg publish"
@@ -37,6 +33,7 @@
     "ignore": "^5.3.2",
     "pg": "^8.13.1",
     "tree-sitter": "^0.22.4",
+    "tree-sitter-c-sharp": "^0.21.3",
     "tree-sitter-javascript": "^0.23.1",
     "tree-sitter-typescript": "^0.23.2"
   },

@@ -13,7 +13,7 @@ describe("local embed adapter", () => {
 
   it("stamps a dim-tagged modelId and the requested dimension", () => {
     expect(adapter.dim).toBe(DIM);
-    expect(adapter.modelId).toBe(`local:hashed-bag-${DIM}`);
+    expect(adapter.modelId).toBe(`local:hashed-bag-v2-${DIM}`);
   });
 
   it("embeds a query identically to the same text as a document", async () => {
@@ -99,6 +99,24 @@ describe("local embedding is a bag of words", () => {
     const vec = await adapter.embedQuery("a . b , c");
     expect(vec).toHaveLength(DIM);
     expect(vec.every((v) => v === 0)).toBe(true);
+  });
+
+  it("decomposes camelCase/PascalCase/snake_case identifiers into matching subwords", async () => {
+    // the whole point of the v2 tokenizer: a natural-language query shares tokens with an identifier
+    // regardless of which naming convention the identifier happens to use
+    const camel = await adapter.embedQuery("getUserById");
+    const pascal = await adapter.embedQuery("GetUserById");
+    const snake = await adapter.embedQuery("get_user_by_id");
+    const words = await adapter.embedQuery("get user by id");
+    expect(camel).toEqual(words);
+    expect(pascal).toEqual(words);
+    expect(snake).toEqual(words);
+  });
+
+  it("still splits acronym runs from a trailing word (XMLParser -> XML, Parser)", async () => {
+    const acronym = await adapter.embedQuery("XMLParser");
+    const words = await adapter.embedQuery("xml parser");
+    expect(acronym).toEqual(words);
   });
 
   it("embeds a batch element-wise", async () => {

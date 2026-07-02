@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import type { Area, RawChunk } from '../../types.js';
 import { chunkMarkdown } from './markdown.js';
-import { chunkCSharp } from './csharp.js';
 import { chunkSql } from './sql.js';
 import { chunkProto } from './proto.js';
 import { chunkFallback } from './fallback.js';
@@ -14,20 +13,19 @@ export interface ChunkFileInput {
   language: string;
 }
 
-// `parser` handles typescript/tsx/javascript/jsx only (the languages with a symbol-aware
-// IParser split); every other language keeps its single regex chunker, dispatched here
-// directly — those emit no edges until they grow their own relationship extraction
+// `parser` handles every language with a symbol-aware IParser split (typescript/tsx/
+// javascript/jsx/csharp); every other language keeps its single regex chunker, dispatched
+// here directly — those emit no edges until they grow their own relationship extraction
 export function chunkFile(input: ChunkFileInput, parser: IParser): ParseResult {
   const content = readFileSync(input.absolutePath, 'utf-8');
   switch (input.language) {
     case 'markdown':
       return withoutEdges(chunkMarkdown({ path: input.relativePath, area: input.area, content }));
-    case 'csharp':
-      return withoutEdges(chunkCSharp({ path: input.relativePath, area: input.area, content }));
     case 'typescript':
     case 'tsx':
     case 'javascript':
     case 'jsx':
+    case 'csharp':
       return parser.parse({
         path: input.relativePath,
         absolutePath: input.absolutePath,

@@ -10,7 +10,9 @@ export class LocalEmbedAdapter implements EmbedAdapter {
 
   constructor(dim: number) {
     this.dim = dim;
-    this.modelId = `local:hashed-bag-${dim}`;
+    // v2: tokenizer splits camelCase/PascalCase/snake_case into subwords (see tokenize below) —
+    // bumped so a reader never mixes v1 vectors (fused identifiers) with v2 queries (split identifiers)
+    this.modelId = `local:hashed-bag-v2-${dim}`;
   }
 
   async embedBatch(texts: string[]): Promise<number[][]> {
@@ -42,11 +44,25 @@ function embedOne(text: string, dim: number): number[] {
 }
 
 function tokenize(text: string): string[] {
-  // split on non-word chars, lowercase, drop empties, cap length
-  return text
-    .toLowerCase()
-    .split(/[^a-z0-9_]+/)
-    .filter(t => t.length > 1 && t.length < 64);
+  const tokens: string[] = [];
+  for (const word of text.split(/[^a-zA-Z0-9]+/)) {
+    for (const piece of splitIdentifierCase(word)) {
+      const t = piece.toLowerCase();
+      if (t.length > 1 && t.length < 64) tokens.push(t);
+    }
+  }
+  return tokens;
+}
+
+// breaks camelCase/PascalCase runs (and acronym boundaries: XMLParser -> XML, Parser) apart so an
+// identifier decomposes into the same subwords a natural-language query would describe it with;
+// underscores are already split by the non-word-char split above, covering snake_case too
+function splitIdentifierCase(word: string): string[] {
+  return word
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')
+    .split(' ')
+    .filter(w => w.length > 0);
 }
 
 function hashTo(token: string, dim: number, salt: number): number {

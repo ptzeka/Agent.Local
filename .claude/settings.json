@@ -164,7 +164,8 @@
       "WebFetch(domain:raw.githubusercontent.com)",
       "Bash(npm pack *)",
       "Bash(grep -iE \"\\\\.node$|prebuild\")",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(python3 -)"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

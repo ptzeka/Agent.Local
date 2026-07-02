@@ -1,6 +1,6 @@
 import type { Area, CodeEdge, RawChunk } from '../../types.js';
 
-export type ParserLanguage = 'typescript' | 'tsx' | 'javascript' | 'jsx';
+export type ParserLanguage = 'typescript' | 'tsx' | 'javascript' | 'jsx' | 'csharp';
 
 export interface ParserInput {
   path: string;          // repo-relative, forward-slash
