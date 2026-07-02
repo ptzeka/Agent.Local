@@ -103,7 +103,7 @@ export const TOOLS: ToolDef[] = [
   },
   {
     name: 'get_file_context',
-    description: 'Return all chunks for a given file plus the governing CLAUDE.md files. Use this to understand a file before editing it. With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
+    description: 'Return all chunks for a given file plus the governing CLAUDE.md files. Expensive — pulls the whole file. Not for regular/exploratory search: use locate_code, locate_symbol, or search_code first, and reach for this only when the task is specifically file-scoped (e.g. reviewing or understanding one file end-to-end before editing it). With multiple registered repositories, pass `repository` to select the index. Output is prefixed with a `repository: ... branch: ... commit: ...` header.',
     inputSchema: {
       type: 'object',
       properties: {
