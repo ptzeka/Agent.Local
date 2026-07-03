@@ -71,8 +71,12 @@ export class SseReceiver {
         res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
       };
 
-      // streamOutput on so the orchestrator emits chat deltas; events stay on this runtime's own bus
-      const runtime = await this.builder.build(sessionId, { streamOutput: true });
+      // streamOutput on so the orchestrator emits chat deltas; events stay on this runtime's own bus.
+      // the verified OBO bearer rides in so the session is stamped with the actual user, not the service env token
+      const runtime = await this.builder.build(sessionId, {
+        streamOutput: true,
+        accessToken: req.userContext.authenticated ? req.userContext.accessToken : undefined,
+      });
 
       // the client may have disconnected during the async build — drain and bail rather than leak a runtime
       if (req.destroyed) {

@@ -72,6 +72,54 @@ describe("SessionMiddleware", () => {
     // job now — covered in conversation.test.ts.
   });
 
+  test("resume refuses a session owned by a different authenticated user", async () => {
+    const owned = createSession({ sessionId: "owned", workspaceId: "ws-1", conversationId: "c-1" });
+    owned.user = { sub: "alice", isAuthenticated: true, claims: { sub: "alice" }, scopes: [] };
+    await store.save(owned);
+
+    const asBob = makeContext({
+      workspaceRoot: root,
+      store,
+      workspaces,
+      user: { sub: "bob", isAuthenticated: true, claims: { sub: "bob" }, scopes: [] },
+      tools: fakeTools(root),
+    });
+    await expect(
+      new SessionMiddleware({ sessionId: "owned" }).initialize(asBob, jest.fn(async () => {}))
+    ).rejects.toThrow(/belongs to another user/);
+
+    // anonymous is refused the same way — otherwise it would strip the owner on re-save
+    const asAnon = makeContext({
+      workspaceRoot: root,
+      store,
+      workspaces,
+      user: ANONYMOUS_PRINCIPAL,
+      tools: fakeTools(root),
+    });
+    await expect(
+      new SessionMiddleware({ sessionId: "owned" }).initialize(asAnon, jest.fn(async () => {}))
+    ).rejects.toThrow(/belongs to another user/);
+  });
+
+  test("owner resumes their own session; a logged-in user adopts an anonymous one", async () => {
+    const alice = { sub: "alice", isAuthenticated: true, claims: { sub: "alice" }, scopes: [] };
+    const owned = createSession({ sessionId: "mine", workspaceId: "ws-1", conversationId: "c-1" });
+    owned.user = alice;
+    await store.save(owned);
+    const drifter = createSession({ sessionId: "anon", workspaceId: "ws-2", conversationId: "c-2" });
+    drifter.user = ANONYMOUS_PRINCIPAL;
+    await store.save(drifter);
+
+    const asOwner = makeContext({ workspaceRoot: root, store, workspaces, user: alice, tools: fakeTools(root) });
+    await new SessionMiddleware({ sessionId: "mine" }).initialize(asOwner, jest.fn(async () => {}));
+    expect(asOwner.registry.get(SessionToken).user?.sub).toBe("alice");
+
+    // login-then-resume: the anonymous session is adopted by the authenticated resumer
+    const adopting = makeContext({ workspaceRoot: root, store, workspaces, user: alice, tools: fakeTools(root) });
+    await new SessionMiddleware({ sessionId: "anon" }).initialize(adopting, jest.fn(async () => {}));
+    expect(adopting.registry.get(SessionToken).user?.sub).toBe("alice");
+  });
+
   test("throws when the store/workspaces steps have not run", async () => {
     const ctx = makeContext({ workspaceRoot: root }); // store + workspaces undefined
     const next = jest.fn(async () => {});

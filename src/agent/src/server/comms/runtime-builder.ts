@@ -33,6 +33,10 @@ export class RuntimeBuilder {
       streamOutput?: boolean;
       orchestratorRole?: AgentRuntimeDeps["orchestratorRole"];
       eventing?: Eventing;
+      // the verified caller's bearer (from req.userContext / the queued job): the runtime verifies it again
+      // against the authority's JWKS and stamps its subject on the session. Falls back to the service's own
+      // env token so headless/staged setups keep working when no caller identity was presented.
+      accessToken?: string | null;
     } = {},
   ): Promise<AgentRuntime> {
     const { workspace, sessionsDir: configuredSessionsDir } = this.config;
@@ -40,7 +44,7 @@ export class RuntimeBuilder {
     const sandboxRoot = resolveSandboxRoot(projectRoot, workspace);
     fs.mkdirSync(sandboxRoot, { recursive: true });
     const sessionsDir = resolveSessionsDir(projectRoot, configuredSessionsDir);
-    const token = process.env.AGENT_API_TOKEN;
+    const token = options.accessToken ?? process.env.AGENT_API_TOKEN;
     this.runtimeConfig ??= {
       models: loadModelsFile(path.join(projectRoot, "models.json")),
       settings: this.config,

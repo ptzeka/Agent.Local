@@ -47,4 +47,23 @@ describe("IdentityMiddleware", () => {
     expect(ctx.registry.tryGet(UserToken)).toBeUndefined();
     expect(next).toHaveBeenCalledTimes(1);
   });
+
+  test("with an authority configured, an unverifiable token yields no user (anonymous takes over)", async () => {
+    // under Jest the jose stub rejects all verification (see jest.config moduleNameMapper) — the point here is
+    // the gate wiring: with an authority configured, an unverifiable token must NOT fall back to decode-only
+    const ctx = makeContext({
+      credentials: { token: jwt({ sub: "forged-user", scope: "read write" }) },
+      config: {
+        models: {},
+        mcpServers: {},
+        settings: { authentication: { authorityUrl: "https://127.0.0.1:1" } },
+      } as ReturnType<typeof makeContext>["config"],
+    });
+    const next = jest.fn(async () => {});
+
+    await new IdentityMiddleware().initialize(ctx, next);
+
+    expect(ctx.registry.tryGet(UserToken)).toBeUndefined();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
 });

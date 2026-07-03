@@ -39,6 +39,10 @@ export interface ExecutionRequested {
   source: string;
   createdAt: string;
   input: string;
+  // the verified caller's bearer riding the queue so the runtime binds the turn to that identity (an OBO
+  // token's subject becomes session.user); absent when the call was authorized by session-capability or the
+  // staged stub, where the runner falls back to the service's own env token
+  accessToken?: string;
 }
 
 // the common response envelope every finished turn carries: status is the parseable verdict the caller gates on,

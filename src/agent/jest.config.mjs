@@ -13,6 +13,9 @@ export default {
   testEnvironment: "node",
   roots: ["<rootDir>/tests"],
   moduleNameMapper: {
+    // jose is ESM-only, unloadable under the CJS test runtime; the stub rejects every crypto operation, so
+    // token-verification tests can only assert the failure path (the positive path is covered live)
+    "^jose$": "<rootDir>/tests/stubs/jose.ts",
     // resolve the shared workspace package to its TS source so tests need no prebuild
     "^@agent-local/common$": "<rootDir>/../common/src/index.ts",
     "^@agent-local/common/(.*)$": "<rootDir>/../common/src/$1.ts",

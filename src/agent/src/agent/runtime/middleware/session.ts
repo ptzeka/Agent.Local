@@ -24,6 +24,15 @@ export class SessionMiddleware implements IMiddleware {
       : await this.open(ctx);
 
     const user = ctx.registry.tryGet(UserToken);
+    // resume gate: a session owned by an authenticated user only reopens for that user. An unowned or
+    // anonymous session may be adopted by whoever resumes it (login-then-resume), and the owner restamping
+    // themselves just refreshes claims. Without this, resuming by id would silently transfer ownership.
+    if (this.params.sessionId) {
+      const owner = session.user;
+      if (owner?.isAuthenticated && (!user?.isAuthenticated || user.sub !== owner.sub)) {
+        throw new Error(`Session "${session.sessionId}" belongs to another user.`);
+      }
+    }
     if (user) {
       session.user = user;
     }

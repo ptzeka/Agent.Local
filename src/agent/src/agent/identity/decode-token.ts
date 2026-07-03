@@ -1,8 +1,8 @@
 import type { Principal } from "./types.js";
 
-// MOCK: base64url-decodes the JWT payload with no signature check — swap for a real authority verification in
-// prod. Shared by IdentityMiddleware (resolving ctx.credentials.token into the runtime's UserToken) and the CLI
-// (deciding what the session picker should show before any runtime exists), so the claims mapping lives once.
+// claims mapping ONLY — base64url-decodes the JWT payload with no signature check. Cryptographic verification
+// lives in IdentityMiddleware (JWKS gate before this mapping runs); the CLI also calls this bare, but purely for
+// display (picker header/scoping) — the runtime it then builds re-verifies the same token before trusting it.
 export function decodePrincipal(token: string | undefined): Principal | null {
   if (!token) return null;
 

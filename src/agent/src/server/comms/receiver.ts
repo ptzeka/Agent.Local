@@ -35,6 +35,11 @@ export class HttpReceiver {
         source: req.userContext.userInfo?.serviceId ?? "unknown",
         createdAt: new Date().toISOString(),
         input,
+        // only a VERIFIED bearer rides along — a session-capability caller has none, and forwarding an
+        // unverified header would let the runner stamp sessions with a forged identity
+        ...(req.userContext.authenticated && req.userContext.accessToken
+          ? { accessToken: req.userContext.accessToken }
+          : {}),
       };
       req.container.get(Eventing).publish(EXECUTION_REQUESTED, { ...requested });
       logger.debug?.(`[agent-server] queued run ${requested.runId} for session ${requested.sessionId}`);

@@ -98,6 +98,7 @@ export class ExecutionRunner {
       const runtime = await this.builder.build(requested.sessionId, {
         orchestratorRole: "workflow-orchestrator",
         eventing: this.bus,
+        accessToken: requested.accessToken,
       });
       try {
         const result = await runtime.dispatchAsync(requested.input, { signal });
