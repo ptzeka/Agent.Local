@@ -62,10 +62,19 @@ interface Bootstrap {
 // MAIN - EntryPoint
 // ---------------------------------------------------------------------------
 
+// set once in main() from --token; resolveToken() gives it top precedence everywhere a bearer is read
+let explicitToken: string | undefined;
+
+// single precedence chain for the whole CLI: --token > AGENT_API_TOKEN (service/CI) > cached login
+function resolveToken(): string | undefined {
+  return explicitToken ?? process.env.AGENT_API_TOKEN ?? loadCachedToken() ?? undefined;
+}
+
 async function main(): Promise<void> {
   // before any fetch: the login token exchange and provider calls verify TLS against the spliced store
   trustLocalDevCa();
   const args = parseArgs(process.argv.slice(2));
+  explicitToken = args.token;
   process.env.LOG_LEVEL = "debug";
   const boot = await bootstrap();
   const logger = boot.container.get(LOGGER);
@@ -203,8 +212,7 @@ function buildRuntime(
 ): AgentRuntime {
   const { projectRoot, sandboxRoot, sessionsDir, config } = boot;
   const db = boot.container.get(DB);
-  // AGENT_API_TOKEN (service/CI) wins when set; otherwise fall back to the cached bearer from `--login`
-  const token = process.env.AGENT_API_TOKEN ?? loadCachedToken() ?? undefined;
+  const token = resolveToken();
   const deps: AgentRuntimeDeps = {
     config,
     sessionsDir,
@@ -227,9 +235,8 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const { projectRoot, sandboxRoot } = boot;
   const db = boot.container.get(DB);
 
-  // same precedence as buildRuntime: AGENT_API_TOKEN (service/CI) wins, else the cached bearer from a login.
-  // A resolved identity scopes the picker to that user's own sessions; anonymous keeps the global list.
-  let principal = decodePrincipal(process.env.AGENT_API_TOKEN ?? loadCachedToken() ?? undefined);
+  // a resolved identity scopes the picker to that user's own sessions; anonymous keeps the global list
+  let principal = decodePrincipal(resolveToken());
   let choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub), {
     userName: displayNameOf(principal),
   });
