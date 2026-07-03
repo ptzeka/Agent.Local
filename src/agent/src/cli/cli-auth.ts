@@ -126,19 +126,20 @@ export async function login(settings: CliAuthSettings): Promise<CachedToken> {
     });
   });
 
+  // form-encoded per RFC 6749 4.1.3, so any standard authorization server accepts this redemption
   const res = await fetch(settings.tokenUrl, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
       code_verifier: verifier,
       redirect_uri: knownRedirectUri,
       client_id: settings.nativeClientId,
-    }),
+    }).toString(),
   });
   if (!res.ok) throw new Error(`cli login: token exchange failed (${res.status})`);
-  const { token } = (await res.json()) as { token?: string };
-  if (!token) throw new Error("cli login: no token in exchange response");
-  return cacheToken(token);
+  const { access_token } = (await res.json()) as { access_token?: string };
+  if (!access_token) throw new Error("cli login: no access_token in exchange response");
+  return cacheToken(access_token);
 }

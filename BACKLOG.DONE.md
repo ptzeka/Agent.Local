@@ -14,6 +14,128 @@ Newest milestones first.
 
 ---
 
+## Hardening & consolidation sweep — 2026-07-02
+
+One-day pass driven by a full-repo scan (reusability / security / standard
+shapes), not a pre-existing milestone; recorded here as the change-and-decision
+log. The still-open residue from the same scan is the new **M9** section in
+[BACKLOG.md](BACKLOG.md).
+
+### HS-1 · Standard OAuth 2.0 / JWKS shapes on the auth service
+- [x] Token endpoint speaks RFC 6749: §5.1 success (`access_token` /
+      `token_type: "Bearer"` / `expires_in`; token-exchange adds
+      `issued_token_type`) and §5.2 errors (`invalid_client` 401 +
+      `WWW-Authenticate`, `unsupported_grant_type`, `invalid_grant`), with
+      form-encoded requests per §4.1.3 (`src/auth/src/auth-api.ts`; clients
+      `common/src/access-token-provider.ts` + `agent/src/cli/cli-auth.ts`
+      send `URLSearchParams`).
+- [x] JWKS moved to the conventional `/.well-known/jwks.json` (was
+      `/.well-known/openid-configuration/jwks`); the discovery document now
+      advertises `jwks_uri`, both endpoints, grant/response types and S256.
+- [x] One JWKS-URL derivation + lazy provider in `@agent-local/common/jwt`
+      (`jwksUrlFor`, `createLazyJwksProvider`) replacing the byte-twin
+      `host/src/user/jwks.ts` / `agent/src/server/auth/jwks.ts` (both deleted).
+- [x] temporalhost `TEMPORAL_JWKS_URI` fixed — it was stale on BOTH the old
+      path AND the old host port (JWKS moved to the auth service at the IdP
+      split): compose, `startup.sh`, `base_template.yaml`, README.
+- [x] Live-verified against a booted auth service: discovery, jwks (one RS256
+      key), client_credentials (`expires_in` 900), bad creds → 401
+      `invalid_client` + `WWW-Authenticate`, missing grant →
+      `unsupported_grant_type`, token-exchange → `issued_token_type`.
+
+  _created 2026-07-02 · updated 2026-07-02 · by Periklis Tzeka_
+
+### HS-2 · Keys and local databases out of git
+- [x] RS256 PEM keypairs `git rm`'d (`src/auth/keys/`), dead `src/host/keys/`
+      deleted (no references); first-boot regeneration via `loadOrCreateKeyRing`
+      verified live; both dirs gitignored.
+- [x] `*.sqlite` / `*.sqlite-shm` / `*.sqlite-wal` untracked (`git rm --cached`,
+      files kept on disk) + gitignored — local placeholders for the eventual
+      cloud stores, never committed. (Committed `appsettings.json` values stay
+      by design: local-only, replaced in a deployed state.)
+
+  _created 2026-07-02 · updated 2026-07-02 · by Periklis Tzeka_
+
+### HS-3 · Discards frozen as `zzz_`; Camunda deleted
+- [x] `src/fsmcp` → `src/zzz_fsmcp` (live successor:
+      `agent/src/agent/synthetic-mcp/fs-tools/`), `src/codemanagermcp` →
+      `src/zzz_codemanagermcp`, `src/openclaw` → `src/zzz_openclaw` — out of
+      the npm workspaces, FROZEN banner in each README: deliberately
+      discarded, kept for reference only. One MCP style remains
+      (`McpToolServer`).
+- [x] `src/camundahost` + `src/workflow` (the Zeebe client) deleted outright;
+      camunda mentions scrubbed from live code and READMEs; stale
+      package-lock workspace entries removed. M7's camunda-only stories are
+      archived below (M7-1 / M7-5 / M7-7).
+
+  _created 2026-07-02 · updated 2026-07-02 · by Periklis Tzeka_
+
+### HS-4 · Host test foundation (works store + API)
+- [x] `host/src/db/db-schema.ts` split: the schema module stays PURE (schema +
+      status codes, importable under Jest's CJS transform) while the new
+      `db/db-file.ts` keeps the `import.meta` package-root walk on the startup
+      path only — this unblocked both new suites.
+- [x] `src/host/src/tests/work-store.test.ts`: 10 tests on `:memory:` at the
+      real `HOST_SCHEMA` — patch semantics (omitted vs explicit-null),
+      temporalId upsert/release, search scoping, cli-vs-job session kinds,
+      status FK domain rejection.
+- [x] Together with the API-double suites (`tests/api/works-api.test.ts`,
+      `agent-cli-api.test.ts` — express router layers driven in-process, no
+      listener, no port), the host went 0 → 3 suites / 45 tests green; the
+      test tree never resolves the real db path, so `npm test` cannot collide
+      with a live host on :3011.
+
+  _created 2026-07-02 · updated 2026-07-02 · by Periklis Tzeka_
+
+### HS-5 · Verified-JWT-only principal at the agent server
+- [x] `agent/src/server/middleware/user_context.ts` resolves the caller from
+      the verified bearer ALONE — the session-id capability path and the
+      staged host stub are gone (a session id is not a principal); `userId` is
+      always present (the OBO subject, or the workflow-user on a plain
+      dispatch token); anything without `agent:trigger` is 401.
+
+  _created 2026-07-02 · updated 2026-07-02 · by Periklis Tzeka_
+
+### M3-H · Host jobs store → SQLite — `~1d` · P1 — closed by retro-audit 2026-07-02
+> **Closed by retro-audit during the sweep:** superseded in place — the host
+> runs `WorkStore` over the sqlite `HOST_SCHEMA`
+> (`src/host/src/work/work-store.ts`, `db/db-schema.ts`, opened via
+> `db/db-file.ts` at boot). `JobRegistry`/`jobs.jsonl` no longer exist; the
+> planned `camunda_id` column shipped as `temporalId`; the
+> `HOST_STORE=file|sqlite` toggle was never needed (the JSONL data was
+> throwaway — sqlite is the only backend). Store behaviour is now pinned by
+> the HS-4 tests.
+
+> **Added (2026-06-19):** the host DB (`host.sqlite`, owned by the host
+> process) — the second of the two SQLite files. Mirrors M3-1/M3-2 in the host
+> package; same user-keyed rule (`user_id` is part of the key, not a filter).
+> **dbup foundation landed (2026-06-19):** schema spec
+> (`host/src/jobs/db-schema.ts`: `jobs` + `job_status` lookup/FK) applied by the
+> shared engine via the `db init` command (`npm run db:init`, called by
+> `start.sh`). **Remaining:** the `JobRepository` swap.
+- [x] `JobRepository` interface: `add(jobId, userId, workflowId)`,
+      `get(jobId)`, `search({userId?, status?})`, `update(jobId, patch)` —
+      same surface the host already calls on `JobRegistry` so callers don't
+      change. ~~Keep the current `JobRegistry` as `FileJobRepository` (dev/CLI).~~
+      *(shipped as `WorkStore`; the file backend was dropped, not kept)*
+- [x] `better-sqlite3`; table `jobs(user_id, job_id, workflow_id, status,
+      step, session_id, camunda_id, reason, updated_at,
+      PRIMARY KEY(user_id, job_id))`, index on `(user_id, status)`. WAL mode.
+      Current-state row per job (no event log — append history was only there
+      for torn-write safety, which transactions remove). *(shipped as the
+      `HOST_SCHEMA` work tables; `camunda_id` became `temporalId`)*
+- [x] ~~Swap in via config toggle (`HOST_STORE=file|sqlite`), mirroring
+      `AGENT_STORE`.~~ No migration — existing `jobs.jsonl` was throwaway.
+      *(toggle never needed; sqlite is the only backend)*
+
+**Done when:** host lists/searches works through the store; a user's `search`
+returns only their own jobs via the indexed `(user_id, status)` lookup, not a
+full-file fold. — **met** (`WorkStore.search({ userId, status })`).
+
+  _created 2026-06-19 · updated 2026-07-02 · by Periklis Tzeka_
+
+---
+
 ## M8 — Frontend epic (React console + API)
 
 Completed slices of the M8 frontend epic (see [BACKLOG.md](BACKLOG.md) for the open
@@ -45,6 +167,115 @@ _created 2026-06-17 · updated 2026-06-17 · by Periklis Tzeka_
 
 Completed slices of the M7 milestone (see [BACKLOG.md](BACKLOG.md) for the open
 M7 sequence).
+
+> **Camunda retired — 2026-07-02** (see HS-3 above): `src/camundahost` and
+> `src/workflow` (the Zeebe client) were deleted from the repo. The three
+> camunda-only stories below are archived as-is — what they proved (the mount
+> seam, the engine-neutral bus vocabulary, deploy-only runtime workspaces)
+> carried over to Temporal (M7-9/M7-10); their unchecked bullets are retired,
+> not open.
+
+### M7-1 · Camunda 8 workflow engine + express bootstrap — retired 2026-07-02
+A new `src/workflow` workspace: an express service that hosts Zeebe job workers
+and a thin control surface over a self-managed Zeebe broker.
+- [x] New workspace `@agent-local/workflow` (`src/workflow`), `@camunda8/sdk`;
+      signal wiring (one root `AbortController` in `main.ts`, `ctx.signal` threaded
+      to `stop()`). Express bootstrap itself lives in `@agent-local/host`; workflow
+      exposes a `mount(app, ctx)` it registers into. *(2026-06-17)*
+- [x] Self-managed Zeebe broker via `docker-compose.yml` (`camunda/zeebe:8.7.6`,
+      Operate commented optional); endpoint + auth from env, never hard-coded. *(2026-06-17)*
+- [x] `ZeebeClient` wrapper: deploys `src/workflow/bpmn/*.bpmn` on connect; control
+      surface `POST /workflow/process` (start) + `GET /workflow/process/:key`
+      (state) on the mounted app. *(2026-06-17)*
+- [x] Job worker for task type `agent-execute`: publishes `workflow.job` to the bus
+      and `forward()`s to hold the job open. *(2026-06-17)*
+- [x] Resilience: reconnect-with-backoff, graceful `stop()` on `ctx.signal` that
+      never throws, broker-down-at-boot does not crash; `GET /workflow/healthz`. *(2026-06-17)*
+- [x] Sample BPMN (`agent-execute.bpmn`) + 4 Jest tests against an injected fake
+      gRPC. *(2026-06-17)*
+- [ ] ~~Live-broker E2E~~ — **retired 2026-07-02**: the broker was never
+      deployed live and the module is deleted; the live-engine E2E lives in
+      M7-10 (Temporal).
+
+  _created 2026-06-17 · updated 2026-07-02 · by Periklis Tzeka_
+
+### M7-5 · Camunda IAM identity inheritance for the worker runtime — `~1.5d` · P1 — retired 2026-07-02
+> **Retired unbuilt:** the underlying need (the runtime executes as the
+> workflow's identity, per instance, not an ambient token) was met on the
+> Temporal path by the OBO/token-exchange work instead — the host mints
+> per-call service/OBO tokens (M2-9 mint side, M8-7c3) and the agent binds the
+> verified subject per session (HS-5). Nothing Camunda-shaped remains to build.
+
+Camunda runs each process under an IAM identity (service account / similar). The
+agent worker should **inherit that identity for the process**, so the runtime
+executes as the workflow's identity rather than an ambient token. Today
+`buildWorkerRuntime` sets `credentials` from a static `AGENT_API_TOKEN` env — the
+target is the process's IAM identity carried on the job (IAM identity vs
+JWT-as-middleware).
+- [ ] Carry the identity on the bus: `workflow.job` / `agent.job` include the
+      instance's IAM identity (or a token/assertion to exchange), populated from the
+      Camunda job/process variables or job headers. *(retired)*
+- [ ] Worker passes it into the runtime as `credentials` (`IdentityContext`) per
+      instance instead of the ambient `AGENT_API_TOKEN`; the runtime's identity
+      middleware consumes it. *(retired)*
+- [ ] Identity is **per process instance** (matches the one-session-per-instance
+      lifetime, M7-3/M7-4) — every job of the instance runs as the same identity. *(retired)*
+- [ ] Tests: a job carrying an identity builds a runtime whose `IdentityContext`
+      reflects it; absent identity falls back to anonymous/dev. *(retired)*
+
+  _created 2026-06-18 · updated 2026-07-02 · by Periklis Tzeka_
+
+### M7-7 · `src/camundahost` — Camunda runtime image (Dockerfile + local build + CI deploy) — `~1d` · P1 — retired 2026-07-02
+> **Deleted 2026-07-02** along with `src/workflow`; the verify bullet never ran
+> (no Docker on the scaffold host). The pattern it established — a deploy-only
+> runtime workspace mirroring the client package — lives on as
+> `src/temporalhost` (M7-10) and `src/postgres`.
+
+The Camunda runtime gets its **own deploy workspace**, separate from the Node side.
+Today the broker is an inline `camunda/zeebe:8.7.6` in `src/workflow`'s
+`docker-compose.yml` (M7-1); that conflates the *client* (Zeebe job workers +
+control surface) with the *runtime* (the broker container). Split them: a new
+`src/camundahost` owns the Camunda runtime image — a `Dockerfile` `FROM` a Camunda
+base with our startup scripts + broker/BPMN config baked in — its local build/run
+commands, and the future CI pipeline that builds and deploys it. This is distinct
+from M4-2 (the **Node app** image); camundahost is the **Camunda** image only.
+
+> **Decision 2026-06-19:** `src/workflow` is **client-only** — no Camunda runtime,
+> no broker compose. It keeps the Zeebe workers + `POST /workflow/process` control
+> surface and connects to the broker purely via the env endpoint (M7-1 rule), which
+> camundahost now provides. The runtime moves out of workflow entirely.
+
+- [x] **New workspace `@agent-local/camundahost` (`src/camundahost`)** owning the
+      runtime container only (no Node app, no agent code). Holds the package/docker
+      config: `Dockerfile`, a `dockerfiles/` dir for the copied-in artifacts
+      (startup scripts, `application.yaml`/Zeebe config, BPMN), and a `package.json`
+      carrying the build/run scripts below. Registered in the root workspaces array.
+- [x] **Dockerfile = Camunda base + our layer.** `FROM` the pinned Camunda base
+      (`camunda/zeebe:8.7.6` to match M7-1 — version configurable via the
+      `CAMUNDA_VERSION` build arg), then `COPY` from `src/camundahost/dockerfiles/`
+      `startup.sh` + `application.yaml` into the image; entrypoint is our script. No
+      secrets or endpoints baked in — env at run time only (same rule as M7-1).
+- [x] **Remove the broker from `src/workflow`.** Deleted `src/workflow/docker-compose.yml`
+      (it only held the broker); the workflow README now points at camundahost and
+      workflow keeps connecting via its env endpoint unchanged. The only Camunda
+      *runtime* definition in the repo now lives in camundahost.
+- [x] **Local build/run commands** as workspace npm scripts: `docker:build` (build
+      + tag from the Dockerfile/build args), `docker:up` / `docker:down` / `docker:logs`
+      (run the **built** image via a thin compose, optional Operate commented like
+      M7-1). One-liner documented in the workspace README.
+- [x] **Future CI yml pipeline (scaffold now, deploy stubbed).** `.github/workflows/camundahost.yml`
+      builds the image on push/tag/PR (path-filtered). The **build** job is live;
+      registry push + a gated (`if: false`) deploy job are documented `TODO(infra)`
+      until a registry/host exists — build verifiable in CI immediately, deploy
+      activates when infra lands.
+- [ ] Tests/verify: `npm run docker:build -w @agent-local/camundahost` produces a
+      runnable image; `docker:up` brings the broker up and the (client-only)
+      `src/workflow` worker connects + deploys its BPMN against it — this is exactly
+      the **live-broker E2E still pending in M7-1**, now unblocked by a one-command
+      local broker. _(Pending a host with Docker — not installed in the scaffold env.)_
+      *(retired — module deleted)*
+
+  _created 2026-06-19 · updated 2026-07-02 · by Periklis Tzeka_
 
 ### M7-14 · Dispatch fail-envelope on a thrown agent turn — `~0.5d` · P0
 A dispatched (one-shot job) turn that THREW — a provider 5xx, a build failure, a capped

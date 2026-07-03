@@ -16,7 +16,7 @@ export DYNAMIC_CONFIG_FILE_PATH="${DYNAMIC_CONFIG_FILE_PATH:-config/dynamicconfi
 # Local-authority auth, off by default so the image bootstraps standalone (a green docker:up).
 # When on, the server trusts src/host's JWKS (TEMPORAL_JWKS_URI) and denies un-tokened calls.
 export TEMPORAL_AUTH_ENABLED="${TEMPORAL_AUTH_ENABLED:-false}"
-export TEMPORAL_JWKS_URI="${TEMPORAL_JWKS_URI:-http://host.docker.internal:3011/.well-known/openid-configuration/jwks}"
+export TEMPORAL_JWKS_URI="${TEMPORAL_JWKS_URI:-http://host.docker.internal:3015/.well-known/jwks.json}"
 # Render the auth fragment into config/base.yaml; Temporal merges it ahead of the rendered
 # docker.yaml. dockerize is the same templater the base entrypoint uses for config_template.yaml.
 dockerize -template /etc/temporal/config/base_template.yaml:/etc/temporal/config/base.yaml

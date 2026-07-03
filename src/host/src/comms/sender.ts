@@ -7,9 +7,10 @@ import { WORKFLOW_JOB, WORKFLOW_FAILED, type WorkflowJobPayload, type ExecutionR
 // translates the engine's job into a neutral ExecutionRequest — runId carries the host's temporalId (== workId)
 // opaquely, so the agent's reply round-trips back to THIS work via the runId it echoes.
 export interface AgentClient {
-  // userId binds a user-facing (cli) session to its owner on the agent; omitted for a workflow job session.
+  // subjectToken (the caller's access token) is exchanged for an OBO bearer so the agent owns the session by the
+  // USER (cli); omit it for a workflow job session, which the host's own dispatch token owns (the workflow-user).
   // sessionId carries the host's cached session so the agent reuses it when still valid, else mints a new one.
-  createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string>;
+  createSession(workspaceId: string, workId: string, subjectToken?: string | null, sessionId?: string): Promise<string>;
   closeSession(sessionId: string): Promise<void>;
   // the live interactive CLI half: open the agent's SSE event stream for a session (to pipe to the browser), and
   // push one input turn into that session. BOTH carry the USER — subjectToken (the caller's access token) is
@@ -17,8 +18,9 @@ export interface AgentClient {
   // and refuses input into a user-bound session from anyone else.
   openSseStream(sessionId: string, subjectToken: string | null, signal: AbortSignal): Promise<Response>;
   sendInput(sessionId: string, input: string, subjectToken?: string | null): Promise<void>;
-  // chat Stop: cancel the session's in-flight turn but keep the session open for the next input
-  interruptSession(sessionId: string): Promise<void>;
+  // chat Stop: cancel the session's in-flight turn but keep the session open for the next input. Rides the OBO
+  // user bearer (subjectToken) so the agent matches the caller against the session's owner.
+  interruptSession(sessionId: string, subjectToken?: string | null): Promise<void>;
 }
 
 // the job carries the instruction in a variable; accept the common spellings
@@ -84,8 +86,10 @@ export class HttpJobSender implements AgentClient {
     }
   }
 
-  async createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string> {
-    const res = await this.post("/session/create", { workspaceId, workId, userId, sessionId });
+  // the agent derives the session OWNER from the bearer's subject: an OBO bearer (subjectToken present) owns it by
+  // the user for a cli session; the plain dispatch token (no subject) owns it by the workflow-user for a job.
+  async createSession(workspaceId: string, workId: string, subjectToken: string | null = null, sessionId?: string): Promise<string> {
+    const res = await this.post("/session/create", { workspaceId, workId, sessionId }, undefined, await this.userBearer(subjectToken));
     if (!res.ok) throw new Error(`agent /session/create -> ${res.status}`);
     const { sessionId: resolved } = (await res.json()) as { sessionId: string };
     return resolved;
@@ -126,10 +130,11 @@ export class HttpJobSender implements AgentClient {
     if (!res.ok) throw new Error(`agent /receive -> ${res.status}`);
   }
 
-  // POST a Stop for the session's live turn: the agent cancels the in-flight turn but leaves the runtime up. throws
-  // on non-2xx so the route can surface it; a no-op (no live turn) still answers 202.
-  async interruptSession(sessionId: string): Promise<void> {
-    const res = await this.post("/session/interrupt", { sessionId });
+  // POST a Stop for the session's live turn: the agent cancels the in-flight turn but leaves the runtime up. Rides
+  // the OBO user bearer so the agent can match the caller against the session's owner. throws on non-2xx so the
+  // route can surface it; a no-op (no live turn) still answers 202.
+  async interruptSession(sessionId: string, subjectToken: string | null = null): Promise<void> {
+    const res = await this.post("/session/interrupt", { sessionId }, undefined, await this.userBearer(subjectToken));
     if (!res.ok) throw new Error(`agent /session/interrupt -> ${res.status}`);
   }
 

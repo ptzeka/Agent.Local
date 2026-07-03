@@ -7,9 +7,9 @@ export interface SessionRecord {
   sessionId: string;
   workspaceId: string;
   workId: string;
-  // the end-user this session belongs to, when the host opened it for one (cli sessions). undefined for a job
-  // session, which is owned by the workflow, not a user. The cli stream route matches the caller against this.
-  userId?: string;
+  // the owner of this session, derived from the create caller's verified token SUBJECT: the human (cli, via OBO)
+  // or the workflow-user (job, via the host's dispatch token). Every session has one; session touches gate on it.
+  userId: string;
 }
 
 // owns the agent's session ids and their binding to the host's work unit
@@ -21,9 +21,9 @@ export class SessionRegistry {
   // `sessionId` (the host's cached cli session), re-register THAT id so its persisted conversation resumes intact
   // after a restart dropped the in-memory map. Without one, reuse the live session for this work/owner, else mint.
   // Persistence is the caller's call (keyed on the durable store), so this only owns the in-memory binding.
-  // userId is set only for user-facing (cli) sessions; a job session (userId undefined) keys distinctly from a cli
-  // session on the same work, so the two never collide.
-  public create(workspaceId: string, workId: string, userId?: string, sessionId?: string): SessionRecord {
+  // userId is the session owner (the create caller's token subject); a job (workflow-user) and a cli (human) session
+  // on the same work key distinctly by owner, so the two never collide.
+  public create(workspaceId: string, workId: string, userId: string, sessionId?: string): SessionRecord {
     if (sessionId) {
       const known = this.byId.get(sessionId);
       if (known) return known;
@@ -43,7 +43,7 @@ export class SessionRegistry {
   }
 
   // the live session for a work/owner, if one is still registered; the idempotency key for create
-  private findByWork(workId: string, userId?: string): SessionRecord | undefined {
+  private findByWork(workId: string, userId: string): SessionRecord | undefined {
     for (const record of this.byId.values()) {
       if (record.workId === workId && record.userId === userId) return record;
     }

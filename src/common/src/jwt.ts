@@ -145,6 +145,31 @@ export function createJwksResolver(jwksUrl: string): JwtKeyResolver {
   return createRemoteJWKSet(new URL(jwksUrl));
 }
 
+// the conventional standalone JWKS location under an authority origin — the same URL discovery advertises,
+// derived in ONE place so every verifier and the publisher agree on the path.
+export function jwksUrlFor(authorityUrl: string): string {
+  return `${authorityUrl.replace(/\/$/, "")}/.well-known/jwks.json`;
+}
+
+// remote-JWKS resolver for an authority, deferring construction (and the URL parse) to the first token that
+// needs verifying — when authorityUrl is unset no token is ever validated, so an empty URL must not throw at
+// startup. logPrefix names the consuming service in the one debug line ("[host]", "[agent-server]").
+export function createLazyJwksProvider(
+  authorityUrl: string,
+  logPrefix: string,
+  debug?: (message: string) => void,
+): JwtKeyResolver {
+  let resolver: JwtKeyResolver | null = null;
+  return (protectedHeader, token) => {
+    if (!resolver) {
+      const url = jwksUrlFor(authorityUrl);
+      resolver = createJwksResolver(url);
+      debug?.(`${logPrefix} verifying JWTs against JWKS at ${url}`);
+    }
+    return resolver(protectedHeader, token);
+  };
+}
+
 // resolver for verifying tokens against public keys already in hand (the host verifying what it itself
 // signed): no JWKS round-trip since issuer and verifier are the same process. Takes the whole key ring and
 // selects by the token's kid, so tokens minted under a now-retired signing key still verify mid-rotation.

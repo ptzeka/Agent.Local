@@ -17,6 +17,11 @@ npm-debug.log*
 # Agent runtime session state
 .sessions/
 
+# Local SQLite databases (placeholders for the eventual cloud stores) — never committed
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 # Editor / OS
 .vscode/
 .idea/
@@ -35,7 +40,8 @@ agent.log
 /src/agent/metrics
 /src/agent/metrics
 
-# host RS256 signing keypair (local dev, generated on first run)
+# RS256 signing keypairs (local dev, generated on first run by the auth service)
+src/auth/keys/
 src/host/keys/
 src/host/jobs/
 scripts/.run/

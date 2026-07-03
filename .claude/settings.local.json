@@ -10,7 +10,13 @@
       "Bash(npm view *)",
       "Bash(node -e 'const db=require\\(\"better-sqlite3\"\\)\\(\"src/host/data/host.sqlite\",{readonly:true}\\);const rows=db.prepare\\(\"SELECT * FROM jobs WHERE jobId LIKE ? ORDER BY rowid\"\\).all\\(\"9cfb39ee%\"\\);for\\(const r of rows\\)console.log\\(JSON.stringify\\(r\\)\\);')",
       "Bash(node -e 'const db=require\\(\"better-sqlite3\"\\)\\(\"src/agent/data/agent.sqlite\",{readonly:true}\\);const s=db.prepare\\(\"SELECT status,payload,updated_at FROM sessions WHERE session_id=?\"\\).get\\(\"25f90d76-811e-4fbb-bc70-f55b877dcef4\"\\);if\\(!s\\){console.error\\(\"no session\"\\);process.exit\\(1\\);}const p=JSON.parse\\(s.payload\\);console.log\\(\"status   :\",s.status\\);console.log\\(\"updated  :\",s.updated_at\\);console.log\\(\"workspace:\",p.workspaceId\\);console.log\\(\"convId   :\",p.conversationId\\);console.log\\(\"parent   :\",p.parentSessionId||\"ROOT\"\\);')",
-      "Bash(node -e ' *)"
+      "Bash(node -e ' *)",
+      "Bash(npx jest *)",
+      "Bash(git -C /Applications/WWW/Agent.Local status --short src/host)",
+      "Bash(sed -n 1-10p /Applications/WWW/Agent.Local/src/host/src/index.ts)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(node -e \"require\\('/Applications/WWW/Agent.Local/node_modules/tree-sitter-c-sharp'\\); console.log\\('csharp grammar loads'\\)\")",
+      "Bash(npm test *)"
     ]
   }
 }

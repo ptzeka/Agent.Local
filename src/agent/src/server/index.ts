@@ -1,5 +1,5 @@
 import express from "express";
-import { Container, Eventing, AccessTokenProvider, type ILogger } from "@agent-local/common";
+import { Container, Eventing, AccessTokenProvider, createLazyJwksProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
 import { resolveAgentDbFile } from "../db/db-schema.js";
 import { SessionStore } from "../agent/session/session-store.js";
@@ -16,7 +16,6 @@ import { HttpResultSender } from "./comms/sender.js";
 import { LOGGER, SERVER_CONFIG, DB, SESSION_STORE } from "./container-tokens.js";
 import { containerMiddleware } from "./middleware/container_context.js";
 import { userContextMiddleware } from "./middleware/user_context.js";
-import { createJwksProvider } from "./auth/jwks.js";
 
 // console-backed ILogger: this service owns its process lifecycle, so it logs without FileLogger's filesystem
 const logger: ILogger = {
@@ -76,8 +75,8 @@ async function main(): Promise<void> {
   app.use(containerMiddleware(container));
   app.get("/healthz", (_req, res) => res.json({ status: "ok" }));
   // the agent validates the bearer JWT against the host's JWKS, fetched from authorityUrl on first verify
-  const getKey = createJwksProvider(settings.authentication.authorityUrl ?? "", logger);
-  app.use(userContextMiddleware(getKey, sessions));
+  const getKey = createLazyJwksProvider(settings.authentication.authorityUrl ?? "", "[agent-server]", logger.debug?.bind(logger));
+  app.use(userContextMiddleware(getKey));
   // session lifecycle mounts BEFORE the job receiver: minting/closing a session needs no runtime, and routing
   // it through the receiver would build a per-request runtime (and spurious session state) for it
   app.use(createSessionApi(sessions, sessionStore, bus));

@@ -1,4 +1,4 @@
-import { createJwksResolver, verifyIdentity, type JwtKeyResolver } from "@agent-local/common";
+import { createJwksResolver, jwksUrlFor, verifyIdentity, type JwtKeyResolver } from "@agent-local/common";
 import { decodePrincipal } from "../../identity/decode-token.js";
 import type { Principal } from "../../identity/types.js";
 import { UserToken } from "../tokens.js";
@@ -11,7 +11,7 @@ const resolvers = new Map<string, JwtKeyResolver>();
 function resolverFor(authorityUrl: string): JwtKeyResolver {
   let resolver = resolvers.get(authorityUrl);
   if (!resolver) {
-    resolver = createJwksResolver(`${authorityUrl.replace(/\/$/, "")}/.well-known/openid-configuration/jwks`);
+    resolver = createJwksResolver(jwksUrlFor(authorityUrl));
     resolvers.set(authorityUrl, resolver);
   }
   return resolver;

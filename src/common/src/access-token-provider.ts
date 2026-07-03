@@ -1,6 +1,6 @@
 import { decodeJwt } from "jose";
 import { basicAuthHeader } from "./jwt.js";
-import { Validator, type ValidatorAuth } from "./token-validator.js";
+import { AccessTokenValidator, type ValidatorAuth } from "./access-token-validator.js";
 import type { ILogger } from "./ilogger.js";
 
 // RFC 8693 OAuth 2.0 Token Exchange grant: a subject_token under this grant yields an OBO (on-behalf-of) token.
@@ -34,7 +34,7 @@ interface Entry {
   oboInflight: Map<string, Promise<string | null>>;
   // when configured, a fetched token is verified before caching so one the issuer would reject is never
   // presented. null when no verify context is given — then the exp decode is the only validity gate.
-  validator: Validator | null;
+  validator: AccessTokenValidator | null;
 }
 
 const DEFAULT_SKEW_MS = 30_000;
@@ -55,7 +55,7 @@ export class AccessTokenProvider {
   // re-register never flushes a still-valid token; a changed secret/url replaces the entry, since tokens minted
   // under the old credentials no longer apply. safe to call more than once (e.g. a settings hot-reload).
   register(config: AccessTokenProviderConfig): void {
-    const validator = config.validatorAuth ? new Validator(config.validatorAuth) : null;
+    const validator = config.validatorAuth ? new AccessTokenValidator(config.validatorAuth) : null;
     const existing = this.entries.get(config.clientId);
     if (existing && existing.config.clientSecret === config.clientSecret && existing.config.tokenUrl === config.tokenUrl) {
       existing.config = config;
@@ -120,23 +120,26 @@ export class AccessTokenProvider {
     return entry;
   }
 
-  // one POST to /connect/token: plain client-credentials when subjectToken is undefined, token-exchange when
-  // present (the host parses JSON, so the exchange params ride as a JSON body). Basic auth is this entry's
-  // creds. null on a non-2xx, an empty body, or a token the optional validator rejects.
+  // one POST to /connect/token, form-encoded per RFC 6749: grant_type=client_credentials when subjectToken is
+  // undefined, token-exchange (RFC 8693) when present. Basic auth is this entry's creds. null on a non-2xx, an
+  // empty body, or a token the optional validator rejects.
   private async fetchToken(entry: Entry, subjectToken: string | undefined): Promise<string | null> {
     const { tokenUrl, clientId, clientSecret } = entry.config;
-    const headers: Record<string, string> = { authorization: basicAuthHeader(clientId, clientSecret) };
-    let body: string | undefined;
-    if (subjectToken) {
-      headers["content-type"] = "application/json";
-      body = JSON.stringify({ grant_type: TOKEN_EXCHANGE_GRANT, subject_token: subjectToken });
-    }
+    const headers: Record<string, string> = {
+      authorization: basicAuthHeader(clientId, clientSecret),
+      "content-type": "application/x-www-form-urlencoded",
+    };
+    const body = new URLSearchParams(
+      subjectToken
+        ? { grant_type: TOKEN_EXCHANGE_GRANT, subject_token: subjectToken }
+        : { grant_type: "client_credentials" },
+    ).toString();
     const res = await fetch(tokenUrl, { method: "POST", headers, body });
     if (!res.ok) {
       this.logger.error?.(`[token] fetch ${tokenUrl} -> ${res.status}`);
       return null;
     }
-    const token = ((await res.json()) as { token?: string }).token ?? null;
+    const token = ((await res.json()) as { access_token?: string }).access_token ?? null;
     if (token && entry.validator) {
       const result = await entry.validator.validate(token);
       if (!result.ok) {

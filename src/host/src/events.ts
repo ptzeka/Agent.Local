@@ -1,5 +1,5 @@
 // shared event taxonomy for the bus seam: workflow publishes these, the agent-client/receiver speak them
-// over HTTP. Invariant — Camunda always initiates; agents answer jobs and report back, never start a process
+// over HTTP. Invariant — the workflow engine always initiates; agents answer jobs and report back, never start a process
 
 // ---------------------------------------------------------------------------
 // Event names

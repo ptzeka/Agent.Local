@@ -23,9 +23,16 @@ const SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 
 // service tokens (client-credentials) are short-lived: the agent fetches one per call and discards it
 const SERVICE_TOKEN_TTL = "15m";
+const SERVICE_TOKEN_TTL_SECONDS = 15 * 60;
 
 // a CLI login is a long-running background session, not a per-call service hop, so its bearer outlives one
 const CLI_TOKEN_TTL = "12h";
+const CLI_TOKEN_TTL_SECONDS = 12 * 60 * 60;
+
+// client-credentials grant (RFC 6749 4.4): the Basic principal's own token, no subject involved
+const CLIENT_CREDENTIALS_GRANT = "client_credentials";
+// what a successful token exchange issues (RFC 8693 2.2.1): an access token, echoed as issued_token_type
+const ACCESS_TOKEN_TYPE = "urn:ietf:params:oauth:token-type:access_token";
 
 // authorization_code grant (RFC 6749 4.1 + RFC 7636 PKCE), used by native/public clients (no client secret)
 const AUTHORIZATION_CODE_GRANT = "authorization_code";
@@ -245,6 +252,15 @@ export function createAuthApi(
   // share the endpoint — plain client-credentials (the token carries the service's OWN claims) and RFC 8693 token
   // exchange (a subject_token yields an OBO token whose top-level claims are the SUBJECT's and whose `act` names
   // the service). The Basic principal authenticates the caller and IS the actor in the exchange case.
+  // RFC 6749 5.1 success response; token-exchange adds issued_token_type (RFC 8693 2.2.1) via extra
+  const sendToken = (res: Response, accessToken: string, expiresInSeconds: number, extra: Record<string, string> = {}): void => {
+    res.json({ access_token: accessToken, token_type: "Bearer", expires_in: expiresInSeconds, ...extra });
+  };
+  // RFC 6749 5.2 error response: a registered `error` code, with the human detail under error_description
+  const sendTokenError = (res: Response, status: number, error: string, description: string): void => {
+    res.status(status).json({ error, error_description: description });
+  };
+
   const issueServiceToken = async (req: Request, res: Response): Promise<void> => {
     const rawBody = (req.body ?? {}) as Record<string, string | undefined>;
 
@@ -254,23 +270,23 @@ export function createAuthApi(
     if (rawBody.grant_type === AUTHORIZATION_CODE_GRANT) {
       const { code, code_verifier, redirect_uri, client_id } = rawBody;
       if (!code || !code_verifier || !redirect_uri || !client_id) {
-        res.status(400).json({ error: "missing code, code_verifier, redirect_uri, or client_id" });
+        sendTokenError(res, 400, "invalid_request", "missing code, code_verifier, redirect_uri, or client_id");
         return;
       }
       const pending = pendingCodes.get(code);
       pendingCodes.delete(code);
       if (!pending || Date.now() > pending.expiresAt) {
-        res.status(400).json({ error: "invalid or expired code" });
+        sendTokenError(res, 400, "invalid_grant", "invalid or expired code");
         return;
       }
       // the code must be redeemed under the SAME client_id/redirect_uri it was minted for — binds it to one flow
       if (pending.clientId !== client_id || pending.redirectUri !== redirect_uri) {
-        res.status(400).json({ error: "client_id or redirect_uri mismatch" });
+        sendTokenError(res, 400, "invalid_grant", "client_id or redirect_uri mismatch");
         return;
       }
       const computedChallenge = createHash("sha256").update(code_verifier).digest("base64url");
       if (computedChallenge !== pending.codeChallenge) {
-        res.status(400).json({ error: "invalid code_verifier" });
+        sendTokenError(res, 400, "invalid_grant", "invalid code_verifier");
         return;
       }
       const token = await signIdentity(signer.privatePem, pending.claims, {
@@ -279,23 +295,30 @@ export function createAuthApi(
         kid: await signerKidPromise,
       });
       logger.debug?.(`[auth] issued CLI token for ${pending.claims.userName} (client=${client_id})`);
-      res.json({ token });
+      sendToken(res, token, CLI_TOKEN_TTL_SECONDS);
       return;
     }
 
     const creds = basicCredentials(req.headers.authorization);
     if (!creds) {
-      res.status(401).json({ error: "missing basic credentials" });
+      // RFC 6749 5.2: a 401 for failed Authorization-header auth carries the challenge for the scheme used
+      res.set("WWW-Authenticate", 'Basic realm="token"');
+      sendTokenError(res, 401, "invalid_client", "missing basic credentials");
       return;
     }
     const actor = await users.verify(creds.username, creds.password);
     if (!actor) {
-      res.status(401).json({ error: "invalid credentials" });
+      res.set("WWW-Authenticate", 'Basic realm="token"');
+      sendTokenError(res, 401, "invalid_client", "invalid credentials");
       return;
     }
 
-    const { grant_type, subject_token } = (req.body ?? {}) as { grant_type?: string; subject_token?: string };
-    if (grant_type === TOKEN_EXCHANGE_GRANT && subject_token) {
+    const { grant_type, subject_token } = rawBody;
+    if (grant_type === TOKEN_EXCHANGE_GRANT) {
+      if (!subject_token) {
+        sendTokenError(res, 400, "invalid_request", "missing subject_token");
+        return;
+      }
       // verify the subject_token against the auth service's own keys; a bad/forged subject must not yield a delegated
       // token. the two permission sets stay separate: subject's at top level, actor's under `act` — never merged.
       let subject;
@@ -303,7 +326,7 @@ export function createAuthApi(
         subject = await verifyIdentity(subjectResolver, subject_token, jwtOptions);
       } catch (err) {
         logger.warn?.(`[auth] subject_token verification failed: ${String(err)}`);
-        res.status(400).json({ error: "invalid subject_token" });
+        sendTokenError(res, 400, "invalid_grant", "invalid subject_token");
         return;
       }
       const oboToken = await signIdentity(
@@ -319,7 +342,12 @@ export function createAuthApi(
         { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
       );
       logger.debug?.(`[auth] issued OBO token sub=${subject.userName} act=${actor.userName}`);
-      res.json({ token: oboToken });
+      sendToken(res, oboToken, SERVICE_TOKEN_TTL_SECONDS, { issued_token_type: ACCESS_TOKEN_TYPE });
+      return;
+    }
+
+    if (grant_type !== CLIENT_CREDENTIALS_GRANT) {
+      sendTokenError(res, 400, "unsupported_grant_type", `unsupported grant_type "${grant_type ?? ""}"`);
       return;
     }
 
@@ -335,7 +363,7 @@ export function createAuthApi(
       { ...jwtOptions, expiresIn: SERVICE_TOKEN_TTL, kid: await signerKidPromise },
     );
     logger.debug?.(`[auth] issued service token for ${actor.userName}`);
-    res.json({ token });
+    sendToken(res, token, SERVICE_TOKEN_TTL_SECONDS);
   };
   // /connect/token is the standard, discovery-advertised token endpoint: client-credentials + token-exchange
   router.post("/connect/token", issueServiceToken);
@@ -345,19 +373,23 @@ export function createAuthApi(
   const sendJwks = async (_req: Request, res: Response): Promise<void> => {
     res.json({ keys: await jwksPromise });
   };
-  // /.well-known/openid-configuration/jwks is the standard, discovery-advertised JWKS path — the sole one
-  router.get("/.well-known/openid-configuration/jwks", sendJwks);
+  // /.well-known/jwks.json is the conventional standalone JWKS path, advertised as jwks_uri — the sole one
+  router.get("/.well-known/jwks.json", sendJwks);
 
   // OIDC discovery document: one URL a standard client reads to find the issuer, signing keys, and token
-  // endpoint. fields are honest to what this server does — client-credentials only, RS256, no auth-code flow.
+  // endpoint. fields are honest to what this server does — client-credentials, token-exchange, and PKCE
+  // authorization_code (public clients authenticate with "none"), all RS256.
   router.get("/.well-known/openid-configuration", (req: Request, res: Response) => {
     const origin = originFor(req);
     res.json({
       issuer: origin,
-      jwks_uri: `${origin}/.well-known/openid-configuration/jwks`,
+      jwks_uri: `${origin}/.well-known/jwks.json`,
+      authorization_endpoint: `${origin}/connect/authorize`,
       token_endpoint: `${origin}/connect/token`,
-      token_endpoint_auth_methods_supported: ["client_secret_basic"],
-      grant_types_supported: ["client_credentials", TOKEN_EXCHANGE_GRANT],
+      token_endpoint_auth_methods_supported: ["client_secret_basic", "none"],
+      grant_types_supported: [CLIENT_CREDENTIALS_GRANT, TOKEN_EXCHANGE_GRANT, AUTHORIZATION_CODE_GRANT],
+      response_types_supported: ["code"],
+      code_challenge_methods_supported: ["S256"],
       id_token_signing_alg_values_supported: ["RS256"],
       subject_types_supported: ["public"],
       claims_supported: ["sub", "userName", "firstName", "lastName", "permissions"],

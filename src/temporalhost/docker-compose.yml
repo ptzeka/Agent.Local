@@ -30,7 +30,7 @@ services:
       # Local authority: when enabled, validate caller JWTs against the host's JWKS. Endpoint
       # is env-only; host.docker.internal reaches src/host (:3011) from inside the container.
       TEMPORAL_AUTH_ENABLED: "false"
-      TEMPORAL_JWKS_URI: "http://host.docker.internal:3011/.well-known/openid-configuration/jwks"
+      TEMPORAL_JWKS_URI: "http://host.docker.internal:3015/.well-known/jwks.json"
     # makes host.docker.internal resolve on Linux too (it is automatic on Docker Desktop).
     extra_hosts:
       - "host.docker.internal:host-gateway"

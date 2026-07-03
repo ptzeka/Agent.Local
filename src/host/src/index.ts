@@ -1,7 +1,7 @@
 import express from "express";
-import { Eventing, sessionKey, AccessTokenProvider, type ILogger } from "@agent-local/common";
+import { Eventing, sessionKey, AccessTokenProvider, createLazyJwksProvider, type ILogger } from "@agent-local/common";
 import { openDatabase } from "@agent-local/common/db";
-import { resolveHostDbFile } from "./db/db-schema.js";
+import { resolveHostDbFile } from "./db/db-file.js";
 import { mount as mountWorkflow, WORKFLOW_TEMPLATES } from "@agent-local/temporal";
 import { mount as mountWeb } from "@agent-local/web";
 import { type MountContext } from "./mount.js";
@@ -11,7 +11,6 @@ import { createWorksApi } from "./api/works.js";
 import { createAgentCliApi } from "./api/agent-cli.js";
 import { sessionMiddleware, resolveUserFromRequest } from "./user/session.js";
 import { userContextMiddleware, requirePermission } from "./user/userContext.js";
-import { createJwksProvider } from "./user/jwks.js";
 import { HttpJobSender } from "./comms/sender.js";
 import { WorkService } from "./services/work-service.js";
 import { WorkStore } from "./work/work-store.js";
@@ -48,7 +47,7 @@ async function main(): Promise<void> {
 
   // verify bearers against the auth service's JWKS (auth is the issuer); options pin the issuer/audience the
   // token must carry. authority is the same issuerUrl auth stamps, so its discovery/jwks live under it.
-  const getKey = createJwksProvider(settings.host.iam?.issuerUrl || "", logger);
+  const getKey = createLazyJwksProvider(settings.host.iam?.issuerUrl || "", "[host]", logger.debug?.bind(logger));
   const verifyOptions = { issuer: settings.host.iam?.issuerUrl || undefined, audience: settings.host.iam?.audience || undefined };
 
   app.use(sessionMiddleware(cookieKey));                            // decrypt the session cookie ONCE -> req.authTicket

@@ -97,7 +97,7 @@ export function createWorksApi(
     res.json({ work, steps, stepsError });
   });
 
-  // create: spin up a work owned by the caller (camunda instance -> agent session -> first step). 202 + workId.
+  // create: spin up a work owned by the caller (workflow execution -> agent session -> first step). 202 + workId.
   router.post("/api/works", requirePermission("workflow:write"), (req: Request, res: Response) => {
     const workflowId = String((req.body ?? {}).workflowId ?? "");
     workService
@@ -150,7 +150,7 @@ export function createWorksApi(
     res.status(202).json({ work });
   });
 
-  // inject: operator intervention onto the caller's running work — merge variables onto its camunda instance.
+  // inject: operator intervention onto the caller's running work — merge variables onto its workflow execution.
   // 404 when not the caller's, 409 when the instance has not started yet. body: { variables, scopeKey?, local? }.
   router.post("/api/works/:workId/inject", requirePermission("workflow:write"), async (req: Request, res: Response) => {
     const body = req.body ?? {};

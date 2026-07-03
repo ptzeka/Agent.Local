@@ -122,16 +122,17 @@ export class WorkService implements StepSessionResolver {
   // Per-step sessions (StepSessionResolver)
   // ---------------------------------------------------------------------------
 
-  // bind a fresh agent session to one dispatched step, under the host's OWN agent:trigger service token. Idempotent
-  // per (workId, runKey, stepKey) so a Temporal activity retry reuses the same session instead of minting a second.
-  // The host mints the id so it controls the binding; the agent persists exactly that id (see /session/create).
+  // bind a fresh agent session to one dispatched step, under the host's OWN agent:trigger dispatch token — so the
+  // agent owns the session by the workflow-user (no OBO subject). Idempotent per (workId, runKey, stepKey) so a
+  // Temporal activity retry reuses the same session instead of minting a second. The host mints the id so it
+  // controls the binding; the agent persists exactly that id (see /session/create).
   async open(workId: string, runKey: string, stepKey: string): Promise<string> {
     const existing = await this.works.getJobSessionId(workId, runKey, stepKey);
     if (existing) return existing;
     const record = await this.works.get(workId);
     if (!record?.workspaceId) throw new Error(`work ${workId} has no workspace for a step session`);
     const sessionId = randomUUID();
-    const resolved = await this.agent.createSession(record.workspaceId, workId, undefined, sessionId);
+    const resolved = await this.agent.createSession(record.workspaceId, workId, null, sessionId);
     await this.works.addJobSession(workId, resolved, runKey, stepKey);
     return resolved;
   }
@@ -165,7 +166,7 @@ export class WorkService implements StepSessionResolver {
     return record;
   }
 
-  // operator intervention: inject variables onto a work the caller owns (camunda must be live). returns the work
+  // operator intervention: inject variables onto a work the caller owns (the workflow execution must be live). returns the work
   // record so the route can 404 a non-owner, false when the instance has not started. bus-pure like stop.
   async inject(
     workId: string,

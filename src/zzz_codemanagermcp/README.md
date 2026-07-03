@@ -1,3 +1,5 @@
+> **FROZEN — deliberately discarded (2026-07-02).** Kept for reference only: not in npm workspaces, not built, not maintained.
+
 # codemanagermcp
 
 Model Context Protocol server that exposes **workflow verbs** for AI-driven feature development. An AI agent uses these five tools to move a feature through a defined state machine — without ever touching raw git commands or deployment scripts directly.

@@ -6,9 +6,7 @@ script baked in. This is a deploy-only workspace: **no Node app, no agent code.*
 
 This is the *runtime*. The *client* (the `mount(app, ctx)` control surface +
 Workflows/Activities) lives in [`@agent-local/temporal`](../temporal/README.md)
-and connects here purely via its env endpoint (`TEMPORAL_ADDRESS`). It mirrors
-[`@agent-local/camundahost`](../camundahost/README.md), the Zeebe broker runtime
-behind [`@agent-local/workflow`](../workflow/README.md).
+and connects here purely via its env endpoint (`TEMPORAL_ADDRESS`).
 
 See backlog **M7-10** for the design and decisions.
 
@@ -57,7 +55,7 @@ then simply not used.
 
 Off by default so `docker:up` comes up green standalone. When enabled, the server
 **trusts `src/host` as the authority**: it validates every caller's bearer JWT against
-the host's published JWKS (`/.well-known/openid-configuration/jwks`) using Temporal's built-in JWT key
+the auth service's published JWKS (`/.well-known/jwks.json`) using Temporal's built-in JWT key
 provider + default claim mapper + default authorizer — **zero custom Go plugin**. This is
 the M7-9 decision made concrete: one-way gRPC pull, no inbound surface, and the host mints
 its **own** short-lived service token (never the end-user's) for the engine hop.
@@ -67,13 +65,13 @@ Enable it (compose service `temporal`, or any deploy env):
 ```yaml
 environment:
   TEMPORAL_AUTH_ENABLED: "true"
-  TEMPORAL_JWKS_URI: "http://host.docker.internal:3011/.well-known/openid-configuration/jwks"  # reaches src/host
+  TEMPORAL_JWKS_URI: "http://host.docker.internal:3015/.well-known/jwks.json"  # reaches src/auth
 ```
 
 | Env | Default | Meaning |
 |---|---|---|
 | `TEMPORAL_AUTH_ENABLED` | `false` | render + merge the auth fragment; deny un-tokened calls |
-| `TEMPORAL_JWKS_URI` | host JWKS via `host.docker.internal:3011` | where to fetch the host's verify keys |
+| `TEMPORAL_JWKS_URI` | auth JWKS via `host.docker.internal:3015` | where to fetch the auth service's verify keys |
 | `TEMPORAL_JWKS_REFRESH_INTERVAL` | `1m` | how often to re-pull the JWKS |
 | `TEMPORAL_PERMISSIONS_CLAIM` | `permissions` | JWT claim Temporal reads roles from |
 
@@ -90,5 +88,5 @@ user, not the frontend `workflow:read/write` scopes, is what reaches the engine.
 
 ## CI
 
-A `.github/workflows/temporalhost.yml` build job mirrors camundahost (build live;
-registry push + deploy stubbed until a registry/host exists).
+A `.github/workflows/temporalhost.yml` build job builds the image (registry push
++ deploy stubbed until a registry/host exists).

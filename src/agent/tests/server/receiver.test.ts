@@ -146,15 +146,16 @@ describe("HttpReceiver", () => {
     expect(published).toBe(1);
   });
 
-  test("a job session (no bound user) still accepts service-token input", () => {
+  test("a job session is owned by the workflow-user and accepts that user's dispatch token", () => {
     const bus = new Eventing();
     let published = 0;
     bus.subscribe(EXECUTION_REQUESTED, () => (published += 1));
     const sessions = new SessionRegistry();
-    const record = sessions.create("ws-1", "work-1"); // no userId: workflow-owned
+    // a job session is owned by the workflow-user (the host's dispatch identity), whose token subject is the userId
+    const record = sessions.create("ws-1", "work-1", "host-dispatch");
     const res = makeRes();
     receiveHandler(sessions)(
-      makeReq({ bus, required: true, authenticated: true, serviceId: "svc", sessionId: record.sessionId, body: { runId: "w", input: "x" } }),
+      makeReq({ bus, required: true, authenticated: true, serviceId: "svc", userId: "host-dispatch", sessionId: record.sessionId, body: { runId: "w", input: "x" } }),
       res,
     );
     expect(res.statusCode).toBe(202);

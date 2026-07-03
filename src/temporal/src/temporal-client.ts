@@ -252,7 +252,7 @@ export class TemporalClient {
     return { workflowId: workId, runId: d.runId, workflowType: d.workflowType, status: d.status, startedAt: 0 };
   }
 
-  // read in-flight workflow state; no Camunda gRPC equivalent
+  // read in-flight workflow state
   async query<T>(workId: string, name: string, args?: unknown): Promise<T> {
     return this.core.query<T>({ workflowId: workId, name, args });
   }

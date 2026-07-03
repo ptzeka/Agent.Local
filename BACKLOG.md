@@ -497,15 +497,17 @@ ownership-binding checks resume against).
       (`src/host/src/comms/sender.ts`) exchanges it for the OBO bearer it presents —
       the subject is captured at the HTTP boundary where it is freshest, never seeded
       onto a workflow process variable (no live bearer in engine history).
-- [ ] **Consume side — agent reads both principals + the gate moves.**
-      `/session/create` and `src/agent/src/server/middleware/user_context.ts` gate
-      `agent:trigger` on **`act.permissions`** (the OBO's top-level perms are the
-      subject's, sans that scope); `req.userContext` splits into `subject` + `actor`
-      so routes know who the work runs for.
-- [ ] **Bind subject to the session (dovetails M2-2).** Store the verified subject on
-      the `SessionRecord` at create; follow-on `/events` (session-as-capability)
-      inherit it without re-presenting a token, giving ownership-binding the
-      `session.user.sub` it refuses mismatched resumes against.
+- [x] **Consume side — agent reads both principals + the gate moves.** — done
+      (M8-7c3 + the 2026-07-02 `user_context` rework, see HS-5 in
+      [BACKLOG.DONE.md](BACKLOG.DONE.md)): the caller resolves from the verified
+      bearer alone; the actor's permissions gate `agent:trigger` and the OBO
+      subject rides as `userId` (always present), so routes know who the work
+      runs for.
+- [x] **Bind subject to the session (dovetails M2-2).** — landed *differently*
+      2026-07-02: the verified subject is bound at create (`SessionRegistry`)
+      AND re-verified from the bearer on every call; the session-as-capability
+      inheritance (follow-on `/events` without re-presenting a token) was
+      **removed**, not built — a session id is not a principal.
 
 **Done when:** a work triggered by user U dispatches to the agent under a token whose
 `sub`=U (with U's permissions) and `act`=the dispatch service; the agent authorizes
@@ -532,7 +534,8 @@ filter — no code path can hydrate another user's session and forget to check.
 ### M3-2 · SQLite implementation — `~2d` · P0
 > **Scope (2026-06-19):** one `better-sqlite3` file per process. This story is
 > the **agent DB** (`agent.sqlite`, owned by the agent process); the host jobs
-> store is its own DB — see M3-H. Memo stays out: it is the M3-6/M3-7
+> store is its own DB — M3-H, **done** (the `WorkStore`/`HOST_SCHEMA` sqlite,
+> see [BACKLOG.DONE.md](BACKLOG.DONE.md)). Memo stays out: it is the M3-6/M3-7
 > vectorstore track, not a relational table.
 > **dbup foundation landed (2026-06-19):** the idempotent schema-ensure engine
 > (`common/src/db.ts`, `@agent-local/common/db`: `openDatabase` + `ensureSchema`
@@ -582,30 +585,6 @@ filter — no code path can hydrate another user's session and forget to check.
 - [ ] `AGENT_SESSION_TTL_DAYS`; cleanup pass on boot (and later a timer in
       service mode) deleting expired sessions + their audit rows; never
       delete sessions with active leases.
-
-### M3-H · Host jobs store → SQLite — `~1d` · P1
-> **Added (2026-06-19):** the host DB (`host.sqlite`, owned by the host
-> process) — the second of the two SQLite files. Mirrors M3-1/M3-2 in the host
-> package; same user-keyed rule (`user_id` is part of the key, not a filter).
-> **dbup foundation landed (2026-06-19):** schema spec
-> (`host/src/jobs/db-schema.ts`: `jobs` + `job_status` lookup/FK) applied by the
-> shared engine via the `db init` command (`npm run db:init`, called by
-> `start.sh`). **Remaining:** the `JobRepository` swap.
-- [ ] `JobRepository` interface: `add(jobId, userId, workflowId)`,
-      `get(jobId)`, `search({userId?, status?})`, `update(jobId, patch)` —
-      same surface the host already calls on `JobRegistry` so callers don't
-      change. Keep the current `JobRegistry` as `FileJobRepository` (dev/CLI).
-- [ ] `better-sqlite3`; table `jobs(user_id, job_id, workflow_id, status,
-      step, session_id, camunda_id, reason, updated_at,
-      PRIMARY KEY(user_id, job_id))`, index on `(user_id, status)`. WAL mode.
-      Current-state row per job (no event log — append history was only there
-      for torn-write safety, which transactions remove).
-- [ ] Swap in via config toggle (`HOST_STORE=file|sqlite`), mirroring
-      `AGENT_STORE`. No migration — existing `jobs.jsonl` is throwaway.
-
-**Done when:** host lists/searches works through `JobRepository`; with
-`HOST_STORE=sqlite` a user's `search` returns only their own jobs via the
-indexed `(user_id, status)` lookup, not a full-file fold.
 
 ### M3-6 · codeindex → generic vector engine — `~2d` · P2
 Code knowledge and agent memory are the SAME primitive: an embedded record
@@ -1690,10 +1669,18 @@ the streaming mode flag (M1-11) live in one artifact, not scattered booleans and
 
 ---
 
-## M7 — Workflow orchestration (Camunda 8 × Agentic mesh)
+## M7 — Workflow orchestration (workflow engine × Agentic mesh)
 
-A long-running business-process layer that *drives* the agent. Camunda 8 (Zeebe)
-owns the BPMN process state; the agent is a worker it dispatches to. The Node
+> **Camunda retired — 2026-07-02.** `src/camundahost` and `src/workflow` (the
+> Zeebe client) were deleted from the repo; **Temporal (M7-9/M7-10) is the only
+> engine**. The camunda-only stories (M7-1, M7-5, M7-7) moved to
+> [BACKLOG.DONE.md](BACKLOG.DONE.md) as retired. The remaining items are
+> engine-neutral (bus seam, work-unit registry, host IAM); where "Camunda"
+> still appears in their prose it reads as history of how the seam was proven.
+
+A long-running business-process layer that *drives* the agent. Originally
+Camunda 8 (Zeebe) owned the BPMN process state — now Temporal owns the workflow
+state; either way the agent is a worker the engine dispatches to. The Node
 side — workflow service + agentic engine — is **co-hosted in one express process
 to start** for operational simplicity; the two are kept architecturally
 independent by the bus and are split out later when load demands it (decided
@@ -1706,9 +1693,9 @@ so "extract into its own process" later is a *transport swap* behind the same
 `publish`/`subscribe`/`add` contract (in-memory `Eventing` today → a pub/sub
 broker next), not a rewrite.
 
-**Invariant — Camunda always initiates.** The only flow is
-`Camunda job → agent dispatch → result → Camunda completes the job → process
-advances`. The agent never starts a process; it answers jobs and reports back.
+**Invariant — the engine always initiates.** The only flow is
+`engine job → agent dispatch → result → the engine advances the process`.
+The agent never starts a process; it answers jobs and reports back.
 The bus is bidirectional (events bubble both ways) but *initiation* is one-way.
 
 Depends on: M4-1 (HTTP/SSE transport — the agentic API surface), M4-2
@@ -1725,32 +1712,6 @@ Depends on: M4-1 (HTTP/SSE transport — the agentic API surface), M4-2
 > shipped as `@agent-local/common/mesh` (`wireCamundaMesh`). **Deferred next:** the
 > agentic engine (M7-2) — it fills the `dispatchToAgent` stub + `completeJob` seam;
 > and the real-broker end-to-end cycle.
-
-### M7-1 · Camunda 8 workflow engine + express bootstrap — `~3d` · P0
-A new `src/workflow` workspace: an express service that hosts Zeebe job workers
-and a thin control surface over a self-managed Zeebe broker.
-- [x] New workspace `@agent-local/workflow` (`src/workflow`), `@camunda8/sdk`;
-      signal wiring (one root `AbortController` in `main.ts`, `ctx.signal` threaded
-      to `stop()`). Express bootstrap itself lives in `@agent-local/host`; workflow
-      exposes a `mount(app, ctx)` it registers into. *(2026-06-17)*
-- [x] Self-managed Zeebe broker via `docker-compose.yml` (`camunda/zeebe:8.7.6`,
-      Operate commented optional); endpoint + auth from env, never hard-coded. *(2026-06-17)*
-- [x] `ZeebeClient` wrapper: deploys `src/workflow/bpmn/*.bpmn` on connect; control
-      surface `POST /workflow/process` (start) + `GET /workflow/process/:key`
-      (state) on the mounted app. *(2026-06-17)*
-- [x] Job worker for task type `agent-execute`: publishes `workflow.job` to the bus
-      and `forward()`s to hold the job open (real dispatch deferred to the agentic
-      package, not a no-op). *(2026-06-17)*
-- [x] Resilience: reconnect-with-backoff, graceful `stop()` on `ctx.signal` that
-      never throws, broker-down-at-boot does not crash; `GET /workflow/healthz`. *(2026-06-17)*
-- [x] Sample BPMN (`agent-execute.bpmn`, start → service task → end) + 4 Jest tests
-      — *against an injected fake gRPC*, broker not required. *(2026-06-17)*
-- [ ] Live-broker E2E (deploy + started instance parks a job on a real Zeebe) —
-      still pending; needs the docker-compose broker up.
-
-**Done when:** ~~`npm run dev -w @agent-local/workflow` boots…~~ — superseded: the
-worker, BPMN deploy, control endpoints, resilience, and tests landed 2026-06-17
-(mounted into `@agent-local/host`, verified live); only the live-broker E2E remains.
 
 ### M7-2 · Packagable agentic engine — resilient background service — `~2.5d` · P0
 Wrap the host-agnostic runtime + the M4-1 HTTP surface into one embeddable
@@ -1830,14 +1791,15 @@ the seam is designed so a pub/sub broker is a later transport swap, not a rewrit
 > is no longer co-hosted in-process. **Open:** the `Transport` seam abstraction
 > bullet above is now embodied by `AgentClient`/`JobSender` (HTTP impl); gRPC/broker
 > remains a later impl swap behind those interfaces.
-- [ ] *Remaining for "done":* a live-model turn + running broker E2E (the seam is
-      verified `workflow.job → agent.job → worker → session` on a real bus; the
-      model turn + `completeJob` need Ollama/a provider and a Zeebe broker).
+- [ ] *Remaining for "done":* a live-model turn + running engine E2E — the
+      Zeebe-broker variant **retired 2026-07-02** (Camunda deleted); the live
+      E2E is the Temporal one tracked in M7-10.
 - [ ] Enforce the invariant in code end-to-end (agent has no path to start a
-      process) + an E2E test asserting on Camunda state, not logs.
+      process) + an E2E test asserting on engine state (Temporal since
+      2026-07-02), not logs.
 
 **Done when:** starting the sample process instance drives one full
-`Camunda job → agent execute → result → job complete → process advances` cycle
+`engine job → agent execute → result → job complete → process advances` cycle
 over the Eventing mesh, with the agent reachable only as a worker. *(bus + mesh +
 publish/correlate landed 2026-06-17; closes once M7-2 fills the dispatch seam.)*
 
@@ -1856,24 +1818,6 @@ and the console (M8-3) can distinguish live vs done sessions.
       filter active vs finalized.
 - [ ] Tests: open → `active`; completed → `finalized` persisted; instance-failed →
       `error` persisted.
-
-### M7-5 · Camunda IAM identity inheritance for the worker runtime — `~1.5d` · P1
-Camunda runs each process under an IAM identity (service account / similar). The
-agent worker should **inherit that identity for the process**, so the runtime
-executes as the workflow's identity rather than an ambient token. Today
-`buildWorkerRuntime` sets `credentials` from a static `AGENT_API_TOKEN` env — the
-target is the process's IAM identity carried on the job (IAM identity vs
-JWT-as-middleware).
-- [ ] Carry the identity on the bus: `workflow.job` / `agent.job` include the
-      instance's IAM identity (or a token/assertion to exchange), populated from the
-      Camunda job/process variables or job headers.
-- [ ] Worker passes it into the runtime as `credentials` (`IdentityContext`) per
-      instance instead of the ambient `AGENT_API_TOKEN`; the runtime's identity
-      middleware consumes it.
-- [ ] Identity is **per process instance** (matches the one-session-per-instance
-      lifetime, M7-3/M7-4) — every job of the instance runs as the same identity.
-- [ ] Tests: a job carrying an identity builds a runtime whose `IdentityContext`
-      reflects it; absent identity falls back to anonymous/dev.
 
 ### M7-6 · Work-unit registry — host-owned job lifecycle + `workId` correlation — `~1.5d` · P1
 The host is the orchestrator and owns the **work unit** — the join that ties a
@@ -2023,56 +1967,6 @@ job advances it to `running` with `camundaId`/`step`/`sessionId` recorded; the
 agent's `sessionId`-keyed result resolves to its `workId`, flips it to `completed`,
 and completes the correct Camunda job — with the agent carrying no Camunda-shaped
 field, only its own `sessionId`.
-
-### M7-7 · `src/camundahost` — Camunda runtime image (Dockerfile + local build + CI deploy) — `~1d` · P1
-The Camunda runtime gets its **own deploy workspace**, separate from the Node side.
-Today the broker is an inline `camunda/zeebe:8.7.6` in `src/workflow`'s
-`docker-compose.yml` (M7-1); that conflates the *client* (Zeebe job workers +
-control surface) with the *runtime* (the broker container). Split them: a new
-`src/camundahost` owns the Camunda runtime image — a `Dockerfile` `FROM` a Camunda
-base with our startup scripts + broker/BPMN config baked in — its local build/run
-commands, and the future CI pipeline that builds and deploys it. This is distinct
-from M4-2 (the **Node app** image); camundahost is the **Camunda** image only.
-
-> **Decision 2026-06-19:** `src/workflow` is **client-only** — no Camunda runtime,
-> no broker compose. It keeps the Zeebe workers + `POST /workflow/process` control
-> surface and connects to the broker purely via the env endpoint (M7-1 rule), which
-> camundahost now provides. The runtime moves out of workflow entirely.
-
-- [x] **New workspace `@agent-local/camundahost` (`src/camundahost`)** owning the
-      runtime container only (no Node app, no agent code). Holds the package/docker
-      config: `Dockerfile`, a `dockerfiles/` dir for the copied-in artifacts
-      (startup scripts, `application.yaml`/Zeebe config, BPMN), and a `package.json`
-      carrying the build/run scripts below. Registered in the root workspaces array.
-- [x] **Dockerfile = Camunda base + our layer.** `FROM` the pinned Camunda base
-      (`camunda/zeebe:8.7.6` to match M7-1 — version configurable via the
-      `CAMUNDA_VERSION` build arg), then `COPY` from `src/camundahost/dockerfiles/`
-      `startup.sh` + `application.yaml` into the image; entrypoint is our script. No
-      secrets or endpoints baked in — env at run time only (same rule as M7-1).
-- [x] **Remove the broker from `src/workflow`.** Deleted `src/workflow/docker-compose.yml`
-      (it only held the broker); the workflow README now points at camundahost and
-      workflow keeps connecting via its env endpoint unchanged. The only Camunda
-      *runtime* definition in the repo now lives in camundahost.
-- [x] **Local build/run commands** as workspace npm scripts: `docker:build` (build
-      + tag from the Dockerfile/build args), `docker:up` / `docker:down` / `docker:logs`
-      (run the **built** image via a thin compose, optional Operate commented like
-      M7-1). One-liner documented in the workspace README.
-- [x] **Future CI yml pipeline (scaffold now, deploy stubbed).** `.github/workflows/camundahost.yml`
-      builds the image on push/tag/PR (path-filtered). The **build** job is live;
-      registry push + a gated (`if: false`) deploy job are documented `TODO(infra)`
-      until a registry/host exists — build verifiable in CI immediately, deploy
-      activates when infra lands.
-- [ ] Tests/verify: `npm run docker:build -w @agent-local/camundahost` produces a
-      runnable image; `docker:up` brings the broker up and the (client-only)
-      `src/workflow` worker connects + deploys its BPMN against it — this is exactly
-      the **live-broker E2E still pending in M7-1**, now unblocked by a one-command
-      local broker. _(Pending a host with Docker — not installed in the scaffold env.)_
-
-**Done when:** `npm run docker:build -w @agent-local/camundahost` builds a Camunda
-runtime image from a Camunda base with our startup scripts/config copied in; a local
-`docker:up` brings the broker up so the client-only `src/workflow` worker connects
-and deploys BPMN against it; and a CI yml builds the image (push/deploy stubbed) —
-with no Camunda runtime left in `src/workflow`.
 
 ### M7-8 · Host-owned IAM — login, JWKS, encrypted session cookie + agent JWT trust — `~2d` · P1
 The auth seam that lets the browser, the host, and the agent share one identity
@@ -2619,7 +2513,7 @@ the user (no read-only/blocking gate).
 > open** (configurable interval, default ~1s) and STOPS polling on close — cost is bounded to an open
 > chat. Event-sourced / live streaming (re-add SSE/WS + M1-11b) is the follow-up that retires polling.
 
-Schema (SQLite, alongside the existing work schema in `src/host/src/jobs/db-schema.ts`, M3-H). Naming:
+Schema (SQLite, alongside the existing work schema in `src/host/src/db/db-schema.ts`, M3-H done). Naming:
 the current work/jobs table is **`Work`**; the two new tables are **`AgentSession`** and
 **`AgentConversation`** (the `Agent*` prefix also avoids colliding with the auth `user/session.ts`):
 
@@ -2749,6 +2643,52 @@ stream the SSE projects (one source for live + durable).
 
 ---
 
+## M9 — Consolidation follow-ups (2026-07-02 repo scan)
+
+Still-open residue from the 2026-07-02 hardening sweep; the completed half is
+the "Hardening & consolidation sweep" section in
+[BACKLOG.DONE.md](BACKLOG.DONE.md).
+
+### M9-1 · One `ExecutionRequest`/`ExecutionResult` wire contract — `~0.5d` · P2
+The host↔agent envelope is defined twice —
+[contract.ts](src/host/src/comms/contract.ts) and
+[contract.ts](src/agent/src/server/comms/contract.ts) — and kept in sync by
+hand; a field added on one side compiles clean while the wire silently drops it.
+- [ ] Lift the shared wire shapes (`ExecutionRequest`, `ExecutionResult`) into
+      `@agent-local/common` so both sides import ONE definition; the
+      package-local bus-event wrappers (`ExecutionRequested`, `WorkflowJobPayload`)
+      stay where they are.
+- [ ] Test: a send→receive round-trip typed against the single contract.
+
+**Done when:** neither package declares its own copy of the wire envelope and a
+field change is a one-file edit.
+
+### M9-2 · One sealed-ticket session middleware (auth ↔ host) — `~0.5d` · P2
+[auth/src/session.ts](src/auth/src/session.ts) and
+[host/src/user/session.ts](src/host/src/user/session.ts) are parallel
+implementations of the same open-the-encrypted-cookie middleware over
+`sealTicket`/`openTicket` (`@agent-local/common/jwt`).
+- [ ] Extract one `sessionMiddleware(secret)` (next to the ticket helpers in
+      common) and have both services consume it; per-service differences stay
+      parameters, not forks.
+
+**Done when:** the cookie-open logic exists once and both services'
+login/me/logout flows still pass.
+
+### M9-3 · codeindex TreeLineParser red suite — `~0.5d` · P1
+8 pre-existing failures in the codeindex tests (e.g.
+[treeLineParser.ts](src/codeindex/src/indexer/parsers/treeLineParser.ts)
+expecting `kind: "method"`, receiving `undefined`). The worktree is clean and
+tree-sitter parses `class A { m() {} }` correctly at the CLI, so it looks like
+parser/grammar version drift — possibly related to the stashed per-workspace
+`package-lock.json` files. The one unexplained red suite in the repo
+(flagged 2026-07-02, deliberately not fixed mid-sweep).
+- [ ] Reproduce, bisect the grammar/parser versions, fix or pin.
+
+**Done when:** `npm test -w @agent-local/codeindex` is green.
+
+---
+
 ## Open decisions — track, don't drift
 
 - [ ] **D1 · Step-level durability.** Turn-boundary persistence loses an
@@ -2796,10 +2736,9 @@ M0-2 → M0-3 → M0-4 → M0-5 → M0-6 → M0-7                (hole-closing, 
 MR-3 → MR-4·0 → MR-4 → MR-5 → MR-6                     (finish the unified runtime)
 M1-1 → M1-3 → M1-4 → M1-5 → M1-6                       (reliability; M1-2 closed by MR-4)
 M2-1 → M2-2 → M2-3 → M2-4 → M2-5 → M2-6 → M2-7 → M2-8  (identity/policy — after MR)
-M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (agent store)
-M3-H                                                   (host jobs store ∥ — independent)
+M3-1 → M3-2 → M3-3 → M3-4 → M3-5                       (agent store; M3-H host store done)
 M4-1 → M4-2 → M4-3 → M4-4 → M4-5                       (service)
-M7-1 ∥ M7-2 → M7-3                                     (camunda × agent mesh; after M4-1/M4-2)
+M7-2 → M7-3                                            (engine × agent mesh — Temporal; after M4-1/M4-2)
 M8-1 → M8-2 → M8-3                                     (react console + api; after M7-1/M7-3)
 ```
 

@@ -36,11 +36,24 @@ function fakeStore(seed?: Session): SessionStore & { saved: Session[] } {
   return store as unknown as SessionStore & { saved: Session[] };
 }
 
-function makeReq(opts: { permissions?: string[]; body?: unknown }): Request {
+// userId is the verified token subject (the session owner). Omit it to simulate a call with no token identity.
+function makeReq(opts: { userId?: string; body?: unknown }): Request {
   return {
     body: opts.body ?? {},
-    userContext: { permissions: opts.permissions ?? ["agent:trigger"] },
+    userContext: {
+      permissions: ["agent:trigger"],
+      userInfo: opts.userId ? { serviceId: opts.userId, userId: opts.userId } : null,
+    },
   } as unknown as Request;
+}
+
+// a persisted session already stamped with its durable owner (set by /session/create), so close/interrupt can
+// resolve the owner from the store when the in-memory registry is empty
+function ownedSession(sessionId: string, ownerUserId: string): Session {
+  return {
+    ...createSession({ sessionId, workspaceId: "ws", conversationId: "conv-1" }),
+    user: { sub: ownerUserId, isAuthenticated: true, claims: {}, scopes: [] },
+  };
 }
 
 function makeRes(): Response & { statusCode: number; jsonBody: unknown } {
@@ -60,15 +73,15 @@ function makeRes(): Response & { statusCode: number; jsonBody: unknown } {
 }
 
 describe("session-api POST /session/create", () => {
-  test("rejects 403 when the caller lacks agent:trigger and persists nothing", async () => {
+  test("rejects 401 when the caller has no verified user identity and persists nothing", async () => {
     const store = fakeStore();
     const router = createSessionApi(new SessionRegistry(), store, new Eventing());
     const res = makeRes();
     await handlerFor(router, "post", "/session/create")(
-      makeReq({ permissions: [], body: { workspaceId: "ws", workId: "work-1" } }),
+      makeReq({ body: { workspaceId: "ws", workId: "work-1" } }),
       res,
     );
-    expect(res.statusCode).toBe(403);
+    expect(res.statusCode).toBe(401);
     expect(store.saved).toHaveLength(0);
   });
 
@@ -76,17 +89,17 @@ describe("session-api POST /session/create", () => {
     const store = fakeStore();
     const router = createSessionApi(new SessionRegistry(), store, new Eventing());
     const res = makeRes();
-    await handlerFor(router, "post", "/session/create")(makeReq({ body: { workspaceId: "ws" } }), res);
+    await handlerFor(router, "post", "/session/create")(makeReq({ userId: "u1", body: { workspaceId: "ws" } }), res);
     expect(res.statusCode).toBe(400);
     expect(store.saved).toHaveLength(0);
   });
 
-  test("mints a session and stamps externalReferenceKey = workId on first create", async () => {
+  test("mints a session, stamping externalReferenceKey = workId and the owner = token subject", async () => {
     const store = fakeStore();
     const router = createSessionApi(new SessionRegistry(), store, new Eventing());
     const res = makeRes();
     await handlerFor(router, "post", "/session/create")(
-      makeReq({ body: { workspaceId: "ws", workId: "work-1", sessionId: "sess-1" } }),
+      makeReq({ userId: "u1", body: { workspaceId: "ws", workId: "work-1", sessionId: "sess-1" } }),
       res,
     );
     expect(res.statusCode).toBe(201);
@@ -97,6 +110,20 @@ describe("session-api POST /session/create", () => {
       workspaceId: "ws",
       externalReferenceKey: "work-1",
     });
+    // owner is stamped durably from the token subject, never the request body
+    expect(store.saved[0].user?.sub).toBe("u1");
+  });
+
+  test("the body cannot assert a different owner than the token subject", async () => {
+    const store = fakeStore();
+    const router = createSessionApi(new SessionRegistry(), store, new Eventing());
+    const res = makeRes();
+    await handlerFor(router, "post", "/session/create")(
+      makeReq({ userId: "u1", body: { workspaceId: "ws", workId: "work-1", sessionId: "sess-1", userId: "attacker" } }),
+      res,
+    );
+    expect(res.statusCode).toBe(201);
+    expect(store.saved[0].user?.sub).toBe("u1");
   });
 
   test("a reuse/rehydrate of an existing session does not re-save (externalReferenceKey never drifts)", async () => {
@@ -106,7 +133,7 @@ describe("session-api POST /session/create", () => {
     const router = createSessionApi(new SessionRegistry(), store, new Eventing());
     const res = makeRes();
     await handlerFor(router, "post", "/session/create")(
-      makeReq({ body: { workspaceId: "ws", workId: "work-different", sessionId: "sess-1" } }),
+      makeReq({ userId: "u1", body: { workspaceId: "ws", workId: "work-different", sessionId: "sess-1" } }),
       res,
     );
     expect(res.statusCode).toBe(201);
@@ -116,20 +143,34 @@ describe("session-api POST /session/create", () => {
 });
 
 describe("session-api POST /session/close", () => {
-  test("publishes EXECUTION_CANCEL and marks the persisted session done", async () => {
+  test("the owner's close publishes EXECUTION_CANCEL and marks the persisted session done", async () => {
     const bus = new Eventing();
     const cancelled: string[] = [];
     bus.subscribe(EXECUTION_CANCEL, (e) => cancelled.push((e.payload as { sessionId: string }).sessionId));
 
-    const seed = createSession({ sessionId: "sess-1", workspaceId: "ws", conversationId: "conv-1" });
-    const store = fakeStore(seed);
+    const store = fakeStore(ownedSession("sess-1", "u1"));
     const router = createSessionApi(new SessionRegistry(), store, bus);
     const res = makeRes();
-    await handlerFor(router, "post", "/session/close")(makeReq({ body: { sessionId: "sess-1" } }), res);
+    await handlerFor(router, "post", "/session/close")(makeReq({ userId: "u1", body: { sessionId: "sess-1" } }), res);
 
     expect(res.statusCode).toBe(202);
     expect(cancelled).toEqual(["sess-1"]);
     expect(store.saved[0].status).toBe("done");
+  });
+
+  test("a non-owner is refused 403 and the session is neither cancelled nor marked done", async () => {
+    const bus = new Eventing();
+    const cancelled: string[] = [];
+    bus.subscribe(EXECUTION_CANCEL, (e) => cancelled.push((e.payload as { sessionId: string }).sessionId));
+
+    const store = fakeStore(ownedSession("sess-1", "u1"));
+    const router = createSessionApi(new SessionRegistry(), store, bus);
+    const res = makeRes();
+    await handlerFor(router, "post", "/session/close")(makeReq({ userId: "attacker", body: { sessionId: "sess-1" } }), res);
+
+    expect(res.statusCode).toBe(403);
+    expect(cancelled).toEqual([]);
+    expect(store.saved[0].status).not.toBe("done");
   });
 
   test("a missing sessionId is a 202 no-op that publishes nothing", async () => {
@@ -138,7 +179,7 @@ describe("session-api POST /session/close", () => {
     bus.subscribe(EXECUTION_CANCEL, () => (published += 1));
     const router = createSessionApi(new SessionRegistry(), fakeStore(), bus);
     const res = makeRes();
-    await handlerFor(router, "post", "/session/close")(makeReq({ body: {} }), res);
+    await handlerFor(router, "post", "/session/close")(makeReq({ userId: "u1", body: {} }), res);
     expect(res.statusCode).toBe(202);
     expect(res.jsonBody).toEqual({ closed: false });
     expect(published).toBe(0);
@@ -146,15 +187,28 @@ describe("session-api POST /session/close", () => {
 });
 
 describe("session-api POST /session/interrupt", () => {
-  test("publishes EXECUTION_INTERRUPT for the session without closing it", async () => {
+  test("the owner's interrupt publishes EXECUTION_INTERRUPT without closing the session", async () => {
     const bus = new Eventing();
     const interrupted: string[] = [];
     bus.subscribe(EXECUTION_INTERRUPT, (e) => interrupted.push((e.payload as { sessionId: string }).sessionId));
-    const router = createSessionApi(new SessionRegistry(), fakeStore(), bus);
+    const store = fakeStore(ownedSession("sess-1", "u1"));
+    const router = createSessionApi(new SessionRegistry(), store, bus);
     const res = makeRes();
-    await handlerFor(router, "post", "/session/interrupt")(makeReq({ body: { sessionId: "sess-1" } }), res);
+    await handlerFor(router, "post", "/session/interrupt")(makeReq({ userId: "u1", body: { sessionId: "sess-1" } }), res);
     expect(res.statusCode).toBe(202);
     expect(res.jsonBody).toEqual({ interrupted: true });
     expect(interrupted).toEqual(["sess-1"]);
+  });
+
+  test("a non-owner is refused 403 and nothing is published", async () => {
+    const bus = new Eventing();
+    const interrupted: string[] = [];
+    bus.subscribe(EXECUTION_INTERRUPT, (e) => interrupted.push((e.payload as { sessionId: string }).sessionId));
+    const store = fakeStore(ownedSession("sess-1", "u1"));
+    const router = createSessionApi(new SessionRegistry(), store, bus);
+    const res = makeRes();
+    await handlerFor(router, "post", "/session/interrupt")(makeReq({ userId: "attacker", body: { sessionId: "sess-1" } }), res);
+    expect(res.statusCode).toBe(403);
+    expect(interrupted).toEqual([]);
   });
 });

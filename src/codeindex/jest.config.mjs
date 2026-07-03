@@ -3,6 +3,8 @@ export default {
   preset: "ts-jest",
   testEnvironment: "node",
   roots: ["<rootDir>/tests"],
+  // native tree-sitter can't re-init in a reused worker process; 1MB recycles the worker per test file
+  workerIdleMemoryLimit: "1MB",
   moduleNameMapper: {
     // resolve shared @agent-local packages to TS source so tests need no prebuild
     "^@agent-local/vectorstore$": "<rootDir>/../vectorstore/src/index.ts",

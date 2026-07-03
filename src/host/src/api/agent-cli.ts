@@ -33,8 +33,10 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
     // pass the cached cli session to create: the agent reuses it when still valid (resuming its transcript) or mints
     // a fresh one when it's gone (e.g. after a restart). always store what create returns — upserts on (work_id,
     // kind='cli'), so a now-invalid cached id is replaced rather than handed back to a doomed stream.
+    // the user's own access token is the OBO subject, so the agent owns this cli session by the USER (not the
+    // workflow-user), and later stream/input/stop from the same user match its owner.
     const cached = await works.getCliSessionId(work.workId);
-    const sessionId = await agent.createSession(work.workspaceId, work.workId, work.userId, cached ?? undefined);
+    const sessionId = await agent.createSession(work.workspaceId, work.workId, req.userContext.accessToken, cached ?? undefined);
     await works.setCliSessionId(work.workId, sessionId);
     res.json({ sessionId });
   });
@@ -135,7 +137,8 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
       return;
     }
     try {
-      await agent.interruptSession(sessionId);
+      // the user's own access token rides as the OBO subject so the agent re-checks ownership before it interrupts
+      await agent.interruptSession(sessionId, req.userContext.accessToken);
       res.status(202).json({ stopped: true });
     } catch (err) {
       res.status(502).json({ error: String(err) });

@@ -9,7 +9,7 @@ global:
     # (one-way pull, zero Go plugin) — the host signs RS256 tokens and publishes verify keys there
     jwtKeyProvider:
       keySourceURIs:
-        - "{{ default .Env.TEMPORAL_JWKS_URI "http://host.docker.internal:3011/.well-known/openid-configuration/jwks" }}"
+        - "{{ default .Env.TEMPORAL_JWKS_URI "http://host.docker.internal:3015/.well-known/jwks.json" }}"
       refreshInterval: "{{ default .Env.TEMPORAL_JWKS_REFRESH_INTERVAL "1m" }}"
     # the host's service token carries a Temporal-shaped "permissions" claim (<namespace>:<role>,
     # e.g. default:write, temporal-system:read) so the built-in mapper/authorizer need no custom code
