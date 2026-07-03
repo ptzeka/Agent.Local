@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { Eventing } from "@agent-local/common/eventing";
 import { LOGGER, SERVER_CONFIG } from "../container-tokens.js";
 import { SESSION_HEADER } from "../middleware/session-header.js";
+import type { SessionRegistry } from "../session-registry.js";
 import { EXECUTION_REQUESTED, type ExecutionRequest, type ExecutionRequested } from "./contract.js";
 
 // host -> agent RECEIVER: the ONLY way in. Pure transport — it terminates the HTTP request, trusts the upstream
@@ -9,6 +10,8 @@ import { EXECUTION_REQUESTED, type ExecutionRequest, type ExecutionRequested } f
 // internal event for the runner. It builds no runtime and runs no turn; the answer returns out-of-band, so it
 // ACKs 202. Engine vocabulary never reaches here — the body is a neutral ExecutionRequest.
 export class HttpReceiver {
+  constructor(private readonly sessions: SessionRegistry) {}
+
   routes(): Router {
     const router = Router();
     router.post("/receive", (req: Request, res: Response) => {
@@ -22,6 +25,16 @@ export class HttpReceiver {
         return;
       }
 
+      // a session bound to a user (cli) only accepts input from a caller acting FOR that user — the same gate as
+      // the SSE stream. userId is set only from a verified OBO token's subject (never a header), so a service
+      // token alone can no longer push input into someone's chat. Job sessions (no userId) are untouched.
+      const sessionId = req.header(SESSION_HEADER)?.trim() || "anonymous";
+      const boundUserId = this.sessions.get(sessionId)?.userId;
+      if (boundUserId && req.userContext.userInfo?.userId !== boundUserId) {
+        res.status(403).json({ error: "forbidden" });
+        return;
+      }
+
       const request = req.body as ExecutionRequest;
       const input = String(request?.input ?? "").trim();
       if (!input || !request?.runId) {
@@ -30,7 +43,7 @@ export class HttpReceiver {
       }
 
       const requested: ExecutionRequested = {
-        sessionId: req.header(SESSION_HEADER)?.trim() || "anonymous",
+        sessionId,
         runId: request.runId,
         source: req.userContext.userInfo?.serviceId ?? "unknown",
         createdAt: new Date().toISOString(),

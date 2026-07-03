@@ -12,10 +12,11 @@ export interface AgentClient {
   createSession(workspaceId: string, workId: string, userId?: string, sessionId?: string): Promise<string>;
   closeSession(sessionId: string): Promise<void>;
   // the live interactive CLI half: open the agent's SSE event stream for a session (to pipe to the browser), and
-  // push one input turn into that session. The stream carries the USER — subjectToken (the caller's access token)
-  // is exchanged for an OBO bearer so the agent verifies the user and binds the stream to the session's owner.
+  // push one input turn into that session. BOTH carry the USER — subjectToken (the caller's access token) is
+  // exchanged for an OBO bearer so the agent verifies the user itself: it binds the stream to the session's owner
+  // and refuses input into a user-bound session from anyone else.
   openSseStream(sessionId: string, subjectToken: string | null, signal: AbortSignal): Promise<Response>;
-  sendInput(sessionId: string, input: string): Promise<void>;
+  sendInput(sessionId: string, input: string, subjectToken?: string | null): Promise<void>;
   // chat Stop: cancel the session's in-flight turn but keep the session open for the next input
   interruptSession(sessionId: string): Promise<void>;
 }
@@ -117,10 +118,11 @@ export class HttpJobSender implements AgentClient {
   }
 
   // POST one interactive input turn to the session over the SAME /receive envelope as dispatch (fresh runId per
-  // turn since these are conversational, not a single workflow run). throws on non-2xx so the route can 502.
-  async sendInput(sessionId: string, input: string): Promise<void> {
+  // turn since these are conversational, not a single workflow run). Rides the OBO user bearer, not the service
+  // token, so the agent can match the caller against the session's owner. throws on non-2xx so the route can 502.
+  async sendInput(sessionId: string, input: string, subjectToken: string | null = null): Promise<void> {
     const request: ExecutionRequest = { runId: randomUUID(), input };
-    const res = await this.post("/receive", request, sessionId);
+    const res = await this.post("/receive", request, sessionId, await this.userBearer(subjectToken));
     if (!res.ok) throw new Error(`agent /receive -> ${res.status}`);
   }
 
@@ -139,10 +141,11 @@ export class HttpJobSender implements AgentClient {
     if (!res.ok) throw new Error(`agent /receive -> ${res.status}`);
   }
 
-  private async post(path: string, body?: unknown, sessionId?: string): Promise<Response> {
+  private async post(path: string, body?: unknown, sessionId?: string, bearer?: string | null): Promise<Response> {
     const headers: Record<string, string> = { "content-type": "application/json" };
-    // the cached agent:trigger bearer (refreshed only past expiry); null in unconfigured dev. the agent gates on its claims
-    const token = this.clientId ? await this.tokens?.getAccessTokenAsync(this.clientId) : undefined;
+    // an explicit bearer (the OBO user token) wins; else the cached agent:trigger service bearer (refreshed only
+    // past expiry); null/undefined in unconfigured dev sends no header. the agent gates on the token's claims
+    const token = bearer ?? (this.clientId ? await this.tokens?.getAccessTokenAsync(this.clientId) : undefined);
     if (token) headers.authorization = `Bearer ${token}`;
     if (sessionId) headers["x-session-id"] = sessionId;
     return fetch(`${this.baseUrl}${path}`, {

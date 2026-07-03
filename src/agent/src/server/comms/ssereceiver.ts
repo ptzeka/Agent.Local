@@ -12,8 +12,8 @@ const HEARTBEAT_MS = 15_000;
 // host -> agent SSE RECEIVE: the live READ half of an interactive CLI session. The host opens this per cli
 // session and pipes it to the browser. A runtime is built PER connection (resumed off the session), its event
 // taxonomy projected to chat frames, and torn down on disconnect. Input arrives separately over /receive and the
-// runner injects it into THIS same live runtime. Access = a valid agent:trigger token (upstream middleware) + a
-// live session; user→session ownership was already gated host-side, so the agent never learns the user.
+// runner injects it into THIS same live runtime. Access = a valid agent:trigger token (upstream middleware) + the
+// caller's verified OBO user matching the session's owner — the same gate /receive applies to user-bound sessions.
 export class SseReceiver {
   constructor(
     private readonly sessions: SessionRegistry,

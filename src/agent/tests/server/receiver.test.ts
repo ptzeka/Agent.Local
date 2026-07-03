@@ -5,11 +5,12 @@ import { Eventing } from "@agent-local/common/eventing";
 import { HttpReceiver } from "../../src/server/comms/receiver.js";
 import { EXECUTION_REQUESTED, type ExecutionRequested } from "../../src/server/comms/contract.js";
 import { LOGGER, SERVER_CONFIG } from "../../src/server/container-tokens.js";
+import { SessionRegistry } from "../../src/server/session-registry.js";
 import type { AgentServerSettings } from "../../src/server/appsettings.js";
 
 // reach the POST /receive handler out of the express router so the test drives it with a fake req/res, no HTTP
-function receiveHandler(): (req: Request, res: Response) => void {
-  const router = new HttpReceiver().routes() as unknown as {
+function receiveHandler(sessions = new SessionRegistry()): (req: Request, res: Response) => void {
+  const router = new HttpReceiver(sessions).routes() as unknown as {
     stack: { route?: { path: string; stack: { handle: (req: Request, res: Response) => void }[] } }[];
   };
   const layer = router.stack.find((l) => l.route?.path === "/receive");
@@ -29,6 +30,7 @@ function makeReq(opts: {
   body: unknown;
   sessionId?: string;
   serviceId?: string;
+  userId?: string;
 }): Request {
   const container = new Container();
   container.set(LOGGER, { debug: () => {}, error: () => {} } as never);
@@ -42,7 +44,7 @@ function makeReq(opts: {
       accessToken: null,
       permissions: ["agent:trigger"],
       authenticated: opts.authenticated,
-      userInfo: opts.serviceId ? { serviceId: opts.serviceId } : null,
+      userInfo: opts.serviceId ? { serviceId: opts.serviceId, userId: opts.userId } : null,
     },
   } as unknown as Request;
 }
@@ -111,6 +113,52 @@ describe("HttpReceiver", () => {
 
     expect(res.statusCode).toBe(401);
     expect(published).toBe(0);
+  });
+
+  test("input into a user-bound (cli) session is 403 unless the caller acts for that user", () => {
+    const bus = new Eventing();
+    let published = 0;
+    bus.subscribe(EXECUTION_REQUESTED, () => (published += 1));
+    const sessions = new SessionRegistry();
+    const record = sessions.create("ws-1", "work-1", "user-9999");
+    const handler = receiveHandler(sessions);
+    const body = { runId: "w", input: "x" };
+
+    // a plain service token (no OBO user) and a different user's OBO are both refused
+    const asService = makeRes();
+    handler(makeReq({ bus, required: true, authenticated: true, serviceId: "svc", sessionId: record.sessionId, body }), asService);
+    expect(asService.statusCode).toBe(403);
+    const asOtherUser = makeRes();
+    handler(
+      makeReq({ bus, required: true, authenticated: true, serviceId: "svc", userId: "user-6666", sessionId: record.sessionId, body }),
+      asOtherUser,
+    );
+    expect(asOtherUser.statusCode).toBe(403);
+    expect(published).toBe(0);
+
+    // the owner's OBO goes through
+    const asOwner = makeRes();
+    handler(
+      makeReq({ bus, required: true, authenticated: true, serviceId: "svc", userId: "user-9999", sessionId: record.sessionId, body }),
+      asOwner,
+    );
+    expect(asOwner.statusCode).toBe(202);
+    expect(published).toBe(1);
+  });
+
+  test("a job session (no bound user) still accepts service-token input", () => {
+    const bus = new Eventing();
+    let published = 0;
+    bus.subscribe(EXECUTION_REQUESTED, () => (published += 1));
+    const sessions = new SessionRegistry();
+    const record = sessions.create("ws-1", "work-1"); // no userId: workflow-owned
+    const res = makeRes();
+    receiveHandler(sessions)(
+      makeReq({ bus, required: true, authenticated: true, serviceId: "svc", sessionId: record.sessionId, body: { runId: "w", input: "x" } }),
+      res,
+    );
+    expect(res.statusCode).toBe(202);
+    expect(published).toBe(1);
   });
 
   test("a request missing input is rejected 400 and nothing is published", () => {

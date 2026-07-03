@@ -92,7 +92,7 @@ async function main(): Promise<void> {
   // publishes onto the bus the runner consumes; the sender POSTs the one-shot result back out.
   const runner = new ExecutionRunner(root.signal, runtimeBuilder, sseQueue, logger, bus);
   runner.start();
-  app.use(new HttpReceiver().routes());
+  app.use(new HttpReceiver(sessions).routes());
 
   // ambient 5-min heartbeat: one process timer for periodic upkeep. For now its only task is reaping orphan SSE
   // connections (dead tabs whose disconnect never fired) so a leaked runtime doesn't hold a session's live slot.

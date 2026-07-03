@@ -6,9 +6,9 @@ import { isTerminalStatus } from "../work/work-status.js";
 import type { AgentClient } from "../comms/sender.js";
 
 // host BFF for the interactive agent CLI over a work item. The browser only ever talks to the host (cookie, same
-// origin); the host validates work ownership and proxies to the agent under its OWN service token — so the cookie
-// never reaches the agent and the agent stays a pure executor that knows only the sessionId. Every route is owner
-// -gated by the cookie identity (req.userContext.userInfo.sub), like the works API.
+// origin); the cookie never reaches the agent. Provision/stop ride the host's OWN service token; the stream and
+// input rides an OBO bearer carrying the USER, so the agent independently matches the caller against the session's
+// owner. Every route is additionally owner-gated here by the cookie identity (req.userContext.userInfo.sub).
 export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: ILogger): Router {
   const router = Router();
   const owner = (req: Request): string => req.userContext.userInfo!.sub;
@@ -114,7 +114,8 @@ export function createAgentCliApi(works: WorkStore, agent: AgentClient, logger: 
       return;
     }
     try {
-      await agent.sendInput(sessionId, input);
+      // the user's own access token rides as the OBO subject, same as the stream: the agent re-checks ownership
+      await agent.sendInput(sessionId, input, req.userContext.accessToken);
       res.status(202).json({ accepted: true });
     } catch (err) {
       res.status(502).json({ error: String(err) });
