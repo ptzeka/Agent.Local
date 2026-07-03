@@ -23,7 +23,7 @@ import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { findProjectRoot, moduleDir, resolveSandboxRoot, resolveSessionsDir } from "../paths.js";
-import type { Principal } from "../agent/identity/types.js";
+import { ANONYMOUS_PRINCIPAL, type Principal } from "../agent/identity/types.js";
 import { decodePrincipal } from "../agent/identity/decode-token.js";
 import { parseArgs } from "./args.js";
 import { login, loadCachedToken } from "./cli-auth.js";
@@ -235,15 +235,16 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const { projectRoot, sandboxRoot } = boot;
   const db = boot.container.get(DB);
 
-  // a resolved identity scopes the picker to that user's own sessions; anonymous keeps the global list
+  // the picker is always owner-scoped: a logged-in user sees their own sessions, a logged-out one only the
+  // anonymous-owned bucket — never other users' sessions
   let principal = decodePrincipal(resolveToken());
-  let choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub), {
+  let choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub ?? ANONYMOUS_PRINCIPAL.sub), {
     userName: displayNameOf(principal),
   });
   // the login row loops back into the picker so the user lands on their own sessions, not a stale list
   while (choice.kind === "login") {
     principal = (await tryInteractiveLogin(boot)) ?? principal;
-    choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub), {
+    choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub ?? ANONYMOUS_PRINCIPAL.sub), {
       userName: displayNameOf(principal),
     });
   }

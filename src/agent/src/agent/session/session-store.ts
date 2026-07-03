@@ -74,7 +74,7 @@ export class SessionStore {
   }
 
   // every session owned by one user, most-recent-first — idx_sessions_user_updated (user_sub, updated_at DESC)
-  // serves this directly, so no separate id-listing pass like summaries()/allSessions() need for the global case
+  // serves this directly
   public async getSessionsByUserId(userId: string): Promise<Session[]> {
     const rows = this.db
       .prepare("SELECT payload FROM sessions WHERE user_sub = ? ORDER BY updated_at DESC")
@@ -82,16 +82,11 @@ export class SessionStore {
     return rows.map(parseSession).filter((session): session is Session => session !== null);
   }
 
-  private async allSessions(): Promise<Session[]> {
-    const rows = this.db.prepare("SELECT payload FROM sessions").all() as { payload: string }[];
-    return rows.map(parseSession).filter((session): session is Session => session !== null);
-  }
-
-  // pass userId to scope the picker to one owner (the CLI's login step); omit it for the global cross-user
-  // list the server/headless paths use. Corrupt rows are dropped, not fatal; sub-sessions are omitted since
-  // they aren't standalone-resumable.
-  public async summaries(userId?: string): Promise<SessionSummary[]> {
-    const sessions = userId ? await this.getSessionsByUserId(userId) : await this.allSessions();
+  // always owner-scoped: sessions are tied to a user, so no caller may list across users ("anonymous" is
+  // the owner bucket for logged-out sessions). Corrupt rows are dropped, not fatal; sub-sessions are omitted
+  // since they aren't standalone-resumable.
+  public async summaries(userId: string): Promise<SessionSummary[]> {
+    const sessions = await this.getSessionsByUserId(userId);
     const summaries: SessionSummary[] = [];
     for (const session of sessions) {
       if (session.parentSessionId) continue;
