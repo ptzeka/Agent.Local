@@ -41,7 +41,7 @@ export class SessionMiddleware implements IMiddleware {
   }
 
   private async resume(ctx: RuntimeContext, sessionId: string): Promise<Session> {
-    const session = await ctx.registry.get(StoreToken).load(sessionId);
+    const session = await ctx.registry.get(StoreToken).getSessionById(sessionId);
     if (!session) {
       throw new Error(`No persisted session "${sessionId}" to resume.`);
     }

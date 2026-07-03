@@ -55,7 +55,7 @@ describe("SessionMiddleware", () => {
     expect(session).toBeDefined();
     expect(ctx.registry.tryGet(WorkspaceToken)?.workspaceId).toBe(session!.workspaceId);
     expect(session!.user).toBe(ANONYMOUS_PRINCIPAL);
-    expect((await store.load(session!.sessionId))?.sessionId).toBe(session!.sessionId);
+    expect((await store.getSessionById(session!.sessionId))?.sessionId).toBe(session!.sessionId);
     expect(next).toHaveBeenCalledTimes(1);
   });
 

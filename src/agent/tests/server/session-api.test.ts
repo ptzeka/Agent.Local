@@ -24,7 +24,7 @@ function fakeStore(seed?: Session): SessionStore & { saved: Session[] } {
   const saved: Session[] = seed ? [seed] : [];
   const store = {
     saved,
-    async load(id: string): Promise<Session | null> {
+    async getSessionById(id: string): Promise<Session | null> {
       return saved.find((s) => s.sessionId === id) ?? null;
     },
     async save(s: Session): Promise<void> {

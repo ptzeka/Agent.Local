@@ -23,7 +23,11 @@ import type { AgentRuntimeDeps } from "../agent/runtime/types.js";
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { buildRuntime as buildRuntimeRef } from "../agent/runtime/build-runtime.js";
 import { findProjectRoot, moduleDir, resolveSandboxRoot, resolveSessionsDir } from "../paths.js";
+import type { Principal } from "../agent/identity/types.js";
+import { decodePrincipal } from "../agent/identity/decode-token.js";
 import { parseArgs } from "./args.js";
+import { login, loadCachedToken } from "./cli-auth.js";
+import { trustLocalDevCa } from "./tls-trust.js";
 import { bannerSessionOf, runRepl } from "./repl.js";
 import { formatEvent, formatSubSessionNotification, renderSession } from "./render.js";
 import { pickSession } from "./session-picker.js";
@@ -59,6 +63,8 @@ interface Bootstrap {
 // ---------------------------------------------------------------------------
 
 async function main(): Promise<void> {
+  // before any fetch: the login token exchange and provider calls verify TLS against the spliced store
+  trustLocalDevCa();
   const args = parseArgs(process.argv.slice(2));
   process.env.LOG_LEVEL = "debug";
   const boot = await bootstrap();
@@ -78,6 +84,37 @@ async function main(): Promise<void> {
     await boot.shutdown();
     logger.debug("application end", {});
   }
+}
+
+// the picker's "Log in" row: runs the PKCE loopback flow in-process so the picker can re-render scoped to
+// the new identity right away; the bearer lands in ~/.config/agent-local/cli-token.json where buildRuntime's
+// loadCachedToken() fallback picks it up, so the runtime built next injects this user without re-reading here.
+// Returns null (stay anonymous) on any failure — login is an offer, never a gate.
+async function tryInteractiveLogin(boot: Bootstrap): Promise<Principal | null> {
+  const auth = boot.config.settings.authentication;
+  if (!auth.authorityUrl || !auth.tokenUrl || !auth.nativeClientId) {
+    process.stderr.write(chalk.red("[login] authentication.authorityUrl/tokenUrl/nativeClientId are not configured\n"));
+    return null;
+  }
+  try {
+    const cached = await login({ authorityUrl: auth.authorityUrl, tokenUrl: auth.tokenUrl, nativeClientId: auth.nativeClientId });
+    const principal = decodePrincipal(cached.token);
+    process.stdout.write(
+      chalk.green(`Welcome ${displayNameOf(principal) ?? "unknown"}`) +
+        chalk.gray(` — token (expires ${new Date(cached.expiresAtMs).toISOString()}):\n${cached.token}\n`)
+    );
+    return principal;
+  } catch (err) {
+    process.stderr.write(chalk.red(`[login] ${(err as Error).message}\n`));
+    return null;
+  }
+}
+
+// picker/banner display name: the auth service's tokens carry userName; name/sub cover foreign tokens
+function displayNameOf(principal: Principal | null): string | null {
+  if (!principal) return null;
+  const { userName, name } = principal.claims;
+  return typeof userName === "string" ? userName : typeof name === "string" ? name : principal.sub;
 }
 
 // bootstrap args
@@ -166,7 +203,8 @@ function buildRuntime(
 ): AgentRuntime {
   const { projectRoot, sandboxRoot, sessionsDir, config } = boot;
   const db = boot.container.get(DB);
-  const token = process.env.AGENT_API_TOKEN;
+  // AGENT_API_TOKEN (service/CI) wins when set; otherwise fall back to the cached bearer from `--login`
+  const token = process.env.AGENT_API_TOKEN ?? loadCachedToken() ?? undefined;
   const deps: AgentRuntimeDeps = {
     config,
     sessionsDir,
@@ -187,9 +225,21 @@ function buildRuntime(
 // interactive e.g. user request/response
 async function runInteractive(boot: Bootstrap): Promise<void> {
   const { projectRoot, sandboxRoot } = boot;
+  const db = boot.container.get(DB);
 
-  const saved = await AgentRuntime.listSavedSessions(boot.container.get(DB));
-  const choice = await pickSession(saved);
+  // same precedence as buildRuntime: AGENT_API_TOKEN (service/CI) wins, else the cached bearer from a login.
+  // A resolved identity scopes the picker to that user's own sessions; anonymous keeps the global list.
+  let principal = decodePrincipal(process.env.AGENT_API_TOKEN ?? loadCachedToken() ?? undefined);
+  let choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub), {
+    userName: displayNameOf(principal),
+  });
+  // the login row loops back into the picker so the user lands on their own sessions, not a stale list
+  while (choice.kind === "login") {
+    principal = (await tryInteractiveLogin(boot)) ?? principal;
+    choice = await pickSession(await AgentRuntime.listSavedSessions(db, principal?.sub), {
+      userName: displayNameOf(principal),
+    });
+  }
 
   // no out-of-band status line: the REPL is the sole TTY writer, so a raw write would land in its pinned-prompt region
   const eventing = new Eventing();

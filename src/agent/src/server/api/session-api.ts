@@ -40,7 +40,7 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
     const record = sessions.create(workspaceId, workId, userId, sessionId);
     try {
       // persist a conversation only when the resolved id has none yet — a reuse/rehydrate must not reset the transcript
-      if (!(await store.load(record.sessionId))) {
+      if (!(await store.getSessionById(record.sessionId))) {
         // set the external reference (host workId) ONLY here, at first creation — a reuse/rehydrate skips this
         // branch, so the key minted with the session is never rewritten
         const session = createSession({ sessionId: record.sessionId, workspaceId, conversationId: randomUUID(), externalReferenceKey: workId });
@@ -67,7 +67,7 @@ export function createSessionApi(sessions: SessionRegistry, store: SessionStore,
     }
     // abort any in-flight run for this session BEFORE marking it terminal, so a Stop/pause kills the live turn now
     bus.publish(EXECUTION_CANCEL, { sessionId });
-    const session = await store.load(sessionId);
+    const session = await store.getSessionById(sessionId);
     if (session) {
       session.status = "done";
       await store.save(session);

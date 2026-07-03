@@ -1,6 +1,6 @@
 // kept out of index.ts so it stays pure and unit-testable; importing index.ts would run main()
 
-// run present ⇒ headless single run; absent ⇒ REPL
+// run present ⇒ headless single run; absent ⇒ REPL (login lives inside the interactive picker, not a flag)
 export interface CliArgs {
   run?: string;
   sessionId?: string;

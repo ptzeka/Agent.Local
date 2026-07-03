@@ -469,9 +469,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   // Static utilities (pre-session)
   // --------------------------------------------------------------------------
 
-  // static so the picker can call it before any runtime is built (before a session is chosen)
-  static listSavedSessions(db: DatabaseHandle): Promise<SessionSummary[]> {
-    return SessionStore.create(db).summaries();
+  // static so the picker can call it before any runtime is built (before a session is chosen); pass userId
+  // once the picker's login step has resolved an identity, to scope the list to that user's own sessions
+  static listSavedSessions(db: DatabaseHandle, userId?: string): Promise<SessionSummary[]> {
+    return SessionStore.create(db).summaries(userId);
   }
 
   // --------------------------------------------------------------------------

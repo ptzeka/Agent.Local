@@ -64,27 +64,36 @@ export class SessionStore {
       );
   }
 
-  // keyed by session_id alone: the store API carries no user_sub yet, so cross-user scoping waits for the
-  // identity-aware repository. session ids are uuids, so a same-id collision across users is not a real case
-  public async load(sessionId: string): Promise<Session | null> {
+  // keyed by session_id alone (cross-user, like the old `load`): a session id is a uuid, so a same-id collision
+  // across users is not a real case. Use getSessionsByUserId when the caller only has a user, not a session id.
+  public async getSessionById(sessionId: string): Promise<Session | null> {
     const row = this.db
       .prepare("SELECT payload FROM sessions WHERE session_id = ?")
       .get(sessionId) as { payload: string } | undefined;
-    return row ? (JSON.parse(row.payload) as Session) : null;
+    return row ? parseSession(row) : null;
   }
 
-  public async list(): Promise<string[]> {
-    const rows = this.db.prepare("SELECT session_id FROM sessions").all() as { session_id: string }[];
-    return rows.map((row) => row.session_id);
+  // every session owned by one user, most-recent-first — idx_sessions_user_updated (user_sub, updated_at DESC)
+  // serves this directly, so no separate id-listing pass like summaries()/allSessions() need for the global case
+  public async getSessionsByUserId(userId: string): Promise<Session[]> {
+    const rows = this.db
+      .prepare("SELECT payload FROM sessions WHERE user_sub = ? ORDER BY updated_at DESC")
+      .all(userId) as { payload: string }[];
+    return rows.map(parseSession).filter((session): session is Session => session !== null);
   }
 
-  // corrupt rows are skipped, not fatal; sub-sessions are omitted since they aren't standalone-resumable
-  public async summaries(): Promise<SessionSummary[]> {
-    const ids = await this.list();
+  private async allSessions(): Promise<Session[]> {
+    const rows = this.db.prepare("SELECT payload FROM sessions").all() as { payload: string }[];
+    return rows.map(parseSession).filter((session): session is Session => session !== null);
+  }
+
+  // pass userId to scope the picker to one owner (the CLI's login step); omit it for the global cross-user
+  // list the server/headless paths use. Corrupt rows are dropped, not fatal; sub-sessions are omitted since
+  // they aren't standalone-resumable.
+  public async summaries(userId?: string): Promise<SessionSummary[]> {
+    const sessions = userId ? await this.getSessionsByUserId(userId) : await this.allSessions();
     const summaries: SessionSummary[] = [];
-    for (const id of ids) {
-      const session = await this.load(id).catch(() => null);
-      if (!session) continue;
+    for (const session of sessions) {
       if (session.parentSessionId) continue;
       const messages = session.conversationId
         ? await this.conversations.load(session.conversationId).catch(() => null)
@@ -97,6 +106,15 @@ export class SessionStore {
       });
     }
     return summaries.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+}
+
+// corrupt payloads are skipped by callers rather than thrown, so one bad row can't take the whole list down
+function parseSession(row: { payload: string }): Session | null {
+  try {
+    return JSON.parse(row.payload) as Session;
+  } catch {
+    return null;
   }
 }
 

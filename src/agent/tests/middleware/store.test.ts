@@ -19,7 +19,7 @@ describe("StoreMiddleware", () => {
 
     // Round-trip through the DB proves it's a real, usable store.
     await store!.save(createSession({ sessionId: "s1", workspaceId: "w1", conversationId: "c1" }));
-    expect((await store!.load("s1"))?.sessionId).toBe("s1");
+    expect((await store!.getSessionById("s1"))?.sessionId).toBe("s1");
   });
 
   test("the seeded store is empty — unknown ids load as null, not stale data", async () => {
@@ -27,6 +27,6 @@ describe("StoreMiddleware", () => {
 
     await new StoreMiddleware().initialize(ctx, jest.fn(async () => {}));
 
-    expect(await ctx.registry.get(StoreToken).load("does-not-exist")).toBeNull();
+    expect(await ctx.registry.get(StoreToken).getSessionById("does-not-exist")).toBeNull();
   });
 });

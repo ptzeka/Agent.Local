@@ -78,7 +78,7 @@ describe("ChildSessionMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
 
     // Verify the session was persisted
-    const persisted = await store.load("child-1");
+    const persisted = await store.getSessionById("child-1");
     expect(persisted?.sessionId).toBe("child-1");
     expect(persisted?.parentSessionId).toBe("parent-1");
   });

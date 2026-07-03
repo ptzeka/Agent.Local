@@ -97,7 +97,7 @@ describe("ChildSessionMiddleware", () => {
 
   test("persists the child session to the store under its id", async () => {
     const ctx = await provision();
-    const loaded = await ctx.registry.get(StoreToken).load("child-1");
+    const loaded = await ctx.registry.get(StoreToken).getSessionById("child-1");
     expect(loaded?.parentSessionId).toBe("parent-1");
   });
 });

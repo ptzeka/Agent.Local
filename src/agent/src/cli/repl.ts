@@ -143,6 +143,7 @@ export function bannerSessionOf(runtime: AgentRuntime, resumed: boolean): Banner
     resumed,
     turns: session.counters.turns,
     preview: firstUser ? previewOf(firstUser.content) : null,
+    userName: typeof session.user?.claims.userName === "string" ? session.user.claims.userName : null,
   };
 }
 

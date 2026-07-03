@@ -123,7 +123,7 @@ describe("ConversationMiddleware", () => {
     await new ConversationMiddleware().initialize(ctx, jest.fn(async () => {}));
 
     expect(session.conversationId).toBeDefined();
-    expect((await sessionStore.load("s2"))?.conversationId).toBe(session.conversationId);
+    expect((await sessionStore.getSessionById("s2"))?.conversationId).toBe(session.conversationId);
   });
 
   test("relinks to a fresh conversation when the session points at a soft-deleted one", async () => {

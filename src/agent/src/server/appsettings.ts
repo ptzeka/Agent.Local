@@ -19,6 +19,10 @@ export interface AgentAuthSettings {
   tokenUrl?: string;
   clientId?: string;
   clientSecret?: string;
+  // the CLI's PKCE client_id (public, no secret) for interactive `agent-local login` — registered auth-side
+  // under nativeClients so its loopback redirect_uri passes the whitelist. Distinct from clientId/clientSecret
+  // above, which is a confidential client used for service-to-service client-credentials, not user login.
+  nativeClientId?: string;
 }
 
 export interface AgentServerSettings {

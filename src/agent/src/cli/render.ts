@@ -227,6 +227,8 @@ export interface BannerSession {
   turns: number;
   // first user message, or null when none yet
   preview: string | null;
+  // session.user's claims.userName, or null on an anonymous/service session
+  userName: string | null;
 }
 
 export function renderBanner(
@@ -251,12 +253,13 @@ export function renderBanner(
   write(lines.join("\n"));
 }
 
-// "id=… · conv=… · ctx=… · ws=… · origin" line; ctx falls back to "none" when no snapshot was stamped
+// "id=… · conv=… · ctx=… · ws=… · user=… · origin" line; ctx/user fall back to "none" when absent
 function sessionLine(session: BannerSession): string {
   const id = `id=${short(session.sessionId)}`;
   const conv = `conv=${short(session.conversationId)}`;
   const ctx = `ctx=${session.contextHashes["orchestrator"] ? short(session.contextHashes["orchestrator"]) : "none"}`;
   const ws = `ws=${short(session.workspaceId)}`;
+  const user = `user=${session.userName ?? "none"}`;
 
   let origin: string = session.resumed ? "resumed" : "new";
   if (session.resumed) {
@@ -265,7 +268,7 @@ function sessionLine(session: BannerSession): string {
     origin += ` — ${turns}${desc}`;
   }
 
-  return `${id} · ${conv} · ${ctx} · ${ws} · ${origin}`;
+  return `${id} · ${conv} · ${ctx} · ${ws} · ${user} · ${origin}`;
 }
 
 function short(value: string): string {

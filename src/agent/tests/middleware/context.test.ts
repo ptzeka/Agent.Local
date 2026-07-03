@@ -92,7 +92,7 @@ describe("ContextMiddleware", () => {
 
     const session = ctx.registry.get(SessionToken);
     expect(session.contextHashes?.["orchestrator"]).toMatch(/^[0-9a-f]{16}$/);
-    const persisted = await store.load("s1");
+    const persisted = await store.getSessionById("s1");
     expect(persisted?.contextHashes?.["orchestrator"]).toBe(session.contextHashes?.["orchestrator"]);
     expect(next).toHaveBeenCalledTimes(1);
   });

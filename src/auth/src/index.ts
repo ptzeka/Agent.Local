@@ -51,6 +51,8 @@ async function main(): Promise<void> {
   const cookieKey = sessionKey(settings.session?.secret ?? "agent-local-insecure-dev-session-secret");
 
   app.use(express.json());
+  // urlencoded: /connect/authorize's login form is a plain HTML <form> post (no JS needed on this IdP-hosted page)
+  app.use(express.urlencoded({ extended: false }));
   // CORS before everything: the web app calls the account routes cross-origin with credentials, so the
   // allow-origin/credentials headers (and the OPTIONS preflight) must be in place ahead of the route handlers.
   app.use(corsMiddleware(settings.cors?.allowedOrigins ?? []));
@@ -60,7 +62,7 @@ async function main(): Promise<void> {
   });
 
   app.use(sessionMiddleware(cookieKey));                            // decrypt the session cookie ONCE -> req.authTicket
-  app.use(createAuthApi(keys, settings.iam, cookieKey, logger, settings.session?.cookieDomain)); // /account/* + /connect/token + /.well-known/*
+  app.use(createAuthApi(keys, settings.iam, cookieKey, logger, settings.session?.cookieDomain, settings.nativeClients)); // /account/* + /connect/* + /.well-known/*
   logger.info("[auth] mounted account + connect + discovery routes");
 
   const port = Number(process.env.AUTH_PORT) || settings.port || DEFAULT_PORT;

@@ -16,6 +16,10 @@ export interface AuthSettings {
   // browser origins allowed to call the account routes with credentials (the web app's origin). The IdP is
   // cross-origin from the web, so a credentialed fetch needs an explicit allow-list — never a wildcard with creds.
   cors?: { allowedOrigins: string[] };
+  // public (secret-less) clients allowed through /connect/authorize's PKCE code flow, keyed by client_id. Each
+  // entry pins the exact callback path a redirect_uri must match; the port is left free since a loopback CLI
+  // client mints a fresh ephemeral one per login. Never widen this to a full-URL allow-list — see auth-api.ts.
+  nativeClients?: Record<string, { redirectPath: string }>;
   secrets?: Record<string, string>;
 }
 

@@ -8,16 +8,28 @@ import type { SessionSummary } from "../agent/session/session-store.js";
 // fully before returning so the REPL's readline (created afterward) starts from a clean slate
 export type PickResult =
   | { kind: "new" }
-  | { kind: "resume"; sessionId: string };
+  | { kind: "resume"; sessionId: string }
+  | { kind: "login" };
+
+// null userName means logged out: the header stays generic and a "Log in" row is offered;
+// a name means the caller resolved an identity, so the header welcomes it and the row disappears
+export interface PickerIdentity {
+  userName: string | null;
+}
 
 const CREATE_NEW = 0;
 
 // falls back to "new" without prompting when stdin is not a TTY (piped input, CI), where a menu can't work
-export async function pickSession(summaries: SessionSummary[]): Promise<PickResult> {
+export async function pickSession(
+  summaries: SessionSummary[],
+  identity: PickerIdentity = { userName: null }
+): Promise<PickResult> {
   if (!process.stdin.isTTY) return { kind: "new" };
 
-  // row 0 is "create new"; the rest map 1:1 onto summaries
-  const rowCount = summaries.length + 1;
+  // row 0 is "create new"; when logged out row 1 offers login; the rest map 1:1 onto summaries
+  const loginRow = identity.userName === null;
+  const summaryOffset = loginRow ? 2 : 1;
+  const rowCount = summaries.length + summaryOffset;
   let selected = CREATE_NEW;
   // lines emitted last paint, so we can rewind and redraw
   let rendered = 0;
@@ -29,16 +41,24 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
     }
 
     const lines: string[] = [];
-    lines.push(chalk.bold("Select a session  ") + chalk.gray("(↑/↓ to move, Enter to choose, Esc for new)"));
+    const title = identity.userName
+      ? chalk.bold(`Welcome ${chalk.green(identity.userName)} — select a session  `)
+      : chalk.bold("Select a session  ");
+    lines.push(title + chalk.gray("(↑/↓ to move, Enter to choose, Esc for new)"));
 
     lines.push(rowFor(selected === CREATE_NEW, chalk.green("＋ Create new session"), ""));
+    if (loginRow) {
+      lines.push(rowFor(selected === 1, chalk.yellow("⚿ Log in"), "browser sign-in — skip to stay anonymous"));
+    }
     summaries.forEach((summary, index) => {
-      const isSelected = selected === index + 1;
+      const isSelected = selected === index + summaryOffset;
       lines.push(rowFor(isSelected, chalk.cyan(shortId(summary.sessionId)), describe(summary)));
     });
 
     process.stdout.write(lines.join("\n") + "\n");
-    rendered = lines.length;
+    // count terminal rows, not logical lines: a line longer than the window wraps onto extra rows,
+    // and rewinding short of those leaves stale copies stacking above the menu
+    rendered = lines.reduce((rows, line) => rows + terminalRows(line), 0);
   };
 
   paint();
@@ -63,14 +83,19 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
           return;
         }
 
+        // clamp at the edges — no wrap-around, and no repaint when nothing moved
         if (key.name === "up" || key.name === "k") {
-          selected = (selected - 1 + rowCount) % rowCount;
-          paint();
+          if (selected > 0) {
+            selected -= 1;
+            paint();
+          }
           return;
         }
         if (key.name === "down" || key.name === "j") {
-          selected = (selected + 1) % rowCount;
-          paint();
+          if (selected < rowCount - 1) {
+            selected += 1;
+            paint();
+          }
           return;
         }
         if (key.name === "return" || key.name === "enter") {
@@ -78,7 +103,9 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
           resolve(
             selected === CREATE_NEW
               ? { kind: "new" }
-              : { kind: "resume", sessionId: summaries[selected - 1].sessionId }
+              : loginRow && selected === 1
+                ? { kind: "login" }
+                : { kind: "resume", sessionId: summaries[selected - summaryOffset].sessionId }
           );
         }
       };
@@ -95,6 +122,15 @@ export async function pickSession(summaries: SessionSummary[]): Promise<PickResu
     // restore the terminal so the REPL's readline starts clean; leave stdin resumed for it to take over
     process.stdin.setRawMode(wasRaw);
   }
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI_PATTERN = /\x1b\[[0-9;]*m/g;
+
+function terminalRows(line: string): number {
+  const width = process.stdout.columns || 80;
+  const visible = line.replace(ANSI_PATTERN, "").length;
+  return Math.max(1, Math.ceil(visible / width));
 }
 
 function rowFor(selected: boolean, label: string, detail: string): string {
