@@ -14,9 +14,8 @@ import {
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
 import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
-import type { ToolContext, TurnBindable } from "../synthetic-mcp/types.js";
-import { createSubsessionsLocalMcp } from "../synthetic-mcp/subsessions-server.js";
-import { createTurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
+import type { TurnBindable, TurnBinding } from "../synthetic-mcp/types.js";
+import { TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
 import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
@@ -59,7 +58,6 @@ export class Orchestrator {
     const turnEvents = ctx.events;
     const logger = ctx.logger;
     const session = ctx.session;
-    const workspace = ctx.runtime.getWorkspace();
     const modelsRegistry = ctx.runtime.getModelsRegistry();
     const mcpRegistry = ctx.runtime.getMcpClientRegistry();
     const providersRegistry = ctx.runtime.getProvidersRegistry();
@@ -82,38 +80,12 @@ export class Orchestrator {
 
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
-    // rebind the subsessions server to this turn's live coordinator so tool calls hit the right instance
-    const coordinator = ctx.coordinator;
-    if (coordinator) {
-      const subsessionToolCtx: ToolContext = {
-        session,
-        workspace,
-        sandboxRoot: mcpRegistry.sandboxRoot,
-        coordinator,
-        signal: ctx.signal,
-      };
-      mcpRegistry.registerClient(createSubsessionsLocalMcp(subsessionToolCtx));
-    }
-
-    // dispatched runs require a structured verdict: rebind turnresult to this turn's sink so report_result lands here.
-    // minted regardless so the post-round check is uniform; only registered (advertised) when structured mode is on.
     // structured mode IS "is turnresult mounted" — driven solely by the role's whitelist (only workflow-orchestrator
     // lists it), like the executor/memomcp seams. the executor reports to its parent, not a workflow, so it's excluded.
+    // the sink is minted regardless so the post-round check is uniform; the bind pass below wires it in.
     const structuredMode = !!mcpRegistry.getClient(TURN_RESULT_SERVER_NAME) && this.role !== "executor";
     const resultSink = new TurnResultCapture();
-    if (structuredMode) {
-      mcpRegistry.registerClient(
-        createTurnResultLocalMcp({
-          session,
-          workspace,
-          sandboxRoot: mcpRegistry.sandboxRoot,
-          signal: ctx.signal,
-          resultSink,
-        })
-      );
-    }
 
-    // built after the subsessions rebind so the scoped client sees the live mounts
     const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, this.role);
     const visibleTools = scopedClients.listTools();
 
@@ -121,14 +93,16 @@ export class Orchestrator {
     const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
     const tracker = new DispatchTracker(maxDispatches, checkInterval);
 
-    // skip binding for the executor role: its sub-run doesn't dispatch, so binding would clobber the parent's in-flight tracker
+    // ONE per-turn seam: servers register once at build; those holding turn state take it here via bindTurn.
+    // skipped for the executor role: its sub-run doesn't dispatch or report, so nothing needs binding there.
     if (this.role !== "executor") {
-      const executorMcp = mcpRegistry.getClient("executor");
-      if (executorMcp && typeof (executorMcp as unknown as TurnBindable).bindTurn === "function") {
-        // chained under the turn so what the executor publishes bubbles up
-        const mcpClientEvents = new Eventing();
-        turnEvents.add(mcpClientEvents);
-        (executorMcp as unknown as TurnBindable).bindTurn(ctx.signal, tracker, mcpClientEvents);
+      // chained under the turn so what bound servers publish bubbles up
+      const mcpClientEvents = new Eventing();
+      turnEvents.add(mcpClientEvents);
+      const binding: TurnBinding = { signal: ctx.signal, tracker, events: mcpClientEvents, resultSink };
+      for (const client of mcpRegistry.listClients()) {
+        const bindable = client as unknown as Partial<TurnBindable>;
+        if (typeof bindable.bindTurn === "function") bindable.bindTurn(binding);
       }
     }
 

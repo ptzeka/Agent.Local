@@ -1,22 +1,36 @@
-// re-registered each dispatched turn with that turn's ToolContext (carrying the live result sink) baked in,
-// mirroring the subsessions server: calls route in-process to the sink, never a transport
+// mounted only when a role whitelists it (the workflow-orchestrator role); when no sink is bound the handler
+// returns its "not available" error rather than silently dropping the verdict
 
-import { LocalMcp, type LocalTool } from "@agent-local/mcp";
+import { LocalMcp } from "@agent-local/mcp";
 import { createReportResultTools } from "./turn-result-tools.js";
-import type { ToolContext } from "./types.js";
+import type { ToolContext, TurnBindable, TurnBinding, TurnResultSink } from "./types.js";
 
 export const TURN_RESULT_SERVER_NAME = "turnresult";
 
-// mounted only when a role whitelists it (the workflow-orchestrator role); when no sink is bound the handler
-// returns its "not available" error rather than silently dropping the verdict
-export function createTurnResultLocalMcp(toolCtx: ToolContext): LocalMcp {
-  const tools: LocalTool[] = createReportResultTools().map((tool) => ({
-    descriptor: tool.descriptor,
-    invoke: async (args) => {
-      const result = await tool.callTool(args ?? {}, toolCtx);
-      return { isError: result.isError, content: result.content };
-    },
-  }));
+// registered once; the verdict sink is the only per-turn state, swapped in via bindTurn each dispatched turn
+// so a previous turn's report can never leak into this turn's outcome
+export class TurnResultLocalMcp extends LocalMcp implements TurnBindable {
+  private resultSink?: TurnResultSink;
 
-  return new LocalMcp(TURN_RESULT_SERVER_NAME, tools);
+  constructor(baseCtx: ToolContext) {
+    // handlers close over `this` for the live sink, so tools register after super()
+    super(TURN_RESULT_SERVER_NAME, []);
+    for (const tool of createReportResultTools()) {
+      this.registerTool({
+        descriptor: tool.descriptor,
+        invoke: async (args, cutoffscope) => {
+          const result = await tool.callTool(args ?? {}, {
+            ...baseCtx,
+            signal: cutoffscope.signal,
+            resultSink: this.resultSink,
+          });
+          return { isError: result.isError, content: result.content };
+        },
+      });
+    }
+  }
+
+  public bindTurn(binding: TurnBinding): void {
+    this.resultSink = binding.resultSink;
+  }
 }

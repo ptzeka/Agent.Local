@@ -4,10 +4,11 @@ import type { ModelRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY_SERVER_NAME } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
 import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
-import { createTurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
+import { TurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
-import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
+import type { SubSessionCoordinator } from "../../runners/subsession.js";
+import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionManagerToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
 import { mountExternalMcp, type McpServerDef } from "./external-mcp.js";
@@ -46,7 +47,9 @@ export class McpRegistryMiddleware implements IMiddleware {
       mcpRegistry,
       validMcpClients,
       ctx,
-      serverTimeout
+      serverTimeout,
+      // runs after SessionManagerMiddleware so subsession tools route to the live coordinator
+      ctx.registry.get(SessionManagerToken)
     );
 
     await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx);
@@ -69,7 +72,8 @@ export class McpRegistryMiddleware implements IMiddleware {
     const executorModel = modelsRegistry.getValidModelForRole(EXECUTOR_ROLE);
     const executorTimeout = modelsRegistry.getTimeoutForModel(executorModel);
     const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
-    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout);
+    // no coordinator: an executor must never spawn subsessions, so its seam keeps the "not available" error
+    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined);
     registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
   }
 
@@ -80,14 +84,15 @@ export class McpRegistryMiddleware implements IMiddleware {
     registry: McpClientRegistry,
     serverNames: string[] | undefined,
     ctx: RuntimeContext,
-    serverTimeout: number
+    serverTimeout: number,
+    coordinator: SubSessionCoordinator | undefined
   ): Promise<void> {
     const session = ctx.registry.get(SessionToken);
     const workspace = ctx.registry.get(WorkspaceToken);
     const sandboxRoot = ctx.sandboxRoot;
     const fsRoot = path.join(sandboxRoot, session.workspaceId);
     const externalDefs = ctx.registry.get(ConfigurationToken).getMcpServerDefs();
-    
+
     for (const mcp of serverNames ?? []) {
       switch (mcp) {
         case FS_SERVER_NAME:
@@ -101,8 +106,6 @@ export class McpRegistryMiddleware implements IMiddleware {
             session,
             workspace,
             sandboxRoot,
-            coordinator: undefined,
-            signal: undefined,
           }).setTimeout(serverTimeout));
           break;
         case EXCEL_SERVER_NAME:
@@ -110,8 +113,6 @@ export class McpRegistryMiddleware implements IMiddleware {
             session,
             workspace,
             sandboxRoot,
-            coordinator: undefined,
-            signal: undefined,
           }).setTimeout(serverTimeout));
           break;
         case SUBSESSIONS_SERVER_NAME:
@@ -119,20 +120,17 @@ export class McpRegistryMiddleware implements IMiddleware {
             session,
             workspace,
             sandboxRoot,
-            coordinator: undefined,
-            signal: undefined,
+            coordinator,
           }).setTimeout(serverTimeout));
           break;
         case TURN_RESULT_SERVER_NAME:
           // whitelisting it IS the opt-in: only the workflow-orchestrator role lists turnresult, so interactive
-          // roles never mount it. the live sink is rebound per turn in the orchestrator — this build-time mount
-          // just makes the snapshot honest (and its presence is what the runner reads to enter structured mode).
-          registry.registerClient(createTurnResultLocalMcp({
+          // roles never mount it. its presence is what the runner reads to enter structured mode; the live sink
+          // arrives via the runner's per-turn bindTurn pass.
+          registry.registerClient(new TurnResultLocalMcp({
             session,
             workspace,
             sandboxRoot,
-            coordinator: undefined,
-            signal: undefined,
           }).setTimeout(serverTimeout));
           break;
         case DELAY_SERVER_NAME:

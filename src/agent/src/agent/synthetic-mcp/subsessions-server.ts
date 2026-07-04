@@ -1,20 +1,13 @@
-// re-registered each turn with that turn's ToolContext baked in; calls route to the SessionManager, never a transport
+// registered once with the runtime's coordinator wired in; calls route to the SessionManager, never a transport
+// the turn's signal is not baked — bindToolContext threads each call's cutoffscope in as ctx.signal
 
-import { LocalMcp, type LocalTool } from "@agent-local/mcp";
+import { LocalMcp } from "@agent-local/mcp";
 import { createSubSessionTools } from "./subsessions-tools/subsessions.js";
-import type { ToolContext } from "./types.js";
+import { bindToolContext, type ToolContext } from "./types.js";
 
 export const SUBSESSIONS_SERVER_NAME = "subsessions";
 
-// when the turn's coordinator is absent the tools still advertise but each call returns the handlers' "not available" error
+// when the coordinator is absent the tools still advertise but each call returns the handlers' "not available" error
 export function createSubsessionsLocalMcp(toolCtx: ToolContext): LocalMcp {
-  const tools: LocalTool[] = createSubSessionTools().map((tool) => ({
-    descriptor: tool.descriptor,
-    invoke: async (args) => {
-      const result = await tool.callTool(args ?? {}, toolCtx);
-      return { isError: result.isError, content: result.content };
-    },
-  }));
-
-  return new LocalMcp(SUBSESSIONS_SERVER_NAME, tools);
+  return new LocalMcp(SUBSESSIONS_SERVER_NAME, bindToolContext(createSubSessionTools(), toolCtx));
 }

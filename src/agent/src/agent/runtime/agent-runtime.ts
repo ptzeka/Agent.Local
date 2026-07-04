@@ -167,7 +167,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       logger: this.logger,
       registry: this.container,
       runtime: this,
-      coordinator: this.sessionManager,
       pullInjectedPrompts: () => this.inbox.drain(this.session.sessionId),
     };
   }

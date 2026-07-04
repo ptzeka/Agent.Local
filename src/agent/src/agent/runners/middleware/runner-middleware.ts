@@ -3,7 +3,6 @@ import type { Eventing } from "@agent-local/common/eventing";
 import type { ILogger } from "@agent-local/common/ilogger";
 import type { Session } from "../../session/session.js";
 import type { AgentRuntimeQueryable } from "../../runtime/types.js";
-import type { SubSessionCoordinator } from "../subsession.js";
 import type { RunResult } from "../orchestrator.js";
 
 // shared mutable state for one turn, threaded through every onion link so units read/write
@@ -17,8 +16,6 @@ export interface RunnerContext {
   readonly registry: Container;
   // DI handle: runners resolve runtime singletons through this rather than a wired-in reference
   readonly runtime: AgentRuntimeQueryable;
-  // present → expose the synthetic sub-session tools; detached runs get none, so sub-sessions are one level deep
-  readonly coordinator?: SubSessionCoordinator;
   // pull seam: returned strings are appended as user turns, so an outside producer steers without racing the loop
   readonly pullInjectedPrompts?: () => string[];
 }

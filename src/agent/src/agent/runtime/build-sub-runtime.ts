@@ -54,11 +54,12 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     )
     // standing context seeds the child's fresh conversation, so it rides the conversation step, not the session step
     .add(new ConversationMiddleware({ standingContext: refs.standingContext }))
+    .add(new MetricsRegistryMiddleware())
+    // before the MCP step (same as the parent pipeline); capped at 0 so this leaf coordinator refuses every spawn
+    .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }))
     .add(new McpRegistryMiddleware({ role: childDeps.orchestratorRole }))
     .add(new OrchestratorMiddleware({ role: childDeps.orchestratorRole }))
-    .add(new MetricsRegistryMiddleware())
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: childDeps.orchestratorRole, includeSubSessions: false }))
-    .add(new InputInboxMiddleware())
-    .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }));
+    .add(new InputInboxMiddleware());
 }

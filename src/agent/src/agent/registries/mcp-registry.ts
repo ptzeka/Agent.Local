@@ -19,6 +19,9 @@ export class McpClientRegistry {
   public getClient(serverName: string): Mcp | undefined {
     return this.clients.get(serverName);
   }
+  public listClients(): Mcp[] {
+    return [...this.clients.values()];
+  }
   public listTools(): ToolDescriptor[] {
     const flattened: ToolDescriptor[] = [];
     for (const client of this.clients.values()) {

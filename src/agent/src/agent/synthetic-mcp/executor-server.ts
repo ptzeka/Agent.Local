@@ -8,7 +8,7 @@ import type { RuntimeContext } from "../runtime/types.js";
 import { SessionToken } from "../runtime/tokens.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
 import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
-import type { TurnBindable } from "./types.js";
+import type { TurnBindable, TurnBinding } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 import { CancellationToken } from "@agent-local/common/lifetime";
 import { Eventing } from "@agent-local/common/eventing";
@@ -51,14 +51,10 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
   }
 
   // binds signal/tracker/events so the executor sub-run shares them without carrying them in tool args
-  public bindTurn(
-    signal: AbortSignal | undefined,
-    tracker: DispatchTracker,
-    events: Eventing
-  ): void {
-    this.turnSignal = signal;
-    this.turnTracker = tracker;
-    this.turnEvents = events;
+  public bindTurn(binding: TurnBinding): void {
+    this.turnSignal = binding.signal;
+    this.turnTracker = binding.tracker;
+    this.turnEvents = binding.events ?? new Eventing();
   }
 
   // rebuilt every call because the dispatch descriptor embeds the executor's LIVE tool enum

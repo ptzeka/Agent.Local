@@ -110,7 +110,7 @@ async function tryInteractiveLogin(boot: Bootstrap): Promise<Principal | null> {
     const principal = decodePrincipal(cached.token);
     process.stdout.write(
       chalk.green(`Welcome ${displayNameOf(principal) ?? "unknown"}`) +
-        chalk.gray(` — token (expires ${new Date(cached.expiresAtMs).toISOString()}):\n${cached.token}\n`)
+        chalk.gray(` — token (expires ${new Date(cached.expiresAtMs).toISOString()})\n`)
     );
     return principal;
   } catch (err) {

@@ -37,11 +37,12 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
         .add(new AnonymousMiddleware())
         .add(new SessionMiddleware({ sessionId }))
     .add(new ConversationMiddleware())
+    .add(new MetricsRegistryMiddleware())
+    // before the MCP step: the registry wires the coordinator into the subsessions server at mount time
+    .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime({ ...deps, orchestratorRole: "orchestrator" }, refs) }))
     .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
     .add(new OrchestratorMiddleware({ role: deps.orchestratorRole }))
-    .add(new MetricsRegistryMiddleware())
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
-    .add(new InputInboxMiddleware())
-    .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime({ ...deps, orchestratorRole: "orchestrator" }, refs) }));
+    .add(new InputInboxMiddleware());
 }

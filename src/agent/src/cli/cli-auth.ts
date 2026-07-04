@@ -37,8 +37,12 @@ function pkcePair(): { verifier: string; challenge: string } {
 }
 
 function openBrowser(url: string): void {
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  exec(`${cmd} "${url}"`);
+  // win32: start's first quoted arg is the window TITLE — pass an empty one so the URL is the target
+  const cmd =
+    process.platform === "darwin" ? `open "${url}"`
+    : process.platform === "win32" ? `start "" "${url}"`
+    : `xdg-open "${url}"`;
+  exec(cmd);
 }
 
 export function loadCachedToken(): string | null {
@@ -87,7 +91,7 @@ export async function login(settings: CliAuthSettings): Promise<CachedToken> {
       const returnedCode = url.searchParams.get("code");
       const ok = returnedState === state && !!returnedCode;
       res.writeHead(200, { "content-type": "text/html" }).end(
-        `<html><body>${ok ? "Login complete — you can close this window." : "Login failed — you can close this window."}</body></html>`,
+        `<html><body>${ok ? "Login complete - you can close this window." : "Login failed — you can close this window."}</body></html>`,
       );
       if (settled) return;
       settled = true;
@@ -137,6 +141,10 @@ export async function login(settings: CliAuthSettings): Promise<CachedToken> {
       redirect_uri: knownRedirectUri,
       client_id: settings.nativeClientId,
     }).toString(),
+  }).catch((err: Error) => {
+    // undici buries the real network/TLS failure in err.cause; resurface it or "fetch failed" is all we see
+    const cause = (err.cause as { code?: string; message?: string } | undefined) ?? {};
+    throw new Error(`cli login: token exchange to ${settings.tokenUrl} failed: ${cause.code ?? cause.message ?? err.message}`);
   });
   if (!res.ok) throw new Error(`cli login: token exchange failed (${res.status})`);
   const { access_token } = (await res.json()) as { access_token?: string };

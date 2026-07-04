@@ -1,6 +1,6 @@
 import type { OrchestratorEvent } from "../runners/runner-events.js";
 import type { Eventing } from "@agent-local/common/eventing";
-import type { ToolExecutionResult } from "@agent-local/mcp";
+import type { LocalTool, ToolExecutionResult } from "@agent-local/mcp";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { Session } from "../session/session.js";
 import type { SubSessionCoordinator } from "../runners/subsession.js";
@@ -43,13 +43,30 @@ export interface SyntheticMcp {
   callTool(args: Record<string, unknown>, context: ToolContext): Promise<RichToolResult>;
 }
 
-// turn-scoped binding for servers needing signal/tracker/events; the orchestrator casts to this to avoid an import cycle
+// the per-turn state bag: every field is optional so each server takes only what it holds between calls
+export interface TurnBinding {
+  readonly signal?: AbortSignal;
+  readonly tracker?: DispatchTracker;
+  readonly events?: Eventing;
+  readonly resultSink?: TurnResultSink;
+}
+
+// the single per-turn seam: servers with genuine turn STATE implement this and get one bindTurn per turn
+// the turn signal is NOT state — it rides every call as cutoffscope (see bindToolContext)
 export interface TurnBindable {
-  bindTurn(
-    signal: AbortSignal | undefined,
-    tracker: DispatchTracker,
-    events: Eventing
-  ): void;
+  bindTurn(binding: TurnBinding): void;
+}
+
+// adapts SyntheticMcp handlers to LocalTool, threading the call-time cutoffscope in as the turn's signal
+// so servers register once with runtime-scoped context and cancellation still arrives per call
+export function bindToolContext(tools: SyntheticMcp[], baseCtx: ToolContext): LocalTool[] {
+  return tools.map((tool) => ({
+    descriptor: tool.descriptor,
+    invoke: async (args, cutoffscope) => {
+      const result = await tool.callTool(args ?? {}, { ...baseCtx, signal: cutoffscope.signal });
+      return { isError: result.isError, content: result.content };
+    },
+  }));
 }
 
 // shapes a synthetic error the same way MCP errors are shaped

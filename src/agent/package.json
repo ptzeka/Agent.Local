@@ -9,8 +9,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/cli/index.js",
-    "dev": "tsx src/cli/index.ts",
+    "start": "node --use-system-ca dist/cli/index.js",
+    "dev": "NODE_OPTIONS=--use-system-ca tsx src/cli/index.ts",
     "start:server": "node dist/server/index.js",
     "dev:server": "tsx src/server/index.ts",
     "db:init": "node dist/db/db-init.js",

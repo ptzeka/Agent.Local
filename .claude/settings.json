@@ -164,7 +164,9 @@
       "Bash(npm pack *)",
       "Bash(grep -iE \"\\\\.node$|prebuild\")",
       "Bash(node -e ' *)",
-      "Bash(python3 -)"
+      "Bash(python3 -)",
+      "Bash(perl -0pi -e 's/\\(      modelsRegistry: \\(?:stubModelsRegistry|splitModelsRegistry|executorModelsRegistry\\),\\\\n      configurationRegistry: stubConfigurationRegistry,\\)/$1\\\\n      sessionManager: stubSessionManager,/g' tests/middleware/mcp-registry.test.ts)",
+      "PowerShell(node -e \"fetch\\('https://auth.peritze.com/connect/token',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded'},body:'grant_type=authorization_code'}\\).then\\(r=>console.log\\('status',r.status\\)\\).catch\\(e=>{console.log\\('err:',e.message\\); console.log\\('cause:',e.cause && \\(e.cause.code||e.cause.message\\)\\)}\\)\")"
     ],
     "additionalDirectories": [
       "C:\\www\\Agent.Local\\src\\agent\\src\\agent",

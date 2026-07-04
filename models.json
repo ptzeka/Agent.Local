@@ -73,7 +73,7 @@
       "model": "claude-haiku-4-5",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
+      "mcp": ["fsmcp", "codemcp", "excel"],
       "toolTimeoutMs": 60000,
       "iterationCap": 16
     },
@@ -118,7 +118,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Executor binding for gemini-2.5-flash-lite: WRITE mounts (fsmcp/excel) so a dispatch can actually mutate state. Deliberately omits `executor` so the executor cannot dispatch to itself.",
-      "mcp": ["fsmcp", "codemcp", "excel", "subsessions"],
+      "mcp": ["fsmcp", "codemcp", "excel"],
       "toolTimeoutMs": 600000,
       "iterationCap": 6
     }
