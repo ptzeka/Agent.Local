@@ -14,7 +14,7 @@ paths and variables the steps below reference (`REPO_ROOT`, `CODEINDEX_PATH`,
 `CODEMCP_PATH`, global config paths, …). If it is missing, create it from the
 template at the bottom of this file before doing anything else.
 
-The order matters: **build → index → register → skills → verify**.
+The order matters: **build → index → link → register → skills → verify**.
 
 ## 1. codeindex built and working
 
@@ -58,6 +58,27 @@ codemcp has nothing to serve until codeindex publishes at least one snapshot:
 cd <CODEINDEX_PATH> && npm run publish:file
 ```
 
+## 3b. Link the CLI commands globally
+
+`npm link` puts `codemcp`, `codeindex`, and `memomcp` bin shims into the global npm
+prefix (on the PATH), pointing at this checkout — so the commands run from any
+directory and a rebuild updates them in place (no re-install needed):
+
+```bash
+cd <REPO_ROOT> && npm run link:cli
+```
+
+Verify with `npm ls -g @peritze/codemcp @peritze/codeindex @peritze/memomcp`. To detach (e.g.
+before linking a different checkout): `npm run unlink:cli`.
+
+Invocation forms (npm ≥7 npx does NOT fall back to global installs — it resolves
+the local `node_modules`, then the registry):
+
+- cwd inside this checkout → `npx @peritze/codemcp ...` (workspace resolution). Always
+  the scoped name, never bare `npx codemcp` — an unrelated `codemcp` package exists
+  on the public registry, and the scope makes npx fail loudly instead of fetching it.
+- any other cwd → the bare shims: `codemcp ...`, `codeindex ...`, `memomcp ...`.
+
 The layout is repo-first: confirm `INDEX_DATA/<owner>/<repo>/schema_versions.json`
 and `INDEX_DATA/<owner>/<repo>/commits/<sha>/` exist, the latter holding
 `chunks.jsonl` + `commit.json` + `edges.jsonl` (the relationship graph). codemcp
@@ -66,8 +87,10 @@ auto-discovers every `<owner>/<repo>/` subtree at the sibling `src/codeindex/dat
 ## 4. Register the MCP server in the global configs
 
 Add a `codemcp` entry under `mcpServers` in each target, **preserving every other
-key** (fsmcp/memomcp/etc. may already be registered). Use the absolute paths from
-deps.md — forward slashes even on Windows. [_mcp.json](_mcp.json) is the template.
+key** (fsmcp/memomcp/etc. may already be registered). Global configs launch servers
+from whatever project is open, so they must use the linked shim — no absolute paths,
+no npx. ([mcpServers.json](mcpServers.json) is the repo-scoped template; it uses
+`npx @peritze/...` because it always launches with cwd = this repo.)
 
 | Target | File (from deps.md) |
 | --- | --- |
@@ -77,10 +100,13 @@ deps.md — forward slashes even on Windows. [_mcp.json](_mcp.json) is the templ
 ```json
 "codemcp": {
   "type": "stdio",
-  "command": "node",
-  "args": ["<REPO_ROOT>/src/codemcp/dist/server.js", "--backend", "file"]
+  "command": "codemcp",
+  "args": ["--backend", "file"]
 }
 ```
+
+If a host can't spawn `.cmd` shims on Windows, fall back to
+`"command": "cmd", "args": ["/c", "codemcp", "--backend", "file"]`.
 
 Restart Claude Code / Cursor afterwards so the host respawns the server; the tools
 then appear as `mcp__codemcp__*`.
@@ -114,12 +140,13 @@ Same pattern for any other skill here (`install-mcp-servers`, `solid`,
 
 Work top-down; stop at the first failure — it names the step to redo.
 
-1. **Registered?** the `codemcp` key exists in the target config and its `args[0]`
-   points at THIS checkout.
-2. **Built?** `ls <CODEMCP_PATH>/dist/server.js <CODEINDEX_PATH>/dist/cli.js`
+1. **Registered?** the `codemcp` key exists in the target config as
+   `"command": "codemcp"` (global configs; the repo `mcpServers.json` uses the npx form).
+2. **Linked?** `npm ls -g @peritze/codemcp @peritze/codeindex` — the link must point at
+   THIS checkout (and `dist/` must exist, i.e. built).
 3. **Indexed?** `ls <INDEX_DATA>/<owner>/<repo>/schema_versions.json <INDEX_DATA>/<owner>/<repo>/commits`
-4. **Answers standalone?**
-   `node <CODEMCP_PATH>/dist/server.js --backend file probe list_commits '{}'`
+4. **Answers standalone?** (from any cwd, proving the global shim)
+   `codemcp --backend file probe list_commits '{}'`
 5. **Answers live?** after a host restart, call `mcp__codemcp__list_commits` — it
    must list the snapshot published in step 3; then
    `mcp__codemcp__get_symbol {"name":"wireParser"}` must return that function's

@@ -11,15 +11,15 @@ missing, follow the template at the bottom of [INSTALL.md](../../../INSTALL.md).
 
 ## Index a repository
 
-1. Ensure codeindex is built: `<CODEINDEX_PATH>/dist/cli.js` exists, else
-   `npm run build --workspace=src/codeindex` from `REPO_ROOT`.
+1. Ensure codeindex is built and globally linked: `npm ls -g @peritze/codeindex` succeeds,
+   else `npm run build --workspace=src/codeindex && npm run link:cli` from `REPO_ROOT`.
 2. Publish a snapshot of the current commit:
    ```bash
-   cd <CODEINDEX_PATH> && npm run publish:file
+   cd <REPO_ROOT> && npx @peritze/codeindex --backend file publish
    ```
    For a repository other than this one, point the publisher at it explicitly:
    ```bash
-   node dist/cli.js --backend file publish --root <other-repo-root> --repository <owner/name>
+   npx @peritze/codeindex --backend file publish --root <other-repo-root> --repository <owner/name>
    ```
 3. The publish output echoes `commitSha`, `fileCount`, `chunkCount`, `edgeCount` —
    treat a publish without that JSON as failed.
@@ -43,15 +43,18 @@ Notes:
 Work top-down; the first failing check names the fix.
 
 1. **Registered?** the `codemcp` key exists in the global MCP config (see
-   `CLAUDE_GLOBAL_MCP` in deps.md) and `args[0]` points at this checkout.
-2. **Built?** `ls <CODEMCP_PATH>/dist/server.js` — missing means build codemcp.
+   `CLAUDE_GLOBAL_MCP` in deps.md) as `"command": "codemcp"` (the globally-linked
+   shim — npx forms fail outside this checkout; only the repo-scoped
+   `mcpServers.json` uses `npx @peritze/codemcp`).
+2. **Linked?** `npm ls -g @peritze/codemcp` — missing means build codemcp and run
+   `npm run link:cli` from `REPO_ROOT`.
 3. **Indexed?** `ls <INDEX_DATA>/<owner>/<repo>/schema_versions.json
    <INDEX_DATA>/<owner>/<repo>/commits` — missing means run the indexing section above.
-4. **Answers standalone?** (bypasses the host entirely)
+4. **Answers standalone?** (bypasses the host entirely; the bare shim works from any cwd)
    ```bash
-   node <CODEMCP_PATH>/dist/server.js --backend file probe list_commits '{}'
+   codemcp --backend file probe list_commits '{}'
    ```
-   Non-zero exit or an error means the server itself is broken; `... server.js tools`
+   Non-zero exit or an error means the server itself is broken; `codemcp tools`
    lists valid tool names.
 5. **Answers live?** call `mcp__codemcp__list_commits` in the session — it must show
    the snapshot you just published (matching sha). Tools absent → the host needs a

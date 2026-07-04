@@ -147,9 +147,9 @@ npm run build --if-present --prefix "$ROOT" \
   -w @agent-local/web \
   -w @agent-local/temporal \
   -w @agent-local/agent \
-  -w @rxo/codeindex \
-  -w @rxo/codemcp \
-  -w @rxo/memomcp \
+  -w @peritze/codeindex \
+  -w @peritze/codemcp \
+  -w @peritze/memomcp \
   -w @agent-local/auth \
   -w @agent-local/host
 

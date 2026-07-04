@@ -3,18 +3,18 @@
   "mcpServers": {
     "codemcp": {
       "type": "stdio",
-      "command": "node",
+      "command": "npx",
       "args": [
-        "C:/www/Agent.Local/src/codemcp/dist/server.js",
+        "@peritze/codemcp",
         "--backend",
         "file"
       ]
     },
     "memomcp": {
       "type": "stdio",
-      "command": "node",
+      "command": "npx",
       "args": [
-        "C:/www/Agent.Local/src/memomcp/dist/server.js",
+        "@peritze/memomcp",
         "--backend",
         "file",
         "--embed-provider",
