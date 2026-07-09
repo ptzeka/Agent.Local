@@ -5,19 +5,20 @@ description: Operate codemcp end-to-end as an AI agent — (re)index a repositor
 
 # codemcp: index a repository & validate the server
 
-Paths below (`REPO_ROOT`, `CODEINDEX_PATH`, `CODEMCP_PATH`, `INDEX_DATA`) come from
+codemcp/codeindex live in the standalone **agent.tools** monorepo (`TOOLS_ROOT`,
+this machine: `c:\www\agent.tools`). Paths below (`REPO_ROOT`, `INDEX_DATA`) come from
 the repo-root `deps.md` (machine-local, gitignored) — read it first. If it is
-missing, follow the template at the bottom of [INSTALL.md](../../../INSTALL.md).
+missing: `REPO_ROOT` = this repo's root, `INDEX_DATA` = `TOOLS_ROOT/codeindex/data`.
 
 ## Index a repository
 
 1. Ensure codeindex is built and globally linked: `npm ls -g @peritze/codeindex` succeeds,
-   else `npm run build --workspace=src/codeindex && npm run link:cli` from `REPO_ROOT`.
+   else `npm run build --workspace=codeindex && npm run link:cli` from `TOOLS_ROOT`.
 2. Publish a snapshot of the current commit:
    ```bash
-   cd <REPO_ROOT> && npx @peritze/codeindex --backend file publish
+   cd <TOOLS_ROOT> && npx @peritze/codeindex --backend file publish --root <REPO_ROOT>
    ```
-   For a repository other than this one, point the publisher at it explicitly:
+   For a different repository, pass its root and id explicitly:
    ```bash
    npx @peritze/codeindex --backend file publish --root <other-repo-root> --repository <owner/name>
    ```
@@ -42,12 +43,11 @@ Notes:
 
 Work top-down; the first failing check names the fix.
 
-1. **Registered?** the `codemcp` key exists in the global MCP config (see
-   `CLAUDE_GLOBAL_MCP` in deps.md) as `"command": "codemcp"` (the globally-linked
-   shim — npx forms fail outside this checkout; only the repo-scoped
-   `mcpServers.json` uses `npx @peritze/codemcp`).
+1. **Registered?** the `codemcp` key exists in the global MCP config (`~/.claude.json`)
+   as `"command": "codemcp"` (the globally-linked shim — npx forms fail outside
+   `TOOLS_ROOT`; only `TOOLS_ROOT/mcpServers.json` uses `npx @peritze/codemcp`).
 2. **Linked?** `npm ls -g @peritze/codemcp` — missing means build codemcp and run
-   `npm run link:cli` from `REPO_ROOT`.
+   `npm run link:cli` from `TOOLS_ROOT`.
 3. **Indexed?** `ls <INDEX_DATA>/<owner>/<repo>/schema_versions.json
    <INDEX_DATA>/<owner>/<repo>/commits` — missing means run the indexing section above.
 4. **Answers standalone?** (bypasses the host entirely; the bare shim works from any cwd)

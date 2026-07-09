@@ -19,7 +19,7 @@ changes its paths/schema/commands (a stale runbook is worse than none):
 | Skill | Use when |
 |---|---|
 | `debug-work` | Tracing one work/job by id — wrong status, missing file, a step didn't run, a dispatch misbehaved. Covers the host `work`/`work_agent_session`/`work_temporal` tables, agent session+conversation, workspace, logs, and host/agent/Temporal health. |
-| `install-mcp-servers` | Installing/registering this repo's MCP servers (codemcp + memomcp) into the global Claude (`~/.claude.json`) / Cursor (`~/.cursor/mcp.json`) configs. |
+| `install-mcp-servers` | Installing/registering the agent.tools MCP servers (codemcp + memomcp, from `c:\www\agent.tools`) into the global Claude (`~/.claude.json`) / Cursor (`~/.cursor/mcp.json`) configs. |
 | `solid` | Writing or reviewing code against the project's SOLID conventions — where logic lives, second implementations behind interfaces, DI via registries/Runtime. |
 | `readability` | Making code speak for itself — naming functions/returns/variables so the call site reads as a sentence and the comment can be deleted. The naming half of `## Comments`. |
 
@@ -52,7 +52,7 @@ a local skill/rule. **Do not write to global memory** for this project.
 
 ### Agent memory: `memomcp` takes precedence over Claude's global auto-memory
 
-This repo ships its own memory server, `memomcp` (`mcp__memomcp__remember` /
+This project uses the agent.tools memory server, `memomcp` (`mcp__memomcp__remember` /
 `recall` / `recall_expand` / `recall_locate`), for agent-memory-shaped facts —
 who the user is, standing preferences, running context worth recalling across
 sessions. When that kind of fact comes up:

@@ -1,27 +1,30 @@
 ---
 name: install-mcp-servers
-description: Install this repo's MCP servers (codemcp + memomcp, the memo MCP) into the user's global Claude (~/.claude.json) and Cursor (~/.cursor/mcp.json) configs. Use when asked to install/register/update the repo's MCP servers in Claude Code or Cursor, to point a global MCP config at this checkout, or to debug why codemcp/memomcp tools are missing or not answering.
+description: Install the agent.tools MCP servers (codemcp + memomcp, the memo MCP) into the user's global Claude (~/.claude.json) and Cursor (~/.cursor/mcp.json) configs. Use when asked to install/register/update these MCP servers in Claude Code or Cursor, to point a global MCP config at the agent.tools checkout, or to debug why codemcp/memomcp tools are missing or not answering.
 ---
 
 # Install MCP servers
 
-This repo ships two stdio MCP servers, exposed as globally-linked CLI commands:
+The servers live in the standalone **agent.tools** monorepo (`TOOLS_ROOT`, this
+machine: `c:\www\agent.tools`), not in this repo. Two stdio MCP servers, exposed
+as globally-linked CLI commands:
 
 - `codemcp` — code search over the codeindex store: `npx @peritze/codemcp --backend file`
 - `memomcp` — agent memory (remember/recall): `npx @peritze/memomcp --backend file --embed-provider local`
 
-The repo-root [mcpServers.json](../../../mcpServers.json) is the **template** for the
-repo-scoped registration. There is no installer script — register the servers by editing
-the global config files directly (steps below), so unrelated entries are preserved.
+`TOOLS_ROOT/mcpServers.json` is the **template** for the repo-scoped registration.
+There is no installer script — register the servers by editing the global config
+files directly (steps below), so unrelated entries are preserved.
 
 Two invocation forms, chosen by working directory (npm ≥7 npx does NOT fall back to
 globally-installed packages — it only resolves the local `node_modules`, then the registry):
 
-- **cwd inside this checkout** → `npx @peritze/codemcp ...` (resolves the workspace).
+- **cwd inside `TOOLS_ROOT`** → `npx @peritze/codemcp ...` (resolves the workspace).
   Always the scoped name, never bare `npx codemcp`: an unrelated `codemcp` package
   exists on the public registry, and the scope makes npx fail loudly instead of fetching it.
-- **any other cwd** → the bare bin shims `codemcp` / `memomcp` / `codeindex`, which
-  `npm run link:cli` places on the PATH (global npm prefix), pointing at this checkout.
+- **any other cwd** (including this repo) → the bare bin shims `codemcp` / `memomcp` /
+  `codeindex`, which `npm run link:cli` (run in `TOOLS_ROOT`) places on the PATH
+  (global npm prefix), pointing at that checkout.
 
 ## Targets
 
@@ -35,26 +38,24 @@ globally-installed packages — it only resolves the local `node_modules`, then 
 The data flow is **build → index → link → register → verify**. Do them in order; a
 later step is meaningless if an earlier one was skipped.
 
-1. **Build all three packages.** `dist/server.js` must exist or the command can't launch.
+1. **Build the workspaces.** `dist/server.js` must exist or the command can't launch.
    ```bash
-   cd src/codemcp   && npm install && npm run build
-   cd src/memomcp   && npm install && npm run build
-   cd src/codeindex && npm install && npm run build
+   cd <TOOLS_ROOT> && npm install && npm run build
    ```
 
 2. **Build the code index** (only codemcp needs this; memomcp has no index step).
-   This chunks + embeds the repo into the file-backend store that codemcp serves.
+   This chunks + embeds the target repo into the file-backend store that codemcp serves.
    ```bash
-   cd <repo-root> && npx @peritze/codeindex publish --backend file --root <repo-root>
+   cd <TOOLS_ROOT> && npx @peritze/codeindex publish --backend file --root <repo-to-index>
    ```
-   codemcp auto-discovers this store at the sibling `src/codeindex/data/`
+   codemcp auto-discovers this store at the sibling `codeindex/data/`
    (it looks for `schema_versions.json` there).
 
 3. **Link the CLI commands globally** so the `codemcp`/`memomcp`/`codeindex` shims
-   exist on the PATH from any directory. The link points at this checkout, so a
-   rebuild updates the commands in place.
+   exist on the PATH from any directory. The link points at the agent.tools checkout,
+   so a rebuild updates the commands in place.
    ```bash
-   cd <repo-root> && npm run link:cli
+   cd <TOOLS_ROOT> && npm run link:cli
    ```
 
 4. **Register the servers** in each target config. Read the JSON, add/overwrite the
@@ -73,8 +74,8 @@ later step is meaningless if an earlier one was skipped.
      "args": ["--backend", "file", "--embed-provider", "local"]
    }
    ```
-   (The repo-scoped `mcpServers.json` keeps the `npx @peritze/...` form instead —
-   it always launches with cwd = this repo. If a host can't spawn `.cmd` shims on
+   (The `TOOLS_ROOT/mcpServers.json` template keeps the `npx @peritze/...` form instead —
+   it always launches with cwd = that checkout. If a host can't spawn `.cmd` shims on
    Windows, fall back to `"command": "cmd", "args": ["/c", "codemcp", ...]`.)
 
 5. **Restart** Claude Code / Cursor so the host respawns the MCP servers.
@@ -101,7 +102,7 @@ Stop at the first failing check; it tells you which earlier step to redo.
 
 3. **Indexed?** codemcp needs a populated store:
    ```bash
-   ls src/codeindex/data/*/*/schema_versions.json
+   ls <TOOLS_ROOT>/codeindex/data/*/*/schema_versions.json
    ```
    Missing → redo step 2.
 
@@ -121,9 +122,9 @@ Stop at the first failing check; it tells you which earlier step to redo.
 
 ## Notes
 
-- To change what gets installed, edit `mcpServers.json` (the template) and mirror the
-  change into the registered configs.
+- To change what gets installed, edit `TOOLS_ROOT/mcpServers.json` (the template) and
+  mirror the change into the registered configs.
 - Secrets (e.g. a Postgres DSN for the `pg` backend) belong in the launching tool's
   args, never committed.
-- `npm run unlink:cli` removes the global links (e.g. before pointing them at a
-  different checkout via that checkout's `link:cli`).
+- `npm run unlink:cli` (in `TOOLS_ROOT`) removes the global links (e.g. before pointing
+  them at a different checkout via that checkout's `link:cli`).
