@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Bring down whatever start.sh launched: kill the recorded PIDs, then sweep the ports as a fallback in case
+# Bring down whatever start.sh launched: kill the recorded PID, then sweep the port as a fallback in case
 # the npm wrapper spawned a detached child. Safe to run repeatedly.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT/scripts/.run"
 
-HOST_PORT="${PORT:-3011}"
 AGENT_PORT="${AGENT_PORT:-3020}"
-AUTH_PORT="${AUTH_PORT:-3015}"
 
 # kill the process tree rooted at a recorded pidfile, then remove the file
 stop_pidfile() {
@@ -46,20 +44,7 @@ stop_port() {
     "Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('[stop] freeing :$port ($name) — pid ' + \$_.OwningProcess); Stop-Process -Id \$_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 }
 
-stop_pidfile host
 stop_pidfile agent
-stop_pidfile auth
-stop_port host "$HOST_PORT"
 stop_port agent "$AGENT_PORT"
-stop_port auth "$AUTH_PORT"
-
-# Temporal is stateful infra (its postgres holds workflow history), so it is left
-# running across host/agent restarts by default — start.sh calls this script first,
-# and recreating the server each cycle would re-init the datastore. Opt in to tear it
-# down too: STOP_TEMPORAL=1 scripts/stop.sh
-if [ "${STOP_TEMPORAL:-0}" = "1" ] && command -v docker >/dev/null 2>&1; then
-  echo "[stop] bringing temporal down..."
-  ( cd "$ROOT/src/temporalhost" && docker compose down ) || true
-fi
 
 echo "[stop] done"

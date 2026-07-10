@@ -26,23 +26,36 @@ changes its paths/schema/commands (a stale runbook is worse than none):
 Invocation is by exact name (`/debug-work`) when surfaced as a slash command; otherwise
 the file is the canonical reference — read it and follow its inline queries.
 
+## Sibling repos
+
+The auth service, host (+ Temporal worker), web console, Temporal client/workflows, and the
+standalone Temporal/Postgres docker infrastructure were split out into `c:\www\Agent.Workflow`
+(its own repo, own `AGENTS.md`, own `scripts/start.sh`/`stop.sh`). This repo now holds only the
+coding agent (CLI/REPL, MCP tools, orchestrator/executor) plus `src/mcp`. Shared foundation
+primitives (`@agent-local/common`) live in `c:\www\Agent.Common` and are consumed here via
+`file:../../../Agent.Common` — that repo must sit beside this one and be built
+(`npm install && npm run build`) before this repo's `npm install`/`build`.
+
+The agent talks to Agent.Workflow's host over HTTP (`/events`, `/receive`) and to its auth
+service for tokens/JWKS — start Agent.Workflow first, or point `AUTH_PORT`/`PORT` at wherever
+it's already running.
+
 ## Logs: where to find them
 
-`npm start` runs the auth service + host + agent in the background and redirects each process's stdout/stderr to
-a file under `scripts/.run/` (PIDs land next to them as `*.pid`). The agent REPL/CLI logs elsewhere because it
+`npm start` runs the agent server in the background and redirects its stdout/stderr to
+a file under `scripts/.run/` (PID lands next to it as `*.pid`). The agent REPL/CLI logs elsewhere because it
 owns the terminal. When debugging traffic, read these first:
 
 | Source | Location | Notes |
 |---|---|---|
-| Auth **service** (`/account/*`, `/connect/token`, JWKS) | `scripts/.run/auth.log` | console-backed logger; all `[auth]` lines — login, token issuance, JWKS verification |
-| Host (incl. Temporal **worker**) | `scripts/.run/host.log` | host stdout; the Temporal worker runs in-process, so its activation/workflow logs are here too |
 | Agent **server** (`/events`, `/receive`, webhooks) | `scripts/.run/agent.log` | console-backed logger; all `[agent-server]` lines |
 | Agent **CLI / REPL** | `logs/agent-<MDYYYY>.log` | `FileLogger`, out-of-band so the REPL prompt stays clean; new file per day; override path with `AGENT_LOG_FILE` |
-| Temporal **server** | `docker logs agent-local-temporalhost` | container, not a repo file; from `src/temporalhost` compose |
+| Auth **service** / Host (incl. Temporal **worker**) / Temporal **server** | see `c:\www\Agent.Workflow\AGENTS.md` | now live in the sibling repo |
 
 - Verbosity: `LOG_LEVEL=error|warn|info|debug` (or `DEBUG=1` for debug); defaults to `info`.
 - The `host-client → agent /events` and `agent-server → host /receive` round-trip is the comms path — the host
-  side shows in `host.log`, the agent side in `agent.log`. Read both to see one request end-to-end.
+  side shows in Agent.Workflow's `host.log`, the agent side in this repo's `agent.log`. Read both to see one
+  request end-to-end.
 
 ## Decisions & preferences: persist in-repo, not global memory
 

@@ -19,7 +19,7 @@
     "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "dependencies": {
-    "@agent-local/common": "*",
+    "@agent-local/common": "file:../../../Agent.Common",
     "@agent-local/mcp": "*",
     "@anthropic-ai/sdk": "^0.102.0",
     "express": "^4.21.2",
