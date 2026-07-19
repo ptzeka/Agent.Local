@@ -1,1 +1,1 @@
-Before taking any action, read AGENTS.md for behavioral rules and instructions.
+@AGENTS.MD

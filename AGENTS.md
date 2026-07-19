@@ -10,11 +10,14 @@
 ## BACKLOG
 Use BACKLOG.md for backlog management and BACKLOG.DONE.md for done stories
 
-## Skills: reusable runbooks live in `.claude/skills/`
+## Skills: reusable runbooks live in `/Applications/WWW/Agent.Skills/skills/`
 
-This repo ships project skills under `.claude/skills/<name>/SKILL.md`. Consult them
-**before** improvising the same task by hand, and keep one current after a refactor that
-changes its paths/schema/commands (a stale runbook is worse than none):
+Skills moved out of this repo into the shared `Agent.Skills` folder (sibling to
+`Agent.Local`) so they can be reused across projects. `.claude/skills/` is not yet
+linked back into this repo, so browse `/Applications/WWW/Agent.Skills/skills/<name>/SKILL.md`
+directly for now. Consult them **before** improvising the same task by hand, and keep
+one current after a refactor that changes its paths/schema/commands (a stale runbook
+is worse than none):
 
 | Skill | Use when |
 |---|---|
