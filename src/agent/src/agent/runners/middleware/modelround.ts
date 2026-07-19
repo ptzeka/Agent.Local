@@ -19,8 +19,7 @@ export class ModelRound extends Round {
     const provider = turn.provider;
 
     turnEvents.publish(OrchestratorEventTypes.ITERATION, {
-      iteration: turn.iteration,
-      max: turn.maxIterations,
+      iteration: turn.iteration
     });
 
     // transient last message every call so the model stays anchored as the transcript grows

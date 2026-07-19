@@ -78,6 +78,8 @@ interface HarnessOptions {
   chatResponse?: ChatResponse;
   chatError?: Error;
   signal?: AbortSignal;
+  // the snapshot the context loader returns for SystemMessagesRound / Summarizer
+  contextSnapshot?: ContextSnapshot;
 }
 
 // the mutable knobs a test seeds after construction, plus the constructor options it overrides
@@ -86,8 +88,6 @@ interface TurnOverrides {
   structuredMode?: boolean;
   tracker?: DispatchTracker;
   maxIterations?: number;
-  // the raw snapshot the Turn carries for SystemMessagesRound to assemble
-  context?: ContextSnapshot;
   // convenience: installs the built context prefix directly (bypassing SystemMessagesRound)
   contextMessages?: ChatMessage[];
   rounds?: IRound[];
@@ -147,14 +147,17 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     }),
     getProvidersRegistry: () => ({ getProvider: () => evaluatorProvider }),
     getConfigurationRegistry: () => ({ getModelsConfiguration: async () => config }),
-    // the summarizer role reuses the judge provider; these two seams are all it additionally reads
-    getContextLoader: () => ({ getContextSnapshot: async () => ({ systemPrompt: "summarize this" }) }),
+    // SystemMessagesRound and the summarizer both resolve a snapshot through this loader
+    getContextLoader: () => ({
+      getContextSnapshot: async () => opts.contextSnapshot ?? { systemPrompt: "", projectContext: "" },
+    }),
     getSession: () => ({ contextHashes: { summarizer: "h" } }),
   } as unknown as AgentRuntimeQueryable;
 
   const inbox = [...(opts.inbox ?? [])];
   const ctx: RunnerContext = {
-    session: { sessionId: "s1" },
+    // contextHashes present for every role so SystemMessagesRound resolves a snapshot
+    session: { sessionId: "s1", contextHashes: { orchestrator: "h", executor: "h" } },
     events: eventBus,
     signal: opts.signal ?? new AbortController().signal,
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
@@ -177,7 +180,6 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       temperature: 0,
       streaming: false,
       maxIterations: overrides.maxIterations ?? 5,
-      context: overrides.context ?? ({ systemPrompt: "", projectContext: "" } as ContextSnapshot),
       rounds: overrides.rounds ?? [],
     });
     turn.turnRequest = overrides.turnRequest ?? null;
@@ -203,12 +205,12 @@ function eventTypes(h: Harness): string[] {
 // ---------------------------------------------------------------------------
 
 describe("SystemMessagesRound", () => {
-  test("builds the context prefix and seeds it ahead of the conversation in the working set", async () => {
-    const h = makeHarness();
-    h.conversation.messages.push({ role: "user", content: "prior" });
-    const turn = h.makeTurn({
-      context: { projectContext: "proj direction", systemPrompt: "sys" } as ContextSnapshot,
+  test("loads the snapshot, builds the context prefix, and seeds it ahead of the conversation", async () => {
+    const h = makeHarness({
+      contextSnapshot: { projectContext: "proj direction", systemPrompt: "sys" } as ContextSnapshot,
     });
+    h.conversation.messages.push({ role: "user", content: "prior" });
+    const turn = h.makeTurn();
 
     const outcome = await new SystemMessagesRound(h.ctx).runAsync(turn);
 
@@ -222,8 +224,8 @@ describe("SystemMessagesRound", () => {
   });
 
   test("runs once per turn: a second pass leaves the appended turn work intact", async () => {
-    const h = makeHarness();
-    const turn = h.makeTurn({ context: { projectContext: "", systemPrompt: "sys" } as ContextSnapshot });
+    const h = makeHarness({ contextSnapshot: { projectContext: "", systemPrompt: "sys" } as ContextSnapshot });
+    const turn = h.makeTurn();
     await new SystemMessagesRound(h.ctx).runAsync(turn);
     turn.append({ role: "assistant", content: "work" });
 

@@ -26,6 +26,13 @@ export class InputInbox {
     this.onPush?.(source);
   }
 
+  public pop(sessionId: string): string
+  {
+    const queue = this.queues.get(sessionId);
+    if (!queue || queue.length === 0) return "";
+    return queue.pop() || "";
+  }
+
   // FIFO drain-and-clear; called once per iteration, so a drained-and-empty session costs one Map miss
   public drain(sessionId: string): string[] {
     const queue = this.queues.get(sessionId);

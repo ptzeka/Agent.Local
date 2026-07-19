@@ -3,7 +3,6 @@ import type { Conversation } from "../../conversation/conversation.js";
 import type { ChatMessage, LLMProvider, ToolCall } from "../../providers/provider.js";
 import type { ModelsFile } from "../../registries/configuration-registry.js";
 import type { ScopedToolClient } from "../../scoped-tool-client.js";
-import type { ContextSnapshot } from "../../context/context-loader.js";
 import type { DispatchTracker } from "../../synthetic-mcp/dispatch-tracker.js";
 import type { ReportedTurnResult } from "../../synthetic-mcp/types.js";
 import type { TurnResultCapture } from "../../synthetic-mcp/turn-result-tools.js";
@@ -23,13 +22,14 @@ export interface TurnOptions {
   conversation: Conversation;
   config: ModelsFile;
   structuredMode: boolean;
-  temperature: number;
   streaming: boolean;
-  maxIterations: number;
-  // the raw snapshot SystemMessagesRound turns into the working-set context prefix at turn start
-  context: ContextSnapshot;
   rounds: readonly IRound[];
 }
+
+export type TurnOutcome =
+  | { kind: "next-iteration" }
+  | { kind: "done"; result: RunResult };
+
 
 // one user turn as an object: owns the per-turn state, the transcript writes, the outcome
 // envelopes, and the iteration loop that drives its rounds — the runner only constructs it
@@ -45,8 +45,6 @@ export class Turn {
   readonly structuredMode: boolean;
   readonly temperature: number;
   readonly streaming: boolean;
-  readonly maxIterations: number;
-  readonly context: ContextSnapshot;
   readonly workingMessages: ChatMessage[] = [];
 
   turnRequest: string | null = null;
@@ -80,12 +78,11 @@ export class Turn {
     this.conversation = options.conversation;
     this.config = options.config;
     this.structuredMode = options.structuredMode;
-    this.temperature = options.temperature;
     this.streaming = options.streaming;
-    this.maxIterations = options.maxIterations;
-    this.context = options.context;
     this.rounds = options.rounds;
     this.seedOpeningSet();
+    this.temperature = this.getTemperature();
+
   }
 
   // ---------------------------------------------------------------------------
@@ -94,37 +91,25 @@ export class Turn {
 
   // drives the round list per iteration and obeys each round's outcome; runs to the
   // cap only when no round ever ends the turn, which is itself a reportable outcome
-  async runAsync(): Promise<RunResult> {
-    for (let iteration = 1; iteration <= this.maxIterations; iteration += 1) {
-      if (this.ctx.signal.aborted) {
-        throw new Error("turn aborted: user requested stop");
-      }
-      this.iteration = iteration;
+  async runAsync(): Promise<TurnOutcome> {
 
-      for (const round of this.rounds) {
-        const outcome = await round.runAsync(this);
-        if (outcome.kind === "done") return outcome.result;
-        if (outcome.kind === "next-iteration") break;
+    for (const round of this.rounds) {
+      const outcome = await round.runAsync(this);
+      if (outcome.kind === "done")
+      {
+        return {
+          kind: "done",
+          result: outcome.result
+        }
+      }
+      if (outcome.kind === "next-iteration")
+      {
+        break;
       }
     }
-
-    const truncationNotice: ChatMessage = {
-      role: "assistant",
-      content:
-        `ORCHESTRATOR: hit iteration cap of ${this.maxIterations} without a final answer. ` +
-        "Try a narrower request or raise maxOrchestratorIterations in models.json.",
-    };
-    this.conversation.append(truncationNotice);
-    this.ctx.events.publish(OrchestratorEventTypes.WARNING, {
-      message: `${this.role} hit iteration cap`,
-      iterations: this.maxIterations,
-    });
     return {
-      finalMessage: truncationNotice,
-      iterations: this.maxIterations,
-      dispatches: this.tracker.count,
-      outcome: "capped",
-    };
+      kind: "next-iteration"
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -182,6 +167,15 @@ export class Turn {
   // this turn's work only — what the evaluator judges, excluding prompt and prior transcript
   transcriptOfTurn(): ChatMessage[] {
     return this.workingMessages.slice(this.turnStartIndex);
+  }
+
+  private getTemperature(): number
+  {
+    const orchestratorTemperature = this.config.orchestration.orchestratorTemperature;
+    const executorTemperature = this.config.orchestration.executorTemperature;
+    const temperature = this.role === "executor" ?
+      executorTemperature! : orchestratorTemperature!;
+    return temperature;
   }
 
   // ---------------------------------------------------------------------------

@@ -7,22 +7,21 @@ import type { Turn } from "./turn.js";
 // and a wake with nothing queued settles without ever calling the model
 export class PromptRound extends Round {
   async runAsync(turn: Turn): Promise<RoundOutcome> {
-    const injectedPrompts = this.context.pullInjectedPrompts?.() ?? [];
-    for (const text of injectedPrompts) {
-      const injected: ChatMessage = { role: "user", content: text };
+    const injectedPrompt = this.context.pullInjectedPrompt?.() ?? "";
+      const injected: ChatMessage = { role: "user", content: injectedPrompt };
       turn.append(injected);
       this.context.events.publish(OrchestratorEventTypes.INJECTED_INPUT, {
         iteration: turn.iteration,
-        content: text,
+        content: injectedPrompt,
       });
-    }
-    if (turn.turnRequest === null && injectedPrompts.length > 0) {
-      turn.turnRequest = injectedPrompts.join("\n");
+    
+    if (turn.turnRequest === null && injectedPrompt) {
+      turn.turnRequest = injectedPrompt;
     }
 
     this.context.logger.debug("turn input drained", {
       iteration: turn.iteration,
-      drained: injectedPrompts.length,
+      drained: injectedPrompt ? 1 : 0,
       hasRequest: turn.turnRequest !== null,
     });
 

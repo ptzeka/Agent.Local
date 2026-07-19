@@ -16,6 +16,7 @@ export interface RunnerContext {
   readonly registry: Container;
   // DI handle: runners resolve runtime singletons through this rather than a wired-in reference
   readonly runtime: AgentRuntimeQueryable;
+  readonly pullInjectedPrompt?: () => string;
   // pull seam: returned strings are appended as user turns, so an outside producer steers without racing the loop
   readonly pullInjectedPrompts?: () => string[];
 }

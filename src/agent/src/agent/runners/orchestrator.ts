@@ -6,7 +6,6 @@ import { TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js"
 import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
-import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "@agent-local/common/eventing";
 import { Turn } from "./middleware/turn.js";
 import { SystemMessagesRound } from "./middleware/systemmessagesround.js";
@@ -17,6 +16,9 @@ import { ModelRound } from "./middleware/modelround.js";
 import { ResponseRound } from "./middleware/responseround.js";
 import { EvaluatorRound } from "./middleware/evaluatorround.js";
 import { ToolRound } from "./middleware/toolround.js";
+import { ModelRegistry } from "../registries/model-registry.js";
+import { ModelsFile } from "../registries/configuration-registry.js";
+import { OrchestratorEventTypes } from "./runner-events.js";
 
 // re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
@@ -49,26 +51,16 @@ export class Orchestrator {
   public async run(ctx: RunnerContext): Promise<RunResult> {
     // the turn bus is minted+chained by AgentRuntime.beginTurn; the runner only publishes onto it
     const turnEvents = ctx.events;
-    const session = ctx.session;
     const modelsRegistry = ctx.runtime.getModelsRegistry();
     const mcpRegistry = ctx.runtime.getMcpClientRegistry();
     const providersRegistry = ctx.runtime.getProvidersRegistry();
     const conversation = ctx.runtime.getConversation();
 
     const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration()!;
-    const contextLoader = ctx.runtime.getContextLoader();
-    // the ContextMiddleware snapshot is the ONLY source of prompt+direction, so what ran always matches the hash
-    const contextHash = session.contextHashes ? session.contextHashes[this.role] : null;
-    const context = contextHash ? await contextLoader.getContextSnapshot(contextHash) : null;
-    if (!context) {
-      throw new Error(
-        `Orchestrator: no context snapshot for role "${this.role}" ` +
-          `(hash: ${contextHash ?? "unstamped"}). ContextMiddleware must run before any turn.`
-      );
-    }
 
-    // no opening append: every user message arrives through the inbox drain inside the loop,
-    // and SummarizeRound compacts prior history at turn start before the request is drained
+    // no opening append: every user message arrives through the inbox drain inside the loop.
+    // the context snapshot, history compaction, and memory recall all load at turn start via the
+    // first rounds (SystemMessagesRound / SummarizeRound / MemoryRound), not here
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
     // structured mode IS "is turnresult mounted" — driven solely by the role's whitelist (only workflow-orchestrator
@@ -83,7 +75,7 @@ export class Orchestrator {
     const maxDispatches = config.orchestration.maxExecutorDispatchesPerTurn!;
     const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
     const tracker = new DispatchTracker(maxDispatches, checkInterval);
-
+    const maxIterations = this.getIterationsMax(modelsRegistry, config);
     // ONE per-turn seam: servers register once at build; those holding turn state take it here via bindTurn.
     // skipped for the executor role: its sub-run doesn't dispatch or report, so nothing needs binding there.
     if (this.role !== "executor") {
@@ -96,52 +88,73 @@ export class Orchestrator {
         if (typeof bindable.bindTurn === "function") bindable.bindTurn(binding);
       }
     }
-
+    
     turnEvents.publish(OrchestratorEventTypes.START, {
       orchestratorModel: provider.modelId,
       orchestratorTools: visibleTools,
       readToolCount: visibleTools.length,
+      maxIterations: maxIterations
     });
 
-    // the model's own iterationCap wins; absent it, fall back to the role default
+    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
+      if (ctx.signal.aborted) {
+        throw new Error("turn aborted: user requested stop");
+      }
+      // the turn runs itself: the iteration body is its ordered round list, and a round
+      // ends the turn, skips to the next iteration, or passes to the round below
+      const turn = new Turn(ctx, {
+        role: this.role,
+        provider,
+        scopedClients,
+        visibleTools,
+        tracker,
+        resultSink,
+        conversation,
+        config,
+        structuredMode,
+        streaming: ctx.runtime.isStreamOutputEnabled(),
+        rounds: [
+          new SystemMessagesRound(ctx),
+          new SummarizeRound(ctx),
+          new PromptRound(ctx),
+          new MemoryRound(ctx),
+          new ModelRound(ctx),
+          new ResponseRound(ctx),
+          new EvaluatorRound(ctx),
+          new ToolRound(ctx),
+        ],
+      });
+      const outcome = await turn.runAsync();
+      if (outcome.kind === "done") return outcome.result;
+    }
+
+    const truncationNotice: ChatMessage = {
+      role: "assistant",
+      content:
+        `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
+        "Try a narrower request or raise maxOrchestratorIterations in models.json.",
+    };
+    conversation.append(truncationNotice);
+    ctx.events.publish(OrchestratorEventTypes.WARNING, {
+      message: `${this.role} hit iteration cap`,
+      iterations: maxIterations,
+    });
+    return {
+      finalMessage: truncationNotice,
+      iterations: maxIterations,
+      dispatches: tracker.count,
+      outcome: "capped",
+    };
+  }
+
+  private getIterationsMax(modelsRegistry: ModelRegistry, config: ModelsFile): number {
+        // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
         ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
         : (config.orchestration.maxOrchestratorIterations ?? 16);
     const modelName = modelsRegistry.getProviderForRole(this.role);
-    const maxIterations =
-      modelsRegistry.getIterationCapForModel(modelName) ?? roleIterationDefault;
-
-    const orchestratorTemperature = config.orchestration.orchestratorTemperature;
-    const executorTemperature = config.orchestration.executorTemperature;
-
-    // the turn runs itself: the iteration body is its ordered round list, and a round
-    // ends the turn, skips to the next iteration, or passes to the round below
-    const turn = new Turn(ctx, {
-      role: this.role,
-      provider,
-      scopedClients,
-      visibleTools,
-      tracker,
-      resultSink,
-      conversation,
-      config,
-      structuredMode,
-      temperature: this.role === "executor" ? executorTemperature! : orchestratorTemperature!,
-      streaming: ctx.runtime.isStreamOutputEnabled(),
-      maxIterations,
-      context,
-      rounds: [
-        new SystemMessagesRound(ctx),
-        new SummarizeRound(ctx),
-        new PromptRound(ctx),
-        new MemoryRound(ctx),
-        new ModelRound(ctx),
-        new ResponseRound(ctx),
-        new EvaluatorRound(ctx),
-        new ToolRound(ctx),
-      ],
-    });
-    return turn.runAsync();
+    const maxIterations = modelsRegistry.getIterationCapForModel(modelName) ?? roleIterationDefault;
+    return maxIterations;
   }
 }
