@@ -1,29 +1,25 @@
 import type { Conversation } from "../conversation/conversation.js";
-import type { ToolDescriptor, ToolExecutionResult } from "@agent-local/mcp";
+import type { ToolDescriptor } from "@agent-local/mcp";
 import { ScopedToolClient } from "../scoped-tool-client.js";
-import type {
-  ChatMessage,
-  ChatResponse,
-  LLMProvider,
-  ToolCall,
-} from "../providers/provider.js";
-import {
-  buildPromptedToolInstructions,
-  extractPromptedToolCalls,
-} from "../tool-adapter.js";
+import type { ChatMessage, LLMProvider } from "../providers/provider.js";
+import { buildPromptedToolInstructions } from "../tool-adapter.js";
 import { Summarizer, buildSummaryMessage } from "./summarizer.js";
-import { Evaluator, type EvaluationVerdict } from "./evaluator.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { TurnBindable, TurnBinding } from "../synthetic-mcp/types.js";
 import { TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
 import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { AgentRuntimeQueryable } from "../runtime/types.js";
-import type { McpClientRegistry } from "../registries/mcp-registry.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "@agent-local/common/eventing";
 import { ContextSnapshot } from "../context/context-loader.js";
+import { Turn } from "./middleware/turn.js";
+import { PromptRound } from "./middleware/promptround.js";
+import { MemoryRound } from "./middleware/memoryround.js";
+import { ModelRound } from "./middleware/modelround.js";
+import { ResponseRound } from "./middleware/responseround.js";
+import { ToolRound } from "./middleware/toolround.js";
 
 // re-export for backwards compatibility
 export type { OrchestratorEvent, OrchestratorListener } from "./runner-events.js";
@@ -46,17 +42,16 @@ export interface SessionRunner {
 }
 
 // drives the agentic loop for any role; the role selects model, visible tools, prompt, and iteration cap
-// STATELESS: holds only its role; per-turn state and the runtime DI handle arrive via run()'s RunnerContext
+// STATELESS: holds only its role; per-turn state lives in the TurnState the rounds share (see middleware/)
 // orchestrator role gates on the evaluator; executor role ends on the first tool-free response
 export class Orchestrator {
   constructor(private readonly role: string) {}
 
-  // runs one user turn end-to-end, appending to the runtime's Conversation; flushes per round
-  // so a crash loses at most the round in flight, with finalize() backstopping the tail
+  // runs one user turn end-to-end: builds the TurnState, then drives the round list per iteration;
+  // rounds flush per round so a crash loses at most the round in flight, with finalize() backstopping the tail
   public async run(ctx: RunnerContext): Promise<RunResult> {
     // the turn bus is minted+chained by AgentRuntime.beginTurn; the runner only publishes onto it
     const turnEvents = ctx.events;
-    const logger = ctx.logger;
     const session = ctx.session;
     const modelsRegistry = ctx.runtime.getModelsRegistry();
     const mcpRegistry = ctx.runtime.getMcpClientRegistry();
@@ -115,20 +110,6 @@ export class Orchestrator {
     const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
     const workingMessages: ChatMessage[] = [...systemMessages, ...conversation.getMessages()];
 
-    // capture where the first drained message lands so the evaluator sees the request onward
-    const turnStartIndex = workingMessages.length;
-
-    // the evaluator's anchor is the FIRST drained batch, set on the opening iteration and held for the turn
-    let turnRequest: string | null = null;
-
-    // recall runs once per turn, keyed on the first real request; guards against re-recalling each iteration
-    let recalled = false;
-
-    // executor evidence gate: count tool calls actually issued this ask. An executor that ends tool-free
-    // having invoked NOTHING produced only prose (a fabricated ACK/REPORT), not a real mutation — that is a
-    // failed dispatch, not success. Without this, a hallucinated report banks a no-op as "satisfied".
-    let toolCallsMade = 0;
-
     // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
@@ -140,364 +121,35 @@ export class Orchestrator {
 
     const orchestratorTemperature = config.orchestration.orchestratorTemperature;
     const executorTemperature = config.orchestration.executorTemperature;
-    const temperature = this.role === "executor" ? executorTemperature! : orchestratorTemperature!;
 
-    const streaming = ctx.runtime.isStreamOutputEnabled();
-    let chatStarted = false;
-
-    for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
-      if (ctx.signal.aborted) {
-        throw new Error("turn aborted: user requested stop");
-      }
-
-      // inbox is the sole source of user input; the first non-empty drain is this turn's request
-      const injectedPrompts = ctx.pullInjectedPrompts?.() ?? [];
-      for (const text of injectedPrompts) {
-        const injected: ChatMessage = { role: "user", content: text };
-        conversation.append(injected);
-        workingMessages.push(injected);
-        turnEvents.publish(OrchestratorEventTypes.INJECTED_INPUT, { iteration, content: text });
-      }
-      if (turnRequest === null && injectedPrompts.length > 0) {
-        turnRequest = injectedPrompts.join("\n");
-      }
-
-      logger.debug("turn input drained", { iteration, drained: injectedPrompts.length, hasRequest: turnRequest !== null });
-
-      // a wake with nothing queued has no request, so settle without calling the model
-      if (turnRequest === null) {
-        logger.debug("empty turn — no queued input, settling without model call", { sessionId: session.sessionId });
-        return {
-          finalMessage: { role: "assistant", content: "" },
-          iterations: 0,
-          dispatches: tracker.count,
-          outcome: "satisfied",
-        };
-      }
-
-      // recall on the first real request: the turn's query is now known, and an empty wake already settled above
-      if (!recalled) {
-        recalled = true;
-        await this.maybeRecallMemory(mcpRegistry, turnRequest, workingMessages, turnEvents, ctx.signal);
-      }
-
-      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
-
-      // transient last message every call so the model stays anchored as the transcript grows
-      const requestAnchor: ChatMessage = {
-        role: "system",
-        content: modelsRegistry.getAnchorText(turnRequest),
-      };
-
-      logger.debug("model call", { iteration, provider: provider.providerName, model: provider.modelId });
-      
-    // lazily open the chat stream on the first text delta so a tool-only/empty turn never prints a bare [emitter] label
-      const onDelta = streaming
-        ? (delta: string) => {
-            if (!chatStarted) {
-              chatStarted = true;
-              turnEvents.publish(OrchestratorEventTypes.CHAT_START, { emitter: this.role });
-            }
-            turnEvents.publish(OrchestratorEventTypes.MESSAGE_DELTA, { iteration, delta });
-          }
-        : undefined;
-      let response: ChatResponse;
-      try {
-        response = await provider.chat([...workingMessages, requestAnchor], {
-          tools: provider.supportsNativeTools ? visibleTools : [],
-          temperature,
-          signal: ctx.signal,
-          onDelta,
-        });
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        throw new Error(
-          `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${iteration}: ${errorMsg}`
-        );
-      }
-
-      // stamp before publish so the own-spend round is attributable once it leaves this runtime;
-      // TurnCounterMiddleware folds it into the MetricsRegistry off the orchestrator-message event below
-      if (response.usage) response.usage.sessionId = session.sessionId;
-
-      const { assistantMessage, toolCalls } = this.normaliseAssistantTurn(provider, response, turnEvents);
-
-      // Content length + tool count distinguish a real answer from an empty reply.
-      logger.debug("model response", { iteration, contentLength: assistantMessage.content.length, toolCalls: toolCalls.length });
-
-      turnEvents.publish(OrchestratorEventTypes.MESSAGE, {
-        iteration,
-        content: assistantMessage.content,
-        toolCallCount: toolCalls.length,
-        usage: response.usage,
-      });
-
-      conversation.append(assistantMessage);
-      workingMessages.push(assistantMessage);
-
-      if (toolCalls.length === 0) {
-        // Executor: first tool-free response is the RESULT — no evaluator gate.
-        if (this.role === "executor") {
-          // a tool-free executor that NEVER called a tool only narrated; the mutation never ran. Fail the
-          // dispatch so the parent sees ok=false and cannot bank the no-op (covers the fabricated-report case).
-          if (toolCallsMade === 0) {
-            return this.failTurn(
-              `executor produced no tool call — no action was taken. Reported: ${assistantMessage.content.slice(0, 200)}`,
-              iteration,
-              tracker.count,
-              conversation,
-              turnEvents
-            );
-          }
-          return {
-            finalMessage: assistantMessage,
-            iterations: iteration,
-            dispatches: tracker.count,
-            outcome: "satisfied",
-          };
-        }
-
-        // Structured mode: a prose answer that skipped report_result has no parseable verdict, so it must not
-        // settle as satisfied (that reopens the M5-9 gap). Nudge for the mandated call and keep going; if the
-        // model never complies the cap trips, which the dispatch boundary maps to a fail envelope (fails closed).
-        if (structuredMode) {
-          const nudge: ChatMessage = {
-            role: "user",
-            content:
-              `You answered without calling report_result. You MUST finish by calling report_result ` +
-              `with the final status ("success"/"fail") and a structured result. ` +
-              `The request for THIS turn is exactly: «${turnRequest}»`,
-          };
-          conversation.append(nudge);
-          workingMessages.push(nudge);
-          await conversation.flush();
-          continue;
-        }
-
-        // Orchestrator: gate through the evaluator, unless config disables it — capable models self-verify, so the
-        // first tool-free answer settles as satisfied on their own word (the guard rail is for weaker models).
-        if (!config.orchestration.evaluatorEnabled) {
-          return {
-            finalMessage: assistantMessage,
-            iterations: iteration,
-            dispatches: tracker.count,
-            outcome: "satisfied",
-          };
-        }
-
-        const verdict = await this.evaluateCompletion(
-          ctx.runtime,
-          turnRequest,
-          assistantMessage.content,
-          workingMessages.slice(turnStartIndex),
-          turnEvents,
-          ctx.signal
-        );
-
-        if (verdict.state === "satisfied" || verdict.state === "awaiting-input") {
-          return {
-            finalMessage: assistantMessage,
-            iterations: iteration,
-            dispatches: tracker.count,
-            // awaiting-input did no work — keep it distinct so headless exits non-zero instead of reporting success
-            outcome: verdict.state === "awaiting-input" ? "awaiting-input" : "satisfied",
-          };
-        }
-
-        // terminal: stop trying rather than nudge-and-loop until the cap
-        if (verdict.state === "failed") {
-          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
-        }
-
-        // Nudges quote the request verbatim to prevent goal drift.
-        const nudge: ChatMessage = {
-          role: "user",
-          content:
-            verdict.state === "continue"
-              ? `EVALUATOR: on track — ${verdict.reason}\n` +
-                `The request for THIS turn is exactly: «${turnRequest}»\n` +
-                "Keep going: take the next concrete action toward fulfilling it. " +
-                "Do not stop until it is complete."
-              : `EVALUATOR: off track — ${verdict.reason}\n` +
-                `The request for THIS turn is exactly: «${turnRequest}»\n` +
-                "Stop repeating what isn't working and change your approach. Re-check this " +
-                "request and the current workspace state, then take a different next action.",
-        };
-        conversation.append(nudge);
-        workingMessages.push(nudge);
-        await conversation.flush();
-        continue;
-      }
-
-      const toolMessages: ChatMessage[] = [];
-
-      for (const call of toolCalls) {
-        if (ctx.signal?.aborted) {
-          throw new Error("turn aborted: user requested stop");
-        }
-
-        logger.debug("tool call start", { name: call.name });
-        toolCallsMade += 1;
-        const execution: ToolExecutionResult = await scopedClients.callTool(
-          call.name,
-          call.arguments,
-          turnEvents,
-          ctx.signal
-        );
-        logger.debug("tool call end", { name: call.name, isError: execution.isError });
-        // delegated cost rides the tool-result event (published by the scoped client) into the MetricsRegistry,
-        // so the loop no longer folds it here; it stays separable as the registry's *Tallied figures
-        toolMessages.push(
-          wrapToolResult(call, execution.isError ? `[tool-error] ${execution.content}` : execution.content)
-        );
-      }
-
-      conversation.append(...toolMessages);
-      workingMessages.push(...toolMessages);
-
-      // report_result is the mandated terminal action on a dispatched turn: once it lands, end the turn with the
-      // structured verdict — its status drives the outcome, so a "fail" verdict fails the step even though the
-      // agent answered honestly (the M5-9 gap: a true-but-negative answer must not bank as satisfied).
-      const reported = resultSink.value;
-      if (reported) {
-        return this.finalizeReported(reported, turnRequest, iteration, tracker.count, conversation, turnEvents);
-      }
-
-      // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
-      if (this.role !== "executor" && config.orchestration.evaluatorEnabled && tracker.dueForPeriodicCheck()) {
-        const verdict = await this.evaluateCompletion(
-          ctx.runtime,
-          turnRequest,
-          "(in-progress checkpoint — no final answer yet)",
-          workingMessages.slice(turnStartIndex),
-          turnEvents,
-          ctx.signal
-        );
-        if (verdict.state === "failed") {
-          return this.failTurn(verdict.reason, iteration, tracker.count, conversation, turnEvents);
-        }
-        if (verdict.state === "unsatisfied") {
-          const nudge: ChatMessage = {
-            role: "user",
-            content:
-              `EVALUATOR: off track — ${verdict.reason}\n` +
-              `The request for THIS turn is exactly: «${turnRequest}»\n` +
-              "Stop repeating what isn't working and change your approach. Re-check this " +
-              "request and the current workspace state, then take a different next action.",
-          };
-          conversation.append(nudge);
-          workingMessages.push(nudge);
-        }
-      }
-
-      // persist this round so a crash mid-turn loses at most the round in flight
-      await conversation.flush();
-    }
-
-    const truncationNotice: ChatMessage = {
-      role: "assistant",
-      content:
-        `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
-        "Try a narrower request or raise maxOrchestratorIterations in models.json.",
-    };
-    conversation.append(truncationNotice);
-    turnEvents.publish(OrchestratorEventTypes.WARNING, {
-      message: `${this.role} hit iteration cap`,
-      iterations: maxIterations,
+    // the turn runs itself: the iteration body is its ordered round list, and a round
+    // ends the turn, skips to the next iteration, or passes to the round below
+    const turn = new Turn(ctx, {
+      role: this.role,
+      provider,
+      scopedClients,
+      visibleTools,
+      tracker,
+      resultSink,
+      conversation,
+      config,
+      structuredMode,
+      temperature: this.role === "executor" ? executorTemperature! : orchestratorTemperature!,
+      streaming: ctx.runtime.isStreamOutputEnabled(),
+      maxIterations,
+      openingMessages: workingMessages,
+      rounds: [
+        new PromptRound(ctx),
+        new MemoryRound(ctx),
+        new ModelRound(ctx),
+        new ResponseRound(ctx),
+        new ToolRound(ctx),
+      ],
     });
-    return {
-      finalMessage: truncationNotice,
-      iterations: maxIterations,
-      dispatches: tracker.count,
-      outcome: "capped",
-    };
+    return turn.runAsync();
   }
 
   // --------------------------------------------------------------------------
-
-  // ends a dispatched turn on the agent's report_result: the final conversation line IS the verdict envelope
-  // (single JSON line) so the record is self-describing, and outcome mirrors status so the existing step gate
-  // fails closed on a "fail" verdict without parsing prose. `reported` rides RunResult for the typed wire envelope.
-  private async finalizeReported(
-    reported: ReportedTurnResult,
-    input: string,
-    iterations: number,
-    dispatches: number,
-    conversation: Conversation,
-    events: Eventing
-  ): Promise<RunResult> {
-    const envelope = { status: reported.status, input, result: reported.result };
-    const finalMessage: ChatMessage = { role: "assistant", content: JSON.stringify(envelope) };
-    conversation.append(finalMessage);
-    events.publish(OrchestratorEventTypes.MESSAGE, {
-      iteration: iterations,
-      content: finalMessage.content,
-      toolCallCount: 0,
-    });
-    await conversation.flush();
-    return {
-      finalMessage,
-      iterations,
-      dispatches,
-      outcome: reported.status === "success" ? "satisfied" : "failed",
-      reported,
-    };
-  }
-
-  // records a system-failure notice and returns outcome "failed" so the caller stops trying
-  private async failTurn(
-    reason: string,
-    iterations: number,
-    dispatches: number,
-    conversation: Conversation,
-    events: Eventing
-  ): Promise<RunResult> {
-    const failureNotice: ChatMessage = {
-      role: "assistant",
-      content: `SYSTEM-FAILURE: failed to complete request — ${reason}`,
-    };
-    conversation.append(failureNotice);
-    events.publish(OrchestratorEventTypes.SYSTEM_FAILURE, { reason });
-    await conversation.flush();
-    return { finalMessage: failureNotice, iterations, dispatches, outcome: "failed" };
-  }
-
-  // turn-start memory recall: fetches this session's relevant memories and injects them as context.
-  // memomcp lives in the registry but in no role whitelist, so it is reachable here yet never a callable tool.
-  // no-ops when unmounted (executor role, or no collection) and fails open so recall never blocks a turn.
-  private async maybeRecallMemory(
-    mcpRegistry: McpClientRegistry,
-    query: string,
-    workingMessages: ChatMessage[],
-    events: Eventing,
-    signal: AbortSignal
-  ): Promise<void> {
-    const memory = mcpRegistry.getClient("memomcp");
-    if (!memory) return;
-
-    events.publish(OrchestratorEventTypes.RECALL_START, {});
-
-    let result: ToolExecutionResult;
-    try {
-      result = await memory.callTool("recall", { query }, signal);
-    } catch (err) {
-      events.publish(OrchestratorEventTypes.WARNING, {
-        message: `memory recall failed: ${(err as Error).message}`,
-      });
-      return;
-    }
-
-    if (result.isError || result.content.trim().length === 0) return;
-
-    // transient: pushed into the turn's working set only, never the persisted transcript — recall reruns
-    // each turn (like the request anchor), so persisting would bloat the conversation and the summary
-    workingMessages.push({
-      role: "system",
-      content: `Relevant memories recalled for this request (use if helpful):\n\n${result.content}`,
-    });
-
-    events.publish(OrchestratorEventTypes.RECALL_FINALIZE, { chars: result.content.length });
-  }
 
   private async maybeSummarize(
     runtime: AgentRuntimeQueryable,
@@ -541,41 +193,6 @@ export class Orchestrator {
     });
   }
 
-  private async evaluateCompletion(
-    runtime: AgentRuntimeQueryable,
-    question: string,
-    proposedAnswer: string,
-    transcript: ChatMessage[],
-    events: Eventing,
-    signal?: AbortSignal
-  ): Promise<EvaluationVerdict> {
-    events.publish(OrchestratorEventTypes.EVALUATION_START, {});
-
-    try {
-      const config = await runtime.getConfigurationRegistry().getModelsConfiguration();
-
-      const evaluator = new Evaluator(runtime);
-      const verdict = await evaluator.evaluate(
-        { question, proposedAnswer, transcript },
-        { signal, temperature: config.orchestration.evaluatorTemperature }
-      );
-      if (verdict?.reason)
-      {
-        events.publish(OrchestratorEventTypes.EVALUATION_VERDICT, {
-          state: verdict.state,
-          reason: verdict.reason,
-        });
-      }
-      return verdict;
-    } catch (err) {
-      // fail open: never trap the user because the judge errored
-      events.publish(OrchestratorEventTypes.WARNING, {
-        message: `evaluation failed, treating as satisfied: ${(err as Error).message}`,
-      });
-      return { state: "satisfied", reason: "evaluator error; defaulting to satisfied" };
-    }
-  }
-
   private buildSystemMessages(
     provider: LLMProvider,
     visibleTools: ToolDescriptor[],
@@ -605,57 +222,6 @@ export class Orchestrator {
 
     return messages;
   }
-
-  private normaliseAssistantTurn(
-    provider: LLMProvider,
-    response: ChatResponse,
-    events: Eventing
-  ): { assistantMessage: ChatMessage; toolCalls: ToolCall[] } {
-    if (provider.supportsNativeTools) {
-      const nativeCalls = response.message.toolCalls ?? [];
-      if (nativeCalls.length > 0) {
-        return { assistantMessage: response.message, toolCalls: nativeCalls };
-      }
-
-      const { toolCalls: recoveredCalls, cleanedContent } = extractPromptedToolCalls(response.message);
-      if (recoveredCalls.length > 0) {
-        events.publish(OrchestratorEventTypes.WARNING, {
-          message:
-            "Native-tool model emitted tool call as JSON in prose; recovered via prompted-JSON fallback.",
-          model: provider.modelId,
-          recoveredCount: recoveredCalls.length,
-        });
-        return {
-          assistantMessage: {
-            role: "assistant",
-            content: cleanedContent,
-            toolCalls: recoveredCalls,
-          },
-          toolCalls: recoveredCalls,
-        };
-      }
-      return { assistantMessage: response.message, toolCalls: nativeCalls };
-    }
-
-    const { toolCalls, cleanedContent } = extractPromptedToolCalls(response.message);
-    return {
-      assistantMessage: {
-        role: "assistant",
-        content: cleanedContent,
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-      },
-      toolCalls,
-    };
-  }
-}
-
-function wrapToolResult(call: ToolCall, content: string): ChatMessage {
-  return {
-    role: "tool",
-    content,
-    toolCallId: call.id,
-    toolName: call.name,
-  };
 }
 
 // finds a tail-start that can legally HEAD a provider contents array (a user turn, or a

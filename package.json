@@ -1,25 +1,18 @@
 {
   "name": "agent-local",
   "version": "0.1.0",
-  "description": "Local coding agent powered by Ollama with multi-agent orchestration and MCP tools (npm workspaces root).",
+  "description": "Local coding agent powered by Ollama with multi-agent orchestration and MCP tools (npm workspaces root). Host/auth/temporal/web split out to the sibling Agent.Workflow repo; shared primitives live in the sibling Agent.Common repo.",
   "type": "module",
   "private": true,
   "workspaces": [
-    "src/common",
     "src/mcp",
-    "src/agent",
-    "src/auth",
-    "src/host",
-    "src/web",
-    "src/temporal",
-    "src/temporalhost",
-    "src/postgres"
+    "src/agent"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
-    "db:init": "npm run db:init -w @agent-local/host && npm run db:init -w @agent-local/agent",
+    "db:init": "npm run db:init -w @agent-local/agent",
     "stop": "bash scripts/stop.sh",
     "start": "bash scripts/start.sh",
     "restart": "bash scripts/stop.sh && bash scripts/start.sh"

@@ -16,9 +16,9 @@ export default {
     // jose is ESM-only, unloadable under the CJS test runtime; the stub rejects every crypto operation, so
     // token-verification tests can only assert the failure path (the positive path is covered live)
     "^jose$": "<rootDir>/tests/stubs/jose.ts",
-    // resolve the shared workspace package to its TS source so tests need no prebuild
-    "^@agent-local/common$": "<rootDir>/../common/src/index.ts",
-    "^@agent-local/common/(.*)$": "<rootDir>/../common/src/$1.ts",
+    // resolve the sibling-repo package to its TS source so tests need no prebuild
+    "^@agent-local/common$": "<rootDir>/../../../Agent.Common/src/index.ts",
+    "^@agent-local/common/(.*)$": "<rootDir>/../../../Agent.Common/src/$1.ts",
     "^@agent-local/mcp$": "<rootDir>/../mcp/src/index.ts",
     "^@agent-local/mcp/(.*)$": "<rootDir>/../mcp/src/$1.ts",
     "^(\\.{1,2}/.*)\\.js$": "$1",

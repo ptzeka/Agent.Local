@@ -5,6 +5,11 @@ with a multi-agent orchestration loop (planner + executor) and MCP-based tools.
 
 Everything runs on your machine. No cloud calls.
 
+The auth service, host, Temporal integration, and web console live in the sibling
+[Agent.Workflow](../Agent.Workflow) repo; shared primitives (`@agent-local/common`) live in
+[Agent.Common](../Agent.Common); MCP servers this agent registers (`codemcp`, `memomcp`) live in
+[agent.tools](../agent.tools).
+
 ---
 
 ## Architecture
