@@ -1,24 +1,21 @@
-import type { Conversation } from "../conversation/conversation.js";
-import type { ToolDescriptor } from "@agent-local/mcp";
 import { ScopedToolClient } from "../scoped-tool-client.js";
-import type { ChatMessage, LLMProvider } from "../providers/provider.js";
-import { buildPromptedToolInstructions } from "../tool-adapter.js";
-import { Summarizer, buildSummaryMessage } from "./summarizer.js";
+import type { ChatMessage } from "../providers/provider.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
 import type { TurnBindable, TurnBinding } from "../synthetic-mcp/types.js";
 import { TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
 import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
-import type { AgentRuntimeQueryable } from "../runtime/types.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import { Eventing } from "@agent-local/common/eventing";
-import { ContextSnapshot } from "../context/context-loader.js";
 import { Turn } from "./middleware/turn.js";
+import { SystemMessagesRound } from "./middleware/systemmessagesround.js";
+import { SummarizeRound } from "./middleware/summarizeround.js";
 import { PromptRound } from "./middleware/promptround.js";
 import { MemoryRound } from "./middleware/memoryround.js";
 import { ModelRound } from "./middleware/modelround.js";
 import { ResponseRound } from "./middleware/responseround.js";
+import { EvaluatorRound } from "./middleware/evaluatorround.js";
 import { ToolRound } from "./middleware/toolround.js";
 
 // re-export for backwards compatibility
@@ -70,9 +67,8 @@ export class Orchestrator {
       );
     }
 
-    await this.maybeSummarize(ctx.runtime, conversation, turnEvents, ctx.signal);
-    // no opening append: every user message arrives through the inbox drain inside the loop
-
+    // no opening append: every user message arrives through the inbox drain inside the loop,
+    // and SummarizeRound compacts prior history at turn start before the request is drained
     const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
 
     // structured mode IS "is turnresult mounted" — driven solely by the role's whitelist (only workflow-orchestrator
@@ -107,9 +103,6 @@ export class Orchestrator {
       readToolCount: visibleTools.length,
     });
 
-    const systemMessages = this.buildSystemMessages(provider, visibleTools, context);
-    const workingMessages: ChatMessage[] = [...systemMessages, ...conversation.getMessages()];
-
     // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
@@ -137,103 +130,18 @@ export class Orchestrator {
       temperature: this.role === "executor" ? executorTemperature! : orchestratorTemperature!,
       streaming: ctx.runtime.isStreamOutputEnabled(),
       maxIterations,
-      openingMessages: workingMessages,
+      context,
       rounds: [
+        new SystemMessagesRound(ctx),
+        new SummarizeRound(ctx),
         new PromptRound(ctx),
         new MemoryRound(ctx),
         new ModelRound(ctx),
         new ResponseRound(ctx),
+        new EvaluatorRound(ctx),
         new ToolRound(ctx),
       ],
     });
     return turn.runAsync();
   }
-
-  // --------------------------------------------------------------------------
-
-  private async maybeSummarize(
-    runtime: AgentRuntimeQueryable,
-    conversation: Conversation,
-    events: Eventing,
-    signal: AbortSignal
-  ): Promise<void> {
-    const config = await runtime.getConfigurationRegistry().getModelsConfiguration();
-    const threshold = config.orchestration.summarizeAtMessages!;
-    const messages = conversation.getMessages();
-    if (messages.length <= threshold) return;
-
-    const desiredKeep = config.orchestration.summarizerKeepLastN!;
-    const tailStart = findCleanTailStart(messages, desiredKeep);
-    if (tailStart === 0) return;
-
-    const prefix = messages.slice(0, tailStart);
-    const tail = messages.slice(tailStart);
-
-    events.publish(OrchestratorEventTypes.SUMMARIZATION_START, { messageCount: prefix.length });
-
-    let summaryText: string;
-    try {
-      const summarizer = new Summarizer(runtime);
-      summaryText = await summarizer.summarize(prefix, { signal });
-    } catch (err) {
-      events.publish(OrchestratorEventTypes.WARNING, {
-        message: `summarization failed: ${(err as Error).message}`,
-      });
-      return;
-    }
-
-    const summaryMessage = buildSummaryMessage(summaryText, prefix.length);
-
-    await conversation.replaceAll([summaryMessage, ...tail]);
-
-    events.publish(OrchestratorEventTypes.SUMMARIZATION, {
-      summarizedCount: prefix.length,
-      keptCount: tail.length,
-      summaryChars: summaryText.length,
-    });
-  }
-
-  private buildSystemMessages(
-    provider: LLMProvider,
-    visibleTools: ToolDescriptor[],
-    context: ContextSnapshot
-  ): ChatMessage[] {
-    const messages: ChatMessage[] = [];
-
-    if (context.projectContext) {
-      messages.push({
-        role: "system",
-        content:
-          `Treat this as standing direction from the user; follow it unless ` +
-          `a specific request overrides it.\n\n` +
-          context.projectContext,
-      });
-    }
-
-    // built per-turn because the live tool set can differ from the snapshot's (subsessions rebound each turn)
-    const promptedInstructions = provider.supportsNativeTools
-      ? ""
-      : buildPromptedToolInstructions(visibleTools);
-
-    messages.push({
-      role: "system",
-      content: context.systemPrompt + promptedInstructions,
-    });
-
-    return messages;
-  }
-}
-
-// finds a tail-start that can legally HEAD a provider contents array (a user turn, or a
-// non-tool-call assistant turn), skipping orphan tool results and tool-call turns that providers reject
-function findCleanTailStart(messages: readonly ChatMessage[], desiredTailLen: number): number {
-  const initial = Math.max(0, messages.length - desiredTailLen);
-  for (let i = initial; i < messages.length; i += 1) {
-    const message = messages[i];
-    if (message.role === "user") return i;
-    if (message.role === "assistant" && !(message.toolCalls && message.toolCalls.length > 0)) {
-      return i;
-    }
-  }
-  return messages.length;
 }

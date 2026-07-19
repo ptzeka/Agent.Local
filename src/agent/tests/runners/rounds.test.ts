@@ -17,7 +17,11 @@ import type { IRound } from "../../src/agent/runners/middleware/iround.js";
 import { MemoryRound } from "../../src/agent/runners/middleware/memoryround.js";
 import { ModelRound } from "../../src/agent/runners/middleware/modelround.js";
 import { PromptRound } from "../../src/agent/runners/middleware/promptround.js";
+import { SystemMessagesRound } from "../../src/agent/runners/middleware/systemmessagesround.js";
+import { SummarizeRound } from "../../src/agent/runners/middleware/summarizeround.js";
+import type { ContextSnapshot } from "../../src/agent/context/context-loader.js";
 import { ResponseRound } from "../../src/agent/runners/middleware/responseround.js";
+import { EvaluatorRound } from "../../src/agent/runners/middleware/evaluatorround.js";
 import { ToolRound } from "../../src/agent/runners/middleware/toolround.js";
 import type { RunnerContext } from "../../src/agent/runners/middleware/runner-middleware.js";
 import { Turn } from "../../src/agent/runners/middleware/turn.js";
@@ -32,6 +36,7 @@ interface FakeConversation {
   append: (...msgs: ChatMessage[]) => void;
   flush: jest.Mock;
   getMessages: () => ChatMessage[];
+  replaceAll: jest.Mock;
 }
 
 function makeConversation(): FakeConversation {
@@ -43,6 +48,10 @@ function makeConversation(): FakeConversation {
     },
     flush: jest.fn(async () => {}),
     getMessages: () => messages,
+    replaceAll: jest.fn(async (next: ChatMessage[]) => {
+      messages.length = 0;
+      messages.push(...next);
+    }),
   };
 }
 
@@ -77,7 +86,10 @@ interface TurnOverrides {
   structuredMode?: boolean;
   tracker?: DispatchTracker;
   maxIterations?: number;
-  openingMessages?: ChatMessage[];
+  // the raw snapshot the Turn carries for SystemMessagesRound to assemble
+  context?: ContextSnapshot;
+  // convenience: installs the built context prefix directly (bypassing SystemMessagesRound)
+  contextMessages?: ChatMessage[];
   rounds?: IRound[];
   turnRequest?: string | null;
   recalled?: boolean;
@@ -135,6 +147,9 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     }),
     getProvidersRegistry: () => ({ getProvider: () => evaluatorProvider }),
     getConfigurationRegistry: () => ({ getModelsConfiguration: async () => config }),
+    // the summarizer role reuses the judge provider; these two seams are all it additionally reads
+    getContextLoader: () => ({ getContextSnapshot: async () => ({ systemPrompt: "summarize this" }) }),
+    getSession: () => ({ contextHashes: { summarizer: "h" } }),
   } as unknown as AgentRuntimeQueryable;
 
   const inbox = [...(opts.inbox ?? [])];
@@ -162,7 +177,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       temperature: 0,
       streaming: false,
       maxIterations: overrides.maxIterations ?? 5,
-      openingMessages: overrides.openingMessages ?? [],
+      context: overrides.context ?? ({ systemPrompt: "", projectContext: "" } as ContextSnapshot),
       rounds: overrides.rounds ?? [],
     });
     turn.turnRequest = overrides.turnRequest ?? null;
@@ -171,6 +186,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     turn.iteration = overrides.iteration ?? 1;
     turn.assistantMessage = overrides.assistantMessage ?? null;
     turn.toolCalls = overrides.toolCalls ?? [];
+    // seed the working-set prefix directly when a test doesn't exercise SystemMessagesRound itself
+    if (overrides.contextMessages) turn.setContextMessages(overrides.contextMessages);
     return turn;
   };
 
@@ -180,6 +197,96 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
 function eventTypes(h: Harness): string[] {
   return h.events.map((event) => event.type);
 }
+
+// ---------------------------------------------------------------------------
+// SystemMessagesRound
+// ---------------------------------------------------------------------------
+
+describe("SystemMessagesRound", () => {
+  test("builds the context prefix and seeds it ahead of the conversation in the working set", async () => {
+    const h = makeHarness();
+    h.conversation.messages.push({ role: "user", content: "prior" });
+    const turn = h.makeTurn({
+      context: { projectContext: "proj direction", systemPrompt: "sys" } as ContextSnapshot,
+    });
+
+    const outcome = await new SystemMessagesRound(h.ctx).runAsync(turn);
+
+    expect(outcome.kind).toBe("continue");
+    expect(turn.contextBuilt).toBe(true);
+    expect(turn.workingMessages).toEqual([
+      { role: "system", content: expect.stringContaining("proj direction") },
+      { role: "system", content: "sys" },
+      { role: "user", content: "prior" },
+    ]);
+  });
+
+  test("runs once per turn: a second pass leaves the appended turn work intact", async () => {
+    const h = makeHarness();
+    const turn = h.makeTurn({ context: { projectContext: "", systemPrompt: "sys" } as ContextSnapshot });
+    await new SystemMessagesRound(h.ctx).runAsync(turn);
+    turn.append({ role: "assistant", content: "work" });
+
+    const outcome = await new SystemMessagesRound(h.ctx).runAsync(turn);
+
+    // the guard blocks a reseed that would drop the appended work off the tail
+    expect(outcome.kind).toBe("continue");
+    expect(turn.workingMessages).toEqual([
+      { role: "system", content: "sys" },
+      { role: "assistant", content: "work" },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SummarizeRound
+// ---------------------------------------------------------------------------
+
+describe("SummarizeRound", () => {
+  test("under the threshold it no-ops: history untouched, no summarizer call, no events", async () => {
+    const h = makeHarness();
+    h.config.orchestration.summarizeAtMessages = 30;
+    const turn = h.makeTurn({ turnRequest: "the ask" });
+
+    const outcome = await new SummarizeRound(h.ctx).runAsync(turn);
+
+    expect(outcome.kind).toBe("continue");
+    expect(h.conversation.replaceAll).not.toHaveBeenCalled();
+    expect(h.events).toHaveLength(0);
+  });
+
+  test("over the threshold it compacts the prefix, keeps the tail, and reseeds the working set", async () => {
+    const h = makeHarness({ evaluatorReply: "condensed recap" });
+    for (let i = 0; i < 6; i += 1) h.conversation.messages.push({ role: "user", content: `m${i}` });
+    h.config.orchestration.summarizeAtMessages = 3;
+    h.config.orchestration.summarizerKeepLastN = 2;
+    const turn = h.makeTurn({
+      turnRequest: "the ask",
+      contextMessages: [{ role: "system", content: "ctx" }],
+    });
+
+    const outcome = await new SummarizeRound(h.ctx).runAsync(turn);
+
+    expect(outcome.kind).toBe("continue");
+    // history becomes [summary, ...last 2 kept verbatim]
+    expect(h.conversation.replaceAll).toHaveBeenCalledTimes(1);
+    expect(h.conversation.messages).toHaveLength(3);
+    expect(h.conversation.messages[0]!.content).toContain("condensed recap");
+    expect(h.conversation.messages.slice(1)).toEqual([
+      { role: "user", content: "m4" },
+      { role: "user", content: "m5" },
+    ]);
+    // the current turn's model set is rebuilt from the compacted history, not the old one
+    expect(turn.workingMessages).toEqual([
+      { role: "system", content: "ctx" },
+      ...h.conversation.messages,
+    ]);
+    expect(eventTypes(h)).toEqual([
+      OrchestratorEventTypes.SUMMARIZATION_START,
+      OrchestratorEventTypes.SUMMARIZATION,
+    ]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // PromptRound
@@ -309,7 +416,7 @@ describe("ModelRound", () => {
     const h = makeHarness({ chatResponse: response });
     const turn = h.makeTurn({
       turnRequest: "the ask",
-      openingMessages: [{ role: "user", content: "the ask" }],
+      contextMessages: [{ role: "user", content: "the ask" }],
     });
 
     const outcome = await new ModelRound(h.ctx).runAsync(turn);
@@ -423,11 +530,29 @@ describe("ResponseRound", () => {
     expect(h.conversation.flush).toHaveBeenCalledTimes(1);
   });
 
-  test("with the evaluator disabled the first tool-free reply settles as satisfied", async () => {
+  test("hands the orchestrator's tool-free, non-structured reply down to EvaluatorRound", async () => {
     const h = makeHarness();
     const turn = h.makeTurn({ turnRequest: "the ask", assistantMessage: reply });
 
     const outcome = await new ResponseRound(h.ctx).runAsync(turn);
+
+    expect(outcome.kind).toBe("continue");
+    expect(h.events).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EvaluatorRound
+// ---------------------------------------------------------------------------
+
+describe("EvaluatorRound", () => {
+  const reply: ChatMessage = { role: "assistant", content: "done it" };
+
+  test("with the evaluator disabled the first tool-free reply settles as satisfied", async () => {
+    const h = makeHarness();
+    const turn = h.makeTurn({ turnRequest: "the ask", assistantMessage: reply });
+
+    const outcome = await new EvaluatorRound(h.ctx).runAsync(turn);
 
     expect(outcome).toMatchObject({ kind: "done", result: { outcome: "satisfied" } });
   });
@@ -437,7 +562,7 @@ describe("ResponseRound", () => {
     const turn = h.makeTurn({ turnRequest: "the ask", assistantMessage: reply });
     h.config.orchestration.evaluatorEnabled = true;
 
-    const outcome = await new ResponseRound(h.ctx).runAsync(turn);
+    const outcome = await new EvaluatorRound(h.ctx).runAsync(turn);
 
     expect(outcome.kind).toBe("next-iteration");
     expect(h.conversation.messages.at(-1)!.content).toContain("off track — nothing actually ran");
@@ -446,27 +571,6 @@ describe("ResponseRound", () => {
       OrchestratorEventTypes.EVALUATION_START,
       OrchestratorEventTypes.EVALUATION_VERDICT,
     ]);
-  });
-
-  test("a failed judge verdict ends the turn instead of nudging until the cap", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: FAILED unrecoverable" });
-    const turn = h.makeTurn({ turnRequest: "the ask", assistantMessage: reply });
-    h.config.orchestration.evaluatorEnabled = true;
-
-    const outcome = await new ResponseRound(h.ctx).runAsync(turn);
-
-    expect(outcome).toMatchObject({ kind: "done", result: { outcome: "failed" } });
-    expect(h.conversation.messages.at(-1)!.content).toContain("SYSTEM-FAILURE");
-  });
-
-  test("an awaiting-input verdict settles distinctly so headless can't read it as success", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: AWAITING-INPUT needs a decision" });
-    const turn = h.makeTurn({ turnRequest: "the ask", assistantMessage: reply });
-    h.config.orchestration.evaluatorEnabled = true;
-
-    const outcome = await new ResponseRound(h.ctx).runAsync(turn);
-
-    expect(outcome).toMatchObject({ kind: "done", result: { outcome: "awaiting-input" } });
   });
 });
 

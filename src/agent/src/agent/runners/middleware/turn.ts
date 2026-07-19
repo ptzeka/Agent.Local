@@ -3,6 +3,7 @@ import type { Conversation } from "../../conversation/conversation.js";
 import type { ChatMessage, LLMProvider, ToolCall } from "../../providers/provider.js";
 import type { ModelsFile } from "../../registries/configuration-registry.js";
 import type { ScopedToolClient } from "../../scoped-tool-client.js";
+import type { ContextSnapshot } from "../../context/context-loader.js";
 import type { DispatchTracker } from "../../synthetic-mcp/dispatch-tracker.js";
 import type { ReportedTurnResult } from "../../synthetic-mcp/types.js";
 import type { TurnResultCapture } from "../../synthetic-mcp/turn-result-tools.js";
@@ -25,8 +26,8 @@ export interface TurnOptions {
   temperature: number;
   streaming: boolean;
   maxIterations: number;
-  // system prompt + prior transcript; the boundary between "context" and "this turn's work"
-  openingMessages: ChatMessage[];
+  // the raw snapshot SystemMessagesRound turns into the working-set context prefix at turn start
+  context: ContextSnapshot;
   rounds: readonly IRound[];
 }
 
@@ -45,10 +46,13 @@ export class Turn {
   readonly temperature: number;
   readonly streaming: boolean;
   readonly maxIterations: number;
-  readonly workingMessages: ChatMessage[];
+  readonly context: ContextSnapshot;
+  readonly workingMessages: ChatMessage[] = [];
 
   turnRequest: string | null = null;
+  contextBuilt = false;
   recalled = false;
+  summarized = false;
   toolCallsMade = 0;
   iteration = 0;
   chatStarted = false;
@@ -58,9 +62,12 @@ export class Turn {
 
   private readonly ctx: RunnerContext;
   private readonly conversation: Conversation;
+  // filled by SystemMessagesRound at turn start; empty until then, so seedOpeningSet stays valid
+  private contextMessages: ChatMessage[] = [];
   private readonly rounds: readonly IRound[];
-  // where the turn's first drained message lands, so the evaluator sees the request onward
-  private readonly turnStartIndex: number;
+  // where the turn's first drained message lands, so the evaluator sees the request onward;
+  // recomputed whenever SystemMessagesRound/SummarizeRound reseed the opening set
+  private turnStartIndex = 0;
 
   constructor(ctx: RunnerContext, options: TurnOptions) {
     this.ctx = ctx;
@@ -76,9 +83,9 @@ export class Turn {
     this.temperature = options.temperature;
     this.streaming = options.streaming;
     this.maxIterations = options.maxIterations;
-    this.workingMessages = [...options.openingMessages];
-    this.turnStartIndex = this.workingMessages.length;
+    this.context = options.context;
     this.rounds = options.rounds;
+    this.seedOpeningSet();
   }
 
   // ---------------------------------------------------------------------------
@@ -133,6 +140,33 @@ export class Turn {
   // working set only — rebuilt each turn (like the request anchor), so persisting would bloat the record
   injectTransient(message: ChatMessage): void {
     this.workingMessages.push(message);
+  }
+
+  // installs the turn-start context prefix and reseeds the opening set from it; valid only before
+  // this turn appends its own work (SystemMessagesRound is the first round, ahead of the request drain)
+  setContextMessages(messages: ChatMessage[]): void {
+    this.contextMessages = messages;
+    this.seedOpeningSet();
+  }
+
+  // the live persisted history the turn seeds from; SummarizeRound reads it to decide on compaction
+  history(): readonly ChatMessage[] {
+    return this.conversation.getMessages();
+  }
+
+  // summarization is the one conversation-level rewrite: swap the persisted history for the compacted
+  // set, then reseed the opening working set from it — valid only before this turn appends its own work
+  async replaceHistory(messages: ChatMessage[]): Promise<void> {
+    await this.conversation.replaceAll(messages);
+    this.seedOpeningSet();
+  }
+
+  // (re)builds the opening working set as the context prefix + the live conversation, and marks where
+  // this turn's own work begins so transcriptOfTurn() and the evaluator see the request onward
+  private seedOpeningSet(): void {
+    this.workingMessages.length = 0;
+    this.workingMessages.push(...this.contextMessages, ...this.conversation.getMessages());
+    this.turnStartIndex = this.workingMessages.length;
   }
 
   // flushed immediately so a crash before the next model call keeps the steering on record

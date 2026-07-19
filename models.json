@@ -61,7 +61,7 @@
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-4-5-20251001",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY.",
       "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"],
@@ -70,7 +70,7 @@
     },
     "claude-haiku-4-5-executor": {
       "provider": "anthropic",
-      "model": "claude-haiku-4-5",
+      "model": "claude-haiku-4-5-20251001",
       "supportsTools": true,
       "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
       "mcp": ["fsmcp", "codemcp", "excel"],
