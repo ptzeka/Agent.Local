@@ -163,7 +163,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     logger: { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() },
     registry: {},
     runtime,
-    pullInjectedPrompts: () => inbox.splice(0),
+    hasPending: () => inbox.length > 0,
+    pullInjectedPrompt: () => inbox.pop() ?? "",
   } as unknown as RunnerContext;
 
   const makeTurn = (overrides: TurnOverrides = {}): Turn => {

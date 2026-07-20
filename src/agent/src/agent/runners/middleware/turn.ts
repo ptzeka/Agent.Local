@@ -10,6 +10,8 @@ import type { RunResult } from "../orchestrator.js";
 import { OrchestratorEventTypes } from "../runner-events.js";
 import type { IRound, RoundOutcome } from "./iround.js";
 import type { RunnerContext } from "./runner-middleware.js";
+import { guid, uuid } from "zod/v4";
+import { randomUUID } from "node:crypto";
 
 // everything a turn is born with; the runner assembles it once, the Turn exposes it read-only
 export interface TurnOptions {
@@ -35,6 +37,7 @@ export type TurnOutcome =
 // envelopes, and the iteration loop that drives its rounds — the runner only constructs it
 // transcript invariant: append() persists, injectTransient() does not; rounds never touch Conversation
 export class Turn {
+  readonly id: string;
   readonly role: string;
   readonly provider: LLMProvider;
   readonly scopedClients: ScopedToolClient;
@@ -52,7 +55,6 @@ export class Turn {
   recalled = false;
   summarized = false;
   toolCallsMade = 0;
-  iteration = 0;
   chatStarted = false;
   // per-iteration handoff: ModelRound writes, the rounds below it read
   assistantMessage: ChatMessage | null = null;
@@ -68,6 +70,7 @@ export class Turn {
   private turnStartIndex = 0;
 
   constructor(ctx: RunnerContext, options: TurnOptions) {
+    this.id = randomUUID().toString();
     this.ctx = ctx;
     this.role = options.role;
     this.provider = options.provider;
@@ -187,7 +190,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage,
-        iterations: this.iteration,
+        iterations: 0,
         dispatches: this.tracker.count,
         outcome,
       },
@@ -207,7 +210,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage: failureNotice,
-        iterations: this.iteration,
+        iterations: 0,
         dispatches: this.tracker.count,
         outcome: "failed",
       },
@@ -222,7 +225,7 @@ export class Turn {
     const finalMessage: ChatMessage = { role: "assistant", content: JSON.stringify(envelope) };
     this.conversation.append(finalMessage);
     this.ctx.events.publish(OrchestratorEventTypes.MESSAGE, {
-      iteration: this.iteration,
+      iteration: 0,
       content: finalMessage.content,
       toolCallCount: 0,
     });
@@ -231,7 +234,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage,
-        iterations: this.iteration,
+        iterations: 0,
         dispatches: this.tracker.count,
         outcome: reported.status === "success" ? "satisfied" : "failed",
         reported,

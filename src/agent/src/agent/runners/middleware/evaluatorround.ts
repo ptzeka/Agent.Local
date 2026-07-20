@@ -1,3 +1,5 @@
+import { EvaluationVerdict, Evaluator } from "../evaluator.js";
+import { OrchestratorEventTypes } from "../runner-events.js";
 import { Round, type RoundOutcome } from "./iround.js";
 import type { Turn } from "./turn.js";
 
@@ -44,6 +46,37 @@ export class EvaluatorRound extends Round {
             "Stop repeating what isn't working and change your approach. Re-check this " +
             "request and the current workspace state, then take a different next action."
     );
+    
     return { kind: "next-iteration" };
+  }
+
+    protected async evaluateCompletion(turn: Turn, proposedAnswer: string): Promise<EvaluationVerdict> {
+    const events = this.context.events;
+    events.publish(OrchestratorEventTypes.EVALUATION_START, {});
+
+    try {
+      const evaluator = new Evaluator(this.context.runtime);
+      const verdict = await evaluator.evaluate(
+        {
+          question: turn.turnRequest!,
+          proposedAnswer,
+          transcript: turn.transcriptOfTurn(),
+        },
+        { signal: this.context.signal, temperature: turn.config.orchestration.evaluatorTemperature }
+      );
+      if (verdict?.reason) {
+        events.publish(OrchestratorEventTypes.EVALUATION_VERDICT, {
+          state: verdict.state,
+          reason: verdict.reason,
+        });
+      }
+      return verdict;
+    } catch (err) {
+      // fail open: never trap the user because the judge errored
+      events.publish(OrchestratorEventTypes.WARNING, {
+        message: `evaluation failed, treating as satisfied: ${(err as Error).message}`,
+      });
+      return { state: "satisfied", reason: "evaluator error; defaulting to satisfied" };
+    }
   }
 }

@@ -100,8 +100,11 @@ export class Orchestrator {
       if (ctx.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
-      // the turn runs itself: the iteration body is its ordered round list, and a round
-      // ends the turn, skips to the next iteration, or passes to the round below
+
+      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration: iteration });
+
+      // a FRESH turn per iteration: it re-seeds from the persisted conversation, drains any queued
+      // input, and runs its round list once — a round ends the turn, restarts, or falls through
       const turn = new Turn(ctx, {
         role: this.role,
         provider,
@@ -125,7 +128,11 @@ export class Orchestrator {
         ],
       });
       const outcome = await turn.runAsync();
-      if (outcome.kind === "done") return outcome.result;
+      if (outcome.kind === "done")
+      {
+        outcome.result.iterations = iteration;
+        return outcome.result;
+      }
     }
 
     const truncationNotice: ChatMessage = {

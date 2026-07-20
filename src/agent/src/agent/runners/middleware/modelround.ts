@@ -18,10 +18,6 @@ export class ModelRound extends Round {
     const modelsRegistry = this.context.runtime.getModelsRegistry();
     const provider = turn.provider;
 
-    turnEvents.publish(OrchestratorEventTypes.ITERATION, {
-      iteration: turn.iteration
-    });
-
     // transient last message every call so the model stays anchored as the transcript grows
     const requestAnchor: ChatMessage = {
       role: "system",
@@ -29,7 +25,7 @@ export class ModelRound extends Round {
     };
 
     this.context.logger.debug("model call", {
-      iteration: turn.iteration,
+      turnId: turn.id,
       provider: provider.providerName,
       model: provider.modelId,
     });
@@ -42,7 +38,7 @@ export class ModelRound extends Round {
             turnEvents.publish(OrchestratorEventTypes.CHAT_START, { emitter: turn.role });
           }
           turnEvents.publish(OrchestratorEventTypes.MESSAGE_DELTA, {
-            iteration: turn.iteration,
+            turnId: turn.id,
             delta,
           });
         }
@@ -59,7 +55,7 @@ export class ModelRound extends Round {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${turn.iteration}: ${errorMsg}`
+        `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${turn.id}: ${errorMsg}`
       );
     }
 
@@ -75,13 +71,13 @@ export class ModelRound extends Round {
 
     // Content length + tool count distinguish a real answer from an empty reply.
     this.context.logger.debug("model response", {
-      iteration: turn.iteration,
+      turnId: turn.id,
       contentLength: assistantMessage.content.length,
       toolCalls: toolCalls.length,
     });
 
     turnEvents.publish(OrchestratorEventTypes.MESSAGE, {
-      iteration: turn.iteration,
+      turnId: turn.id,
       content: assistantMessage.content,
       toolCallCount: toolCalls.length,
       usage: response.usage,

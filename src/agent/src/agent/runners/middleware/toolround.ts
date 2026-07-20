@@ -39,32 +39,7 @@ export class ToolRound extends Round {
     if (reported) {
       return turn.finalizeReported(reported);
     }
-
-    // mid-flight progress gate (orchestrator only) to catch no-progress loops before they hit the cap
-    if (
-      turn.role !== "executor" &&
-      turn.config.orchestration.evaluatorEnabled &&
-      turn.tracker.dueForPeriodicCheck()
-    ) {
-      const verdict = await this.evaluateCompletion(
-        turn,
-        "(in-progress checkpoint — no final answer yet)"
-      );
-      if (verdict.state === "failed") {
-        return turn.fail(verdict.reason);
-      }
-      if (verdict.state === "unsatisfied") {
-        turn.append({
-          role: "user",
-          content:
-            `EVALUATOR: off track — ${verdict.reason}\n` +
-            `The request for THIS turn is exactly: «${turn.turnRequest}»\n` +
-            "Stop repeating what isn't working and change your approach. Re-check this " +
-            "request and the current workspace state, then take a different next action.",
-        });
-      }
-    }
-
+    
     // persist this round so a crash mid-turn loses at most the round in flight
     await turn.flush();
     return { kind: "continue" };

@@ -16,9 +16,10 @@ export interface RunnerContext {
   readonly registry: Container;
   // DI handle: runners resolve runtime singletons through this rather than a wired-in reference
   readonly runtime: AgentRuntimeQueryable;
+  // pull seam: hasPending gates the pull, pullInjectedPrompt pops one queued prompt per iteration,
+  // so an outside producer steers the loop without racing it
+  readonly hasPending?: () => boolean;
   readonly pullInjectedPrompt?: () => string;
-  // pull seam: returned strings are appended as user turns, so an outside producer steers without racing the loop
-  readonly pullInjectedPrompts?: () => string[];
 }
 
 // one onion link wrapping a turn: call next() to descend to the core run, or return early to short-circuit
