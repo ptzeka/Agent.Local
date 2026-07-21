@@ -4,7 +4,7 @@ import { InputInboxMiddleware } from "../../src/agent/runtime/middleware/input-i
 import { InboxToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-// creates the external input-injection seam the orchestrator drains each iteration
+// creates the external input-injection seam the orchestrator dequeues one prompt from per turn
 describe("InputInboxMiddleware", () => {
   test("seeds ctx.inbox with a working inbox and advances", async () => {
     const ctx = makeContext();
@@ -17,16 +17,17 @@ describe("InputInboxMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
 
     inbox!.push("s1", "hello");
-    expect(inbox!.drain("s1")).toEqual(["hello"]);
+    expect(inbox!.dequeue("s1")).toBe("hello");
+    expect(inbox!.hasPending("s1")).toBe(false);
   });
 
-  test("the seeded inbox starts empty — draining an unknown session yields nothing", async () => {
+  test("the seeded inbox starts empty — dequeuing an unknown session yields nothing", async () => {
     const ctx = makeContext();
 
     await new InputInboxMiddleware().initialize(ctx, jest.fn(async () => {}));
 
     const inbox = ctx.registry.get(InboxToken);
     expect(inbox.hasPending("s1")).toBe(false);
-    expect(inbox.drain("s1")).toEqual([]);
+    expect(inbox.dequeue("s1")).toBe("");
   });
 });

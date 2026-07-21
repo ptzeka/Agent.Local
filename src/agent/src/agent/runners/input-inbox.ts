@@ -26,23 +26,22 @@ export class InputInbox {
     this.onPush?.(source);
   }
 
-  public pop(sessionId: string): string
-  {
+  // pops ONE queued prompt in FIFO order so each becomes its own turn; drops the queue when it empties
+  public dequeue(sessionId: string): string {
     const queue = this.queues.get(sessionId);
     if (!queue || queue.length === 0) return "";
-    return queue.pop() || "";
-  }
-
-  // FIFO drain-and-clear; called once per iteration, so a drained-and-empty session costs one Map miss
-  public drain(sessionId: string): string[] {
-    const queue = this.queues.get(sessionId);
-    if (!queue || queue.length === 0) return [];
-    this.queues.delete(sessionId);
-    return queue;
+    const next = queue.shift()!;
+    if (queue.length === 0) this.queues.delete(sessionId);
+    return next;
   }
 
   public hasPending(sessionId: string): boolean {
     const queue = this.queues.get(sessionId);
     return queue !== undefined && queue.length > 0;
+  }
+
+  // a hard stop drops queued prompts so they don't auto-run after the user cancels
+  public clear(sessionId: string): void {
+    this.queues.delete(sessionId);
   }
 }

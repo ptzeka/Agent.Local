@@ -10,7 +10,6 @@ import type { RunResult } from "../orchestrator.js";
 import { OrchestratorEventTypes } from "../runner-events.js";
 import type { IRound, RoundOutcome } from "./iround.js";
 import type { RunnerContext } from "./runner-middleware.js";
-import { guid, uuid } from "zod/v4";
 import { randomUUID } from "node:crypto";
 
 // everything a turn is born with; the runner assembles it once, the Turn exposes it read-only
@@ -33,9 +32,9 @@ export type TurnOutcome =
   | { kind: "done"; result: RunResult };
 
 
-// one user turn as an object: owns the per-turn state, the transcript writes, the outcome
-// envelopes, and the iteration loop that drives its rounds — the runner only constructs it
-// transcript invariant: append() persists, injectTransient() does not; rounds never touch Conversation
+// one prompt's turn as an object: owns the per-turn state, the transcript writes, and the outcome
+// envelopes. one Turn per prompt; the orchestrator owns the iteration loop and calls runAsync() once
+// per iteration. transcript invariant: append() persists, injectTransient() does not; rounds never touch Conversation
 export class Turn {
   readonly id: string;
   readonly role: string;
@@ -56,6 +55,8 @@ export class Turn {
   summarized = false;
   toolCallsMade = 0;
   chatStarted = false;
+  // the orchestrator's loop counter, stamped each pass; rounds read it for the iterations accounting
+  iteration = 0;
   // per-iteration handoff: ModelRound writes, the rounds below it read
   assistantMessage: ChatMessage | null = null;
   toolCalls: ToolCall[] = [];
@@ -92,10 +93,9 @@ export class Turn {
   // Loop
   // ---------------------------------------------------------------------------
 
-  // drives the round list per iteration and obeys each round's outcome; runs to the
-  // cap only when no round ever ends the turn, which is itself a reportable outcome
+  // one pass over the round list: a round can end the turn (done) or ask to restart the iteration;
+  // a completed pass with no ender is itself a next-iteration, which the orchestrator loop re-runs
   async runAsync(): Promise<TurnOutcome> {
-
     for (const round of this.rounds) {
       const outcome = await round.runAsync(this);
       if (outcome.kind === "done")
@@ -190,7 +190,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage,
-        iterations: 0,
+        iterations: this.iteration,
         dispatches: this.tracker.count,
         outcome,
       },
@@ -210,7 +210,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage: failureNotice,
-        iterations: 0,
+        iterations: this.iteration,
         dispatches: this.tracker.count,
         outcome: "failed",
       },
@@ -225,7 +225,7 @@ export class Turn {
     const finalMessage: ChatMessage = { role: "assistant", content: JSON.stringify(envelope) };
     this.conversation.append(finalMessage);
     this.ctx.events.publish(OrchestratorEventTypes.MESSAGE, {
-      iteration: 0,
+      iteration: this.iteration,
       content: finalMessage.content,
       toolCallCount: 0,
     });
@@ -234,7 +234,7 @@ export class Turn {
       kind: "done",
       result: {
         finalMessage,
-        iterations: 0,
+        iterations: this.iteration,
         dispatches: this.tracker.count,
         outcome: reported.status === "success" ? "satisfied" : "failed",
         reported,

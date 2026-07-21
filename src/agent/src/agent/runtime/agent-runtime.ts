@@ -168,7 +168,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       registry: this.container,
       runtime: this,
       hasPending: () => this.inbox.hasPending(this.session.sessionId),
-      pullInjectedPrompt: () => this.inbox.pop(this.session.sessionId),
+      pullInjectedPrompt: () => this.inbox.dequeue(this.session.sessionId),
     };
   }
 
@@ -216,7 +216,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     }
   }
 
-  // queued and drained at the next iteration, so safe whether or not a turn is in flight
+  // queued and drained as the next turn, so safe whether or not a turn is in flight
   injectInput(content: string, source?: string): void {
     this.inbox.push(this.session.sessionId, content, source);
   }
@@ -253,6 +253,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   stopAllWork(): { cancelledTurns: number; cancelledSubSessions: number } {
     const cancelledSubSessions = this.sessionManager.cancelActive(this.session.sessionId);
     const cancelledTurns = this.turnRunner?.cancelAll() ?? 0;
+    // one prompt per turn leaves later prompts queued mid-run: drop them so stop truly stops
+    this.inbox.clear(this.session.sessionId);
     return { cancelledTurns, cancelledSubSessions };
   }
 

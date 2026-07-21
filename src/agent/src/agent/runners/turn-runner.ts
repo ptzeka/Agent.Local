@@ -131,8 +131,17 @@ export class TurnRunner {
   // Queries
   // ------------------------------------------------------------------------
 
+  // queued input counts as busy so awaitIdle() (reset/compact) waits through a multi-prompt drain,
+  // not just the turn in flight — otherwise it could resolve between two one-prompt-per-turn passes
   public get isBusy(): boolean {
-    return this.current !== null || this.pending;
+    return this.current !== null || this.pending || this.hasQueuedInput();
+  }
+
+  private hasQueuedInput(): boolean {
+    // never self-perpetuate a stillborn turn: once the parent has aborted, a queued prompt can never
+    // dispatch (the turn dies on its own abort check before draining), so re-arming off it would spin
+    if (this.parentSignal?.aborted) return false;
+    return this.shouldRun ? this.shouldRun() : false;
   }
 
   // reset/compact need true quiescence: cancelAll() aborts, but the turn unwinds async, and
@@ -150,7 +159,9 @@ export class TurnRunner {
 
   private async pump(): Promise<void> {
     while (!this.stopping) {
-      if (!this.pending) {
+      // one prompt per turn: a discrete wake OR input still queued keeps the pump running, so it
+      // self-perpetuates through a multi-prompt inbox instead of parking after the first turn
+      if (!this.pending && !this.hasQueuedInput()) {
         await this.parkPump();
         continue;
       }

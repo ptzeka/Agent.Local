@@ -55,7 +55,7 @@ export class ModelRound extends Round {
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
       throw new Error(
-        `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${turn.id}: ${errorMsg}`
+        `Orchestrator (${provider.providerName}:${provider.modelId}) failed at iteration ${turn.iteration}: ${errorMsg}`
       );
     }
 

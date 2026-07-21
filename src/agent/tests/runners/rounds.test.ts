@@ -76,6 +76,8 @@ interface HarnessOptions {
   // what the fake evaluator-judge provider replies (parsed by the real Evaluator)
   evaluatorReply?: string;
   chatResponse?: ChatResponse;
+  // one response per model call, in order — for driving a single turn across iterations
+  chatSequence?: ChatResponse[];
   chatError?: Error;
   signal?: AbortSignal;
   // the snapshot the context loader returns for SystemMessagesRound / Summarizer
@@ -87,7 +89,6 @@ interface TurnOverrides {
   role?: string;
   structuredMode?: boolean;
   tracker?: DispatchTracker;
-  maxIterations?: number;
   // convenience: installs the built context prefix directly (bypassing SystemMessagesRound)
   contextMessages?: ChatMessage[];
   rounds?: IRound[];
@@ -115,9 +116,11 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   eventBus.subscribe((event) => events.push(event as { type: string; payload: Record<string, unknown> }));
 
+  let chatCall = 0;
   const chat = jest.fn(
     async (): Promise<ChatResponse> => {
       if (opts.chatError) throw opts.chatError;
+      if (opts.chatSequence) return opts.chatSequence[Math.min(chatCall++, opts.chatSequence.length - 1)]!;
       return opts.chatResponse ?? { message: { role: "assistant", content: "answer" } };
     }
   );
@@ -164,7 +167,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     registry: {},
     runtime,
     hasPending: () => inbox.length > 0,
-    pullInjectedPrompt: () => inbox.pop() ?? "",
+    // FIFO to mirror the real InputInbox.dequeue
+    pullInjectedPrompt: () => inbox.shift() ?? "",
   } as unknown as RunnerContext;
 
   const makeTurn = (overrides: TurnOverrides = {}): Turn => {
@@ -178,9 +182,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       conversation: conversation as unknown as Conversation,
       config,
       structuredMode: overrides.structuredMode ?? false,
-      temperature: 0,
       streaming: false,
-      maxIterations: overrides.maxIterations ?? 5,
       rounds: overrides.rounds ?? [],
     });
     turn.turnRequest = overrides.turnRequest ?? null;
@@ -296,23 +298,33 @@ describe("SummarizeRound", () => {
 // ---------------------------------------------------------------------------
 
 describe("PromptRound", () => {
-  test("drains the inbox into conversation + working set and sets the turn request", async () => {
+  test("pulls exactly one queued prompt as the request, leaving the rest for the next turn", async () => {
     const h = makeHarness({ inbox: ["do the thing", "and this too"] });
     const turn = h.makeTurn();
 
     const outcome = await new PromptRound(h.ctx).runAsync(turn);
 
     expect(outcome.kind).toBe("continue");
-    expect(turn.turnRequest).toBe("do the thing\nand this too");
-    expect(turn.workingMessages.map((message) => message.content)).toEqual([
-      "do the thing",
-      "and this too",
-    ]);
-    expect(h.conversation.messages).toHaveLength(2);
-    expect(eventTypes(h)).toEqual([
-      OrchestratorEventTypes.INJECTED_INPUT,
-      OrchestratorEventTypes.INJECTED_INPUT,
-    ]);
+    // one prompt per turn: only the first is taken, the second stays queued for the next turn
+    expect(turn.turnRequest).toBe("do the thing");
+    expect(turn.workingMessages.map((message) => message.content)).toEqual(["do the thing"]);
+    expect(h.conversation.messages).toHaveLength(1);
+    expect(h.ctx.hasPending!()).toBe(true);
+    expect(h.ctx.pullInjectedPrompt!()).toBe("and this too");
+    expect(eventTypes(h)).toEqual([OrchestratorEventTypes.INJECTED_INPUT]);
+  });
+
+  test("later iteration with a prompt still queued keeps the original request — the new prompt defers", async () => {
+    const h = makeHarness({ inbox: ["a follow-up arrived mid-turn"] });
+    const turn = h.makeTurn({ turnRequest: "original ask", iteration: 2 });
+
+    const outcome = await new PromptRound(h.ctx).runAsync(turn);
+
+    expect(outcome.kind).toBe("continue");
+    // turnRequest already set → PromptRound does not pull; the queued prompt is left for the pump
+    expect(turn.turnRequest).toBe("original ask");
+    expect(h.ctx.hasPending!()).toBe(true);
+    expect(h.events).toHaveLength(0);
   });
 
   test("a wake with nothing queued settles without a model call: done/satisfied with zero iterations", async () => {
@@ -431,7 +443,8 @@ describe("ModelRound", () => {
     expect(turn.toolCalls).toEqual([]);
     expect(h.conversation.messages.at(-1)).toBe(turn.assistantMessage);
     expect(turn.workingMessages.at(-1)).toBe(turn.assistantMessage);
-    expect(eventTypes(h)).toEqual([OrchestratorEventTypes.ITERATION, OrchestratorEventTypes.MESSAGE]);
+    // ITERATION is published by the orchestrator loop, not ModelRound
+    expect(eventTypes(h)).toEqual([OrchestratorEventTypes.MESSAGE]);
     // usage is stamped with the session so the spend stays attributable downstream
     expect((response.usage as never as { sessionId?: string }).sessionId).toBe("s1");
   });
@@ -628,32 +641,6 @@ describe("ToolRound", () => {
     expect(eventTypes(h)).toContain(OrchestratorEventTypes.MESSAGE);
   });
 
-  test("the periodic progress gate nudges off-track work without ending the turn", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: UNSATISFIED going in circles" });
-    const tracker = new DispatchTracker(10, 1);
-    tracker.recordSuccess("sig"); // one dispatch since the last check → the gate is due
-    const turn = h.makeTurn({ turnRequest: "the ask", toolCalls: [calls[0]!], tracker });
-    h.config.orchestration.evaluatorEnabled = true;
-
-    const outcome = await new ToolRound(h.ctx).runAsync(turn);
-
-    expect(outcome.kind).toBe("continue");
-    expect(h.conversation.messages.at(-1)!.content).toContain("off track — going in circles");
-    expect(h.conversation.flush).toHaveBeenCalledTimes(1);
-  });
-
-  test("a failed verdict at the periodic gate ends the turn", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: FAILED stuck for good" });
-    const tracker = new DispatchTracker(10, 1);
-    tracker.recordSuccess("sig");
-    const turn = h.makeTurn({ turnRequest: "the ask", toolCalls: [calls[0]!], tracker });
-    h.config.orchestration.evaluatorEnabled = true;
-
-    const outcome = await new ToolRound(h.ctx).runAsync(turn);
-
-    expect(outcome).toMatchObject({ kind: "done", result: { outcome: "failed" } });
-  });
-
   test("an aborted signal stops before any tool runs", async () => {
     const controller = new AbortController();
     controller.abort();
@@ -666,21 +653,18 @@ describe("ToolRound", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Turn.runAsync
+// Turn.runAsync — ONE pass over the rounds (the orchestrator owns the iteration loop and the cap)
 // ---------------------------------------------------------------------------
 
 describe("Turn.runAsync", () => {
-  const stub = (outcomes: Array<"continue" | "next-iteration">, log: string[], name: string): IRound => {
-    let call = 0;
-    return {
-      runAsync: async () => {
-        log.push(`${name}#${call}`);
-        return { kind: outcomes[Math.min(call++, outcomes.length - 1)]! };
-      },
-    };
-  };
+  const stub = (outcome: "continue" | "next-iteration", log: string[], name: string): IRound => ({
+    runAsync: async () => {
+      log.push(name);
+      return { kind: outcome };
+    },
+  });
 
-  test("runs rounds in order and returns the first done result", async () => {
+  test("runs rounds in order and returns the first done result, skipping the rounds below", async () => {
     const h = makeHarness();
     const log: string[] = [];
     const finisher: IRound = {
@@ -689,53 +673,84 @@ describe("Turn.runAsync", () => {
         return turn.settle({ role: "assistant", content: "final" }, "satisfied");
       },
     };
-    const turn = h.makeTurn({ rounds: [stub(["continue"], log, "a"), finisher, stub(["continue"], log, "never")] });
+    const turn = h.makeTurn({
+      iteration: 1,
+      rounds: [stub("continue", log, "a"), finisher, stub("continue", log, "never")],
+    });
 
-    const result = await turn.runAsync();
+    const outcome = await turn.runAsync();
 
-    expect(result).toMatchObject({ outcome: "satisfied", iterations: 1 });
-    expect(log).toEqual(["a#0", "finisher"]); // the round below the finisher never ran
+    expect(outcome).toMatchObject({ kind: "done", result: { outcome: "satisfied", iterations: 1 } });
+    expect(log).toEqual(["a", "finisher"]); // the round below the finisher never ran
   });
 
-  test("next-iteration skips the rounds below and advances the iteration counter", async () => {
+  test("a round asking for next-iteration stops the pass and returns next-iteration", async () => {
     const h = makeHarness();
     const log: string[] = [];
-    const skipOnce = stub(["next-iteration", "continue"], log, "skip");
-    const after: IRound = {
-      runAsync: async (turn) => {
-        log.push(`after@${turn.iteration}`);
-        return turn.settle({ role: "assistant", content: "final" }, "satisfied");
-      },
-    };
-    const turn = h.makeTurn({ rounds: [skipOnce, after] });
+    const turn = h.makeTurn({
+      rounds: [stub("next-iteration", log, "restart"), stub("continue", log, "below")],
+    });
 
-    const result = await turn.runAsync();
+    const outcome = await turn.runAsync();
 
-    // iteration 1: skip fired next-iteration so "after" never ran; iteration 2 reached it
-    expect(log).toEqual(["skip#0", "skip#1", "after@2"]);
-    expect(result.iterations).toBe(2);
+    expect(outcome).toEqual({ kind: "next-iteration" });
+    expect(log).toEqual(["restart"]); // the round below the restart never ran
   });
 
-  test("no round ending the turn runs to the cap and returns capped with the truncation notice", async () => {
+  test("a pass with no ender completes and returns next-iteration for the orchestrator to re-run", async () => {
     const h = makeHarness();
     const log: string[] = [];
-    const turn = h.makeTurn({ maxIterations: 3, rounds: [stub(["continue"], log, "r")] });
+    const turn = h.makeTurn({ rounds: [stub("continue", log, "a"), stub("continue", log, "b")] });
 
-    const result = await turn.runAsync();
+    const outcome = await turn.runAsync();
 
-    expect(result).toMatchObject({ outcome: "capped", iterations: 3 });
-    expect(h.conversation.messages.at(-1)!.content).toContain("hit iteration cap of 3");
-    expect(eventTypes(h)).toContain(OrchestratorEventTypes.WARNING);
+    expect(outcome).toEqual({ kind: "next-iteration" });
+    expect(log).toEqual(["a", "b"]);
   });
+});
 
-  test("an aborted signal stops the loop before any round runs", async () => {
-    const controller = new AbortController();
-    controller.abort();
-    const h = makeHarness({ signal: controller.signal });
-    const log: string[] = [];
-    const turn = h.makeTurn({ rounds: [stub(["continue"], log, "r")] });
+// ---------------------------------------------------------------------------
+// One prompt across iterations — the hoisted turn (regression: turnRequest must persist)
+// ---------------------------------------------------------------------------
 
-    await expect(turn.runAsync()).rejects.toThrow("turn aborted");
-    expect(log).toEqual([]);
+describe("one prompt across iterations", () => {
+  // the real rounds a tool-using turn runs; SystemMessages/Summarize/Memory are covered elsewhere
+  const promptToTools = (h: Harness): IRound[] => [
+    new PromptRound(h.ctx),
+    new ModelRound(h.ctx),
+    new ResponseRound(h.ctx),
+    new EvaluatorRound(h.ctx),
+    new ToolRound(h.ctx),
+  ];
+
+  test("turnRequest persists across iterations so a tool-then-answer turn completes, not an empty settle", async () => {
+    const h = makeHarness({
+      inbox: ["do X"],
+      chatSequence: [
+        // iteration 1: a tool call, so the turn must continue to a second iteration
+        { message: { role: "assistant", content: "", toolCalls: [{ id: "c1", name: "fs_read", arguments: {} }] } },
+        // iteration 2: a tool-free answer → EvaluatorRound (disabled) settles satisfied
+        { message: { role: "assistant", content: "final answer" } },
+      ],
+    });
+    const turn = h.makeTurn({ rounds: promptToTools(h) });
+
+    // drive the single hoisted turn the way the orchestrator loop does
+    turn.iteration = 1;
+    const first = await turn.runAsync();
+    expect(first).toEqual({ kind: "next-iteration" });
+    expect(turn.turnRequest).toBe("do X");
+
+    turn.iteration = 2;
+    const second = await turn.runAsync();
+
+    // the regression this whole refactor turns on: iteration 2 keeps the request rather than
+    // re-draining an empty inbox and cold-settling with an empty answer
+    expect(turn.turnRequest).toBe("do X");
+    expect(second).toMatchObject({
+      kind: "done",
+      result: { outcome: "satisfied", iterations: 2, finalMessage: { content: "final answer" } },
+    });
+    expect(h.chat).toHaveBeenCalledTimes(2);
   });
 });

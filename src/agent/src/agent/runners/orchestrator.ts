@@ -16,8 +16,8 @@ import { ModelRound } from "./middleware/modelround.js";
 import { ResponseRound } from "./middleware/responseround.js";
 import { EvaluatorRound } from "./middleware/evaluatorround.js";
 import { ToolRound } from "./middleware/toolround.js";
-import { ModelRegistry } from "../registries/model-registry.js";
-import { ModelsFile } from "../registries/configuration-registry.js";
+import type { ModelRegistry } from "../registries/model-registry.js";
+import type { ModelsFile } from "../registries/configuration-registry.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 
 // re-export for backwards compatibility
@@ -96,43 +96,42 @@ export class Orchestrator {
       maxIterations: maxIterations
     });
 
+    // ONE turn per prompt: PromptRound pulls a single queued prompt on the first iteration and the
+    // turn carries that request across iterations; the pump replays this run for the next queued prompt
+    const turn = new Turn(ctx, {
+      role: this.role,
+      provider,
+      scopedClients,
+      visibleTools,
+      tracker,
+      resultSink,
+      conversation,
+      config,
+      structuredMode,
+      streaming: ctx.runtime.isStreamOutputEnabled(),
+      rounds: [
+        new SystemMessagesRound(ctx),
+        new SummarizeRound(ctx),
+        new PromptRound(ctx),
+        new MemoryRound(ctx),
+        new ModelRound(ctx),
+        new ResponseRound(ctx),
+        new EvaluatorRound(ctx),
+        new ToolRound(ctx),
+      ],
+    });
+
+    // the iteration loop lives here, not in the Turn: each pass re-runs the round list once,
+    // and a round ends the turn (done), restarts the iteration, or falls through to the pass end
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (ctx.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
+      turn.iteration = iteration;
+      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
 
-      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration: iteration });
-
-      // a FRESH turn per iteration: it re-seeds from the persisted conversation, drains any queued
-      // input, and runs its round list once — a round ends the turn, restarts, or falls through
-      const turn = new Turn(ctx, {
-        role: this.role,
-        provider,
-        scopedClients,
-        visibleTools,
-        tracker,
-        resultSink,
-        conversation,
-        config,
-        structuredMode,
-        streaming: ctx.runtime.isStreamOutputEnabled(),
-        rounds: [
-          new SystemMessagesRound(ctx),
-          new SummarizeRound(ctx),
-          new PromptRound(ctx),
-          new MemoryRound(ctx),
-          new ModelRound(ctx),
-          new ResponseRound(ctx),
-          new EvaluatorRound(ctx),
-          new ToolRound(ctx),
-        ],
-      });
       const outcome = await turn.runAsync();
-      if (outcome.kind === "done")
-      {
-        outcome.result.iterations = iteration;
-        return outcome.result;
-      }
+      if (outcome.kind === "done") return outcome.result;
     }
 
     const truncationNotice: ChatMessage = {
@@ -155,7 +154,7 @@ export class Orchestrator {
   }
 
   private getIterationsMax(modelsRegistry: ModelRegistry, config: ModelsFile): number {
-        // the model's own iterationCap wins; absent it, fall back to the role default
+    // the model's own iterationCap wins; absent it, fall back to the role default
     const roleIterationDefault =
       this.role === "executor"
         ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
