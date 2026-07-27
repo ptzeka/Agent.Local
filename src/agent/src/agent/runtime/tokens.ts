@@ -12,6 +12,12 @@ import type { Orchestrator } from "../runners/orchestrator.js";
 import type { InputInbox } from "../runners/input-inbox.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type { IRunnerMiddleware } from "../runners/middleware/runner-middleware.js";
+import type {
+  CompactionPolicy,
+  CompletionPolicy,
+  ContextContributor,
+  ContextProvider,
+} from "../runners/policies/types.js";
 import type { MetricsRegistry } from "./metrics/metrics-registry.js";
 
 // one token per runtime-scoped service; middleware set() these into ctx.registry, consumers get() them
@@ -33,3 +39,15 @@ export const SessionManagerToken = token<SessionManager>("sessionManager");
 export const RunnerMiddlewareToken = token<IRunnerMiddleware>("runnerMiddleware");
 // runtime-scoped token tally; TurnCounterMiddleware writes it, readouts (cost/context) read it
 export const MetricsRegistryToken = token<MetricsRegistry>("metricsRegistry");
+
+// ---------------------------------------------------------------------------
+// Turn-loop extension slots
+// ---------------------------------------------------------------------------
+
+// registering any of these replaces the orchestrator's built-in default for that slot;
+// contributors are a group (.by()) because they only add context and can never end a turn
+export const ContextProviderToken = token<ContextProvider>("contextProvider");
+export const CompactionPolicyToken = token<CompactionPolicy>("compactionPolicy");
+export const ContextContributorToken = token<ContextContributor>("contextContributor");
+// singular override for every role; unset means each turn's profile picks its own gate
+export const CompletionPolicyToken = token<CompletionPolicy>("completionPolicy");

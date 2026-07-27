@@ -1,39 +1,37 @@
 import type { ChatMessage } from "../../providers/provider.js";
-import { Summarizer, buildSummaryMessage } from "../summarizer.js";
 import { OrchestratorEventTypes } from "../runner-events.js";
-import { Round, type RoundOutcome } from "./iround.js";
-import type { Turn } from "./turn.js";
+import { Summarizer, buildSummaryMessage } from "../summarizer.js";
+import type { RunnerContext } from "../middleware/runner-middleware.js";
+import type { Turn } from "../turn.js";
+import type { CompactionPolicy } from "./types.js";
 
-// turn-start context compaction: over the threshold, compresses the old history prefix into one
-// summary message and reseeds the working set, keeping the last K messages verbatim.
-// runs once per turn before the request is drained, and fails open so a flaky summarizer never blocks the turn
-export class SummarizeRound extends Round {
-  async runAsync(turn: Turn): Promise<RoundOutcome> {
-    if (turn.summarized) return { kind: "continue" };
-    turn.summarized = true;
-
+// the default compaction: over the threshold, compresses the old history prefix into one summary
+// message and reseeds the working set, keeping the last K messages verbatim
+// fails open so a flaky summarizer never blocks the turn
+export class SummarizeCompaction implements CompactionPolicy {
+  async applyIfNeeded(turn: Turn, ctx: RunnerContext): Promise<void> {
     const orchestration = turn.config.orchestration;
     const messages = turn.history();
-    if (messages.length <= orchestration.summarizeAtMessages!) return { kind: "continue" };
+    if (messages.length <= orchestration.summarizeAtMessages!) return;
 
     const tailStart = findCleanTailStart(messages, orchestration.summarizerKeepLastN!);
-    if (tailStart === 0) return { kind: "continue" };
+    if (tailStart === 0) return;
 
     const prefix = messages.slice(0, tailStart);
     const tail = messages.slice(tailStart);
 
-    const events = this.context.events;
+    const events = ctx.events;
     events.publish(OrchestratorEventTypes.SUMMARIZATION_START, { messageCount: prefix.length });
 
     let summaryText: string;
     try {
-      const summarizer = new Summarizer(this.context.runtime);
-      summaryText = await summarizer.summarize(prefix, { signal: this.context.signal });
+      const summarizer = new Summarizer(ctx.runtime);
+      summaryText = await summarizer.summarize(prefix, { signal: ctx.signal });
     } catch (err) {
       events.publish(OrchestratorEventTypes.WARNING, {
         message: `summarization failed: ${(err as Error).message}`,
       });
-      return { kind: "continue" };
+      return;
     }
 
     await turn.replaceHistory([buildSummaryMessage(summaryText, prefix.length), ...tail]);
@@ -43,7 +41,6 @@ export class SummarizeRound extends Round {
       keptCount: tail.length,
       summaryChars: summaryText.length,
     });
-    return { kind: "continue" };
   }
 }
 

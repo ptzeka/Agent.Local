@@ -1,20 +1,20 @@
 import type { ToolDescriptor } from "@agent-local/mcp";
-import type { Conversation } from "../../conversation/conversation.js";
-import type { ChatMessage, LLMProvider, ToolCall } from "../../providers/provider.js";
-import type { ModelsFile } from "../../registries/configuration-registry.js";
-import type { ScopedToolClient } from "../../scoped-tool-client.js";
-import type { DispatchTracker } from "../../synthetic-mcp/dispatch-tracker.js";
-import type { ReportedTurnResult } from "../../synthetic-mcp/types.js";
-import type { TurnResultCapture } from "../../synthetic-mcp/turn-result-tools.js";
-import type { RunResult } from "../orchestrator.js";
-import { OrchestratorEventTypes } from "../runner-events.js";
-import type { IRound, RoundOutcome } from "./iround.js";
-import type { RunnerContext } from "./runner-middleware.js";
+import type { Conversation } from "../conversation/conversation.js";
+import type { ChatMessage, LLMProvider } from "../providers/provider.js";
+import type { ModelsFile } from "../registries/configuration-registry.js";
+import type { ScopedToolClient } from "../scoped-tool-client.js";
+import type { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
+import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
+import type { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
+import type { RunResult } from "./orchestrator.js";
+import { OrchestratorEventTypes } from "./runner-events.js";
+import type { RunnerContext } from "./middleware/runner-middleware.js";
+import type { TurnProfile } from "./turn-profile.js";
 import { randomUUID } from "node:crypto";
 
-// everything a turn is born with; the runner assembles it once, the Turn exposes it read-only
+// everything a turn is born with; the orchestrator assembles it once, the Turn exposes it read-only
 export interface TurnOptions {
-  role: string;
+  profile: TurnProfile;
   provider: LLMProvider;
   scopedClients: ScopedToolClient;
   visibleTools: ToolDescriptor[];
@@ -22,58 +22,43 @@ export interface TurnOptions {
   resultSink: TurnResultCapture;
   conversation: Conversation;
   config: ModelsFile;
-  structuredMode: boolean;
   streaming: boolean;
-  rounds: readonly IRound[];
 }
 
-export type TurnOutcome =
-  | { kind: "next-iteration" }
-  | { kind: "done"; result: RunResult };
-
-
-// one prompt's turn as an object: owns the per-turn state, the transcript writes, and the outcome
-// envelopes. one Turn per prompt; the orchestrator owns the iteration loop and calls runAsync() once
-// per iteration. transcript invariant: append() persists, injectTransient() does not; rounds never touch Conversation
+// one prompt's turn: owns the per-turn state, the transcript writes, and the settled results
+// the orchestrator owns the loop; a Turn never drives control flow, it only records and settles
+// transcript invariant: append() persists, injectTransient() does not; only this class touches Conversation
 export class Turn {
   readonly id: string;
-  readonly role: string;
+  readonly profile: TurnProfile;
   readonly provider: LLMProvider;
   readonly scopedClients: ScopedToolClient;
   readonly visibleTools: ToolDescriptor[];
   readonly tracker: DispatchTracker;
   readonly resultSink: TurnResultCapture;
   readonly config: ModelsFile;
-  readonly structuredMode: boolean;
-  readonly temperature: number;
   readonly streaming: boolean;
   readonly workingMessages: ChatMessage[] = [];
 
   turnRequest: string | null = null;
-  contextBuilt = false;
-  recalled = false;
-  summarized = false;
+  // tool evidence for the whole turn: a reply claiming work with this at zero only narrated
   toolCallsMade = 0;
   chatStarted = false;
-  // the orchestrator's loop counter, stamped each pass; rounds read it for the iterations accounting
+  // the orchestrator's loop counter, stamped each pass; read for the iterations accounting
   iteration = 0;
-  // per-iteration handoff: ModelRound writes, the rounds below it read
-  assistantMessage: ChatMessage | null = null;
-  toolCalls: ToolCall[] = [];
 
   private readonly ctx: RunnerContext;
   private readonly conversation: Conversation;
-  // filled by SystemMessagesRound at turn start; empty until then, so seedOpeningSet stays valid
+  // installed by the context provider at turn start; empty until then, so seedOpeningSet stays valid
   private contextMessages: ChatMessage[] = [];
-  private readonly rounds: readonly IRound[];
   // where the turn's first drained message lands, so the evaluator sees the request onward;
-  // recomputed whenever SystemMessagesRound/SummarizeRound reseed the opening set
+  // recomputed whenever the context prefix or a compaction reseeds the opening set
   private turnStartIndex = 0;
 
   constructor(ctx: RunnerContext, options: TurnOptions) {
     this.id = randomUUID().toString();
     this.ctx = ctx;
-    this.role = options.role;
+    this.profile = options.profile;
     this.provider = options.provider;
     this.scopedClients = options.scopedClients;
     this.visibleTools = options.visibleTools;
@@ -81,38 +66,8 @@ export class Turn {
     this.resultSink = options.resultSink;
     this.conversation = options.conversation;
     this.config = options.config;
-    this.structuredMode = options.structuredMode;
     this.streaming = options.streaming;
-    this.rounds = options.rounds;
     this.seedOpeningSet();
-    this.temperature = this.getTemperature();
-
-  }
-
-  // ---------------------------------------------------------------------------
-  // Loop
-  // ---------------------------------------------------------------------------
-
-  // one pass over the round list: a round can end the turn (done) or ask to restart the iteration;
-  // a completed pass with no ender is itself a next-iteration, which the orchestrator loop re-runs
-  async runAsync(): Promise<TurnOutcome> {
-    for (const round of this.rounds) {
-      const outcome = await round.runAsync(this);
-      if (outcome.kind === "done")
-      {
-        return {
-          kind: "done",
-          result: outcome.result
-        }
-      }
-      if (outcome.kind === "next-iteration")
-      {
-        break;
-      }
-    }
-    return {
-      kind: "next-iteration"
-    }
   }
 
   // ---------------------------------------------------------------------------
@@ -131,18 +86,18 @@ export class Turn {
   }
 
   // installs the turn-start context prefix and reseeds the opening set from it; valid only before
-  // this turn appends its own work (SystemMessagesRound is the first round, ahead of the request drain)
+  // this turn appends its own work, which is why the prologue runs it ahead of the request drain
   setContextMessages(messages: ChatMessage[]): void {
     this.contextMessages = messages;
     this.seedOpeningSet();
   }
 
-  // the live persisted history the turn seeds from; SummarizeRound reads it to decide on compaction
+  // the live persisted history the turn seeds from; the compaction policy reads it to decide
   history(): readonly ChatMessage[] {
     return this.conversation.getMessages();
   }
 
-  // summarization is the one conversation-level rewrite: swap the persisted history for the compacted
+  // compaction is the one conversation-level rewrite: swap the persisted history for the compacted
   // set, then reseed the opening working set from it — valid only before this turn appends its own work
   async replaceHistory(messages: ChatMessage[]): Promise<void> {
     await this.conversation.replaceAll(messages);
@@ -172,33 +127,31 @@ export class Turn {
     return this.workingMessages.slice(this.turnStartIndex);
   }
 
-  private getTemperature(): number
-  {
-    const orchestratorTemperature = this.config.orchestration.orchestratorTemperature;
-    const executorTemperature = this.config.orchestration.executorTemperature;
-    const temperature = this.role === "executor" ?
-      executorTemperature! : orchestratorTemperature!;
-    return temperature;
+  // ---------------------------------------------------------------------------
+  // Results
+  // ---------------------------------------------------------------------------
+
+  // a wake whose inbox was already drained: nothing ran, and headless accounting must see that
+  idle(): RunResult {
+    return {
+      finalMessage: { role: "assistant", content: "" },
+      iterations: 0,
+      dispatches: this.tracker.count,
+      outcome: "satisfied",
+    };
   }
 
-  // ---------------------------------------------------------------------------
-  // Outcomes
-  // ---------------------------------------------------------------------------
-
-  settle(finalMessage: ChatMessage, outcome: "satisfied" | "awaiting-input"): RoundOutcome {
+  settle(finalMessage: ChatMessage, outcome: "satisfied" | "awaiting-input"): RunResult {
     return {
-      kind: "done",
-      result: {
-        finalMessage,
-        iterations: this.iteration,
-        dispatches: this.tracker.count,
-        outcome,
-      },
+      finalMessage,
+      iterations: this.iteration,
+      dispatches: this.tracker.count,
+      outcome,
     };
   }
 
   // records a system-failure notice and ends the turn "failed" so the loop stops trying
-  async fail(reason: string): Promise<RoundOutcome> {
+  async fail(reason: string): Promise<RunResult> {
     const failureNotice: ChatMessage = {
       role: "assistant",
       content: `SYSTEM-FAILURE: failed to complete request — ${reason}`,
@@ -207,20 +160,17 @@ export class Turn {
     this.ctx.events.publish(OrchestratorEventTypes.SYSTEM_FAILURE, { reason });
     await this.flush();
     return {
-      kind: "done",
-      result: {
-        finalMessage: failureNotice,
-        iterations: this.iteration,
-        dispatches: this.tracker.count,
-        outcome: "failed",
-      },
+      finalMessage: failureNotice,
+      iterations: this.iteration,
+      dispatches: this.tracker.count,
+      outcome: "failed",
     };
   }
 
   // ends a dispatched turn on the agent's report_result: the final conversation line IS the verdict envelope
   // (single JSON line) so the record is self-describing, and outcome mirrors status so the step gate
   // fails closed on a "fail" verdict without parsing prose
-  async finalizeReported(reported: ReportedTurnResult): Promise<RoundOutcome> {
+  async finalizeReported(reported: ReportedTurnResult): Promise<RunResult> {
     const envelope = { status: reported.status, input: this.turnRequest, result: reported.result };
     const finalMessage: ChatMessage = { role: "assistant", content: JSON.stringify(envelope) };
     this.conversation.append(finalMessage);
@@ -231,14 +181,11 @@ export class Turn {
     });
     await this.flush();
     return {
-      kind: "done",
-      result: {
-        finalMessage,
-        iterations: this.iteration,
-        dispatches: this.tracker.count,
-        outcome: reported.status === "success" ? "satisfied" : "failed",
-        reported,
-      },
+      finalMessage,
+      iterations: this.iteration,
+      dispatches: this.tracker.count,
+      outcome: reported.status === "success" ? "satisfied" : "failed",
+      reported,
     };
   }
 }

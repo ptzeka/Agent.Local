@@ -7,17 +7,20 @@ import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { Eventing } from "@agent-local/common/eventing";
-import { Turn } from "./middleware/turn.js";
-import { SystemMessagesRound } from "./middleware/systemmessagesround.js";
-import { SummarizeRound } from "./middleware/summarizeround.js";
-import { PromptRound } from "./middleware/promptround.js";
-import { MemoryRound } from "./middleware/memoryround.js";
-import { ModelRound } from "./middleware/modelround.js";
-import { ResponseRound } from "./middleware/responseround.js";
-import { EvaluatorRound } from "./middleware/evaluatorround.js";
-import { ToolRound } from "./middleware/toolround.js";
-import type { ModelRegistry } from "../registries/model-registry.js";
-import type { ModelsFile } from "../registries/configuration-registry.js";
+import { Turn } from "./turn.js";
+import { ModelCaller } from "./model-caller.js";
+import { ToolCaller } from "./tool-caller.js";
+import { resolveTurnProfile } from "./turn-profile.js";
+import { selectCompletionPolicy } from "./policies/completion.js";
+import { MemoryContributor } from "./policies/memory-contributor.js";
+import { SnapshotContextProvider } from "./policies/snapshot-context-provider.js";
+import { SummarizeCompaction } from "./policies/summarize-compaction.js";
+import type {
+  CompactionPolicy,
+  CompletionPolicy,
+  ContextContributor,
+  ContextProvider,
+} from "./policies/types.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 
 // re-export for backwards compatibility
@@ -40,107 +43,189 @@ export interface SessionRunner {
   run(ctx: RunnerContext): Promise<RunResult>;
 }
 
-// drives the agentic loop for any role; the role selects model, visible tools, prompt, and iteration cap
-// STATELESS: holds only its role; per-turn state lives in the TurnState the rounds share (see middleware/)
-// orchestrator role gates on the evaluator; executor role ends on the first tool-free response
+// the four extension slots; anything omitted falls back to the built-in default
+// contributors are additive and unbounded, the other three are singular because they decide
+export interface OrchestratorPolicies {
+  contextProvider?: ContextProvider;
+  compaction?: CompactionPolicy;
+  contributors?: readonly ContextContributor[];
+  // overrides the profile's own selection for every role; normally left unset
+  completion?: CompletionPolicy;
+}
+
+// drives the agentic loop for any role; the profile carries every per-role difference as data
+// STATELESS: holds only its role and its policy slots; per-turn state lives in the Turn
 export class Orchestrator {
-  constructor(private readonly role: string) {}
+  private readonly contextProvider: ContextProvider;
+  private readonly compaction: CompactionPolicy;
+  private readonly contributors: readonly ContextContributor[];
+  private readonly completionOverride?: CompletionPolicy;
 
-  // runs one user turn end-to-end: builds the TurnState, then drives the round list per iteration;
-  // rounds flush per round so a crash loses at most the round in flight, with finalize() backstopping the tail
+  // the loop's own steps, not extension points: they gather data, they never end a turn
+  private readonly model = new ModelCaller();
+  private readonly tools = new ToolCaller();
+
+  constructor(private readonly role: string, policies: OrchestratorPolicies = {}) {
+    this.contextProvider = policies.contextProvider ?? new SnapshotContextProvider();
+    this.compaction = policies.compaction ?? new SummarizeCompaction();
+    this.contributors = policies.contributors ?? [new MemoryContributor()];
+    this.completionOverride = policies.completion;
+  }
+
+  // runs one user turn end-to-end: a prologue that runs once, then the iteration loop.
+  // the loop persists per iteration so a crash loses at most the iteration in flight,
+  // with the runtime's finalize() backstopping the tail
   public async run(ctx: RunnerContext): Promise<RunResult> {
-    // the turn bus is minted+chained by AgentRuntime.beginTurn; the runner only publishes onto it
-    const turnEvents = ctx.events;
-    const modelsRegistry = ctx.runtime.getModelsRegistry();
-    const mcpRegistry = ctx.runtime.getMcpClientRegistry();
-    const providersRegistry = ctx.runtime.getProvidersRegistry();
-    const conversation = ctx.runtime.getConversation();
+    const turn = await this.openTurn(ctx);
 
-    const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration()!;
-
-    // no opening append: every user message arrives through the inbox drain inside the loop.
-    // the context snapshot, history compaction, and memory recall all load at turn start via the
-    // first rounds (SystemMessagesRound / SummarizeRound / MemoryRound), not here
-    const provider = providersRegistry.getProvider(modelsRegistry.getProviderForRole(this.role));
-
-    // structured mode IS "is turnresult mounted" — driven solely by the role's whitelist (only workflow-orchestrator
-    // lists it), like the executor/memomcp seams. the executor reports to its parent, not a workflow, so it's excluded.
-    // the sink is minted regardless so the post-round check is uniform; the bind pass below wires it in.
-    const structuredMode = !!mcpRegistry.getClient(TURN_RESULT_SERVER_NAME) && this.role !== "executor";
-    const resultSink = new TurnResultCapture();
-
-    const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, this.role);
-    const visibleTools = scopedClients.listTools();
-
-    const maxDispatches = config.orchestration.maxExecutorDispatchesPerTurn!;
-    const checkInterval = config.orchestration.validatorCheckIntervalDispatches ?? 0;
-    const tracker = new DispatchTracker(maxDispatches, checkInterval);
-    const maxIterations = this.getIterationsMax(modelsRegistry, config);
-    // ONE per-turn seam: servers register once at build; those holding turn state take it here via bindTurn.
-    // skipped for the executor role: its sub-run doesn't dispatch or report, so nothing needs binding there.
-    if (this.role !== "executor") {
-      // chained under the turn so what bound servers publish bubbles up
-      const mcpClientEvents = new Eventing();
-      turnEvents.add(mcpClientEvents);
-      const binding: TurnBinding = { signal: ctx.signal, tracker, events: mcpClientEvents, resultSink };
-      for (const client of mcpRegistry.listClients()) {
-        const bindable = client as unknown as Partial<TurnBindable>;
-        if (typeof bindable.bindTurn === "function") bindable.bindTurn(binding);
-      }
+    // cold wake: the inbox was already drained by the turn that woke with it, so settle
+    // before paying for context assembly or compaction — nothing would consume them
+    if (!ctx.hasPending?.()) {
+      ctx.logger.debug("empty turn — no queued input, settling without model call", {
+        sessionId: ctx.session.sessionId,
+      });
+      return turn.idle();
     }
-    
-    turnEvents.publish(OrchestratorEventTypes.START, {
-      orchestratorModel: provider.modelId,
-      orchestratorTools: visibleTools,
-      readToolCount: visibleTools.length,
-      maxIterations: maxIterations
-    });
 
-    // ONE turn per prompt: PromptRound pulls a single queued prompt on the first iteration and the
-    // turn carries that request across iterations; the pump replays this run for the next queued prompt
-    const turn = new Turn(ctx, {
-      role: this.role,
-      provider,
-      scopedClients,
-      visibleTools,
-      tracker,
-      resultSink,
-      conversation,
-      config,
-      structuredMode,
-      streaming: ctx.runtime.isStreamOutputEnabled(),
-      rounds: [
-        new SystemMessagesRound(ctx),
-        new SummarizeRound(ctx),
-        new PromptRound(ctx),
-        new MemoryRound(ctx),
-        new ModelRound(ctx),
-        new ResponseRound(ctx),
-        new EvaluatorRound(ctx),
-        new ToolRound(ctx),
-      ],
-    });
+    await this.runPrologue(turn, ctx);
 
-    // the iteration loop lives here, not in the Turn: each pass re-runs the round list once,
-    // and a round ends the turn (done), restarts the iteration, or falls through to the pass end
+    const completion = this.completionOverride ?? selectCompletionPolicy(turn.profile);
+    const maxIterations = turn.profile.maxIterations;
+
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (ctx.signal.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
       turn.iteration = iteration;
-      turnEvents.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
+      ctx.events.publish(OrchestratorEventTypes.ITERATION, { iteration, max: maxIterations });
 
-      const outcome = await turn.runAsync();
-      if (outcome.kind === "done") return outcome.result;
+      const reply = await this.model.call(turn, ctx);
+
+      if (reply.toolCalls.length > 0) {
+        // report_result is the mandated terminal action on a dispatched turn: once it lands, end with the
+        // structured verdict — its status drives the outcome, so a "fail" verdict fails the step even though
+        // the agent answered honestly (a true-but-negative answer must not bank as satisfied)
+        const reported = await this.tools.run(turn, ctx, reply.toolCalls);
+        if (reported) return turn.finalizeReported(reported);
+        continue;
+      }
+
+      const verdict = await completion.judge(turn, reply.assistantMessage, ctx);
+      if (verdict.kind === "settle") return turn.settle(reply.assistantMessage, verdict.outcome);
+      if (verdict.kind === "fail") return turn.fail(verdict.reason);
+      await turn.nudge(verdict.nudge);
     }
 
+    return this.capped(turn, ctx, maxIterations);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Turn setup
+  // ---------------------------------------------------------------------------
+
+  // resolves the profile, mounts the role's tools, and binds the per-turn seam before any work runs
+  private async openTurn(ctx: RunnerContext): Promise<Turn> {
+    const modelsRegistry = ctx.runtime.getModelsRegistry();
+    const mcpRegistry = ctx.runtime.getMcpClientRegistry();
+    const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration()!;
+
+    const provider = ctx.runtime
+      .getProvidersRegistry()
+      .getProvider(modelsRegistry.getProviderForRole(this.role));
+
+    const profile = resolveTurnProfile({
+      role: this.role,
+      config,
+      modelsRegistry,
+      structuredAvailable: !!mcpRegistry.getClient(TURN_RESULT_SERVER_NAME),
+    });
+
+    const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, this.role);
+    const visibleTools = scopedClients.listTools();
+    const tracker = new DispatchTracker(
+      config.orchestration.maxExecutorDispatchesPerTurn!,
+      config.orchestration.validatorCheckIntervalDispatches ?? 0
+    );
+    // minted regardless so the post-tool check is uniform; only a bound server can ever fill it
+    const resultSink = new TurnResultCapture();
+
+    if (profile.needsTurnBinding) {
+      this.bindTurnScopedServers(ctx, mcpRegistry.listClients(), tracker, resultSink);
+    }
+
+    ctx.events.publish(OrchestratorEventTypes.START, {
+      orchestratorModel: provider.modelId,
+      orchestratorTools: visibleTools,
+      readToolCount: visibleTools.length,
+      maxIterations: profile.maxIterations,
+    });
+
+    return new Turn(ctx, {
+      profile,
+      provider,
+      scopedClients,
+      visibleTools,
+      tracker,
+      resultSink,
+      conversation: ctx.runtime.getConversation(),
+      config,
+      streaming: ctx.runtime.isStreamOutputEnabled(),
+    });
+  }
+
+  // ONE per-turn seam: servers register once at build; those holding turn state take it here
+  private bindTurnScopedServers(
+    ctx: RunnerContext,
+    clients: readonly unknown[],
+    tracker: DispatchTracker,
+    resultSink: TurnResultCapture
+  ): void {
+    // chained under the turn so what bound servers publish bubbles up
+    const mcpClientEvents = new Eventing();
+    ctx.events.add(mcpClientEvents);
+    const binding: TurnBinding = { signal: ctx.signal, tracker, events: mcpClientEvents, resultSink };
+    for (const client of clients) {
+      if (isTurnBindable(client)) client.bindTurn(binding);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Prologue — runs ONCE per turn, ahead of the iteration loop
+  // ---------------------------------------------------------------------------
+
+  // order is load-bearing: context and compaction must both land before the request is appended,
+  // and contributors run last because they key off the drained request
+  private async runPrologue(turn: Turn, ctx: RunnerContext): Promise<void> {
+    turn.setContextMessages(await this.contextProvider.build(turn, ctx));
+    await this.compaction.applyIfNeeded(turn, ctx);
+    this.drainRequest(turn, ctx);
+    for (const contributor of this.contributors) {
+      await contributor.contribute(turn, ctx);
+    }
+  }
+
+  // ONE prompt per turn: the request carries across every iteration, so a prompt queued mid-turn
+  // is left for the pump to replay as the next turn
+  private drainRequest(turn: Turn, ctx: RunnerContext): void {
+    const request = ctx.pullInjectedPrompt?.() ?? "";
+    turn.append({ role: "user", content: request });
+    turn.turnRequest = request;
+    ctx.events.publish(OrchestratorEventTypes.INJECTED_INPUT, { turnId: turn.id, content: request });
+    ctx.logger.debug("turn input drained", { turnId: turn.id, hasRequest: request.length > 0 });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Cap
+  // ---------------------------------------------------------------------------
+
+  private capped(turn: Turn, ctx: RunnerContext, maxIterations: number): RunResult {
     const truncationNotice: ChatMessage = {
       role: "assistant",
       content:
         `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
         "Try a narrower request or raise maxOrchestratorIterations in models.json.",
     };
-    conversation.append(truncationNotice);
+    turn.append(truncationNotice);
     ctx.events.publish(OrchestratorEventTypes.WARNING, {
       message: `${this.role} hit iteration cap`,
       iterations: maxIterations,
@@ -148,19 +233,13 @@ export class Orchestrator {
     return {
       finalMessage: truncationNotice,
       iterations: maxIterations,
-      dispatches: tracker.count,
+      dispatches: turn.tracker.count,
       outcome: "capped",
     };
   }
+}
 
-  private getIterationsMax(modelsRegistry: ModelRegistry, config: ModelsFile): number {
-    // the model's own iterationCap wins; absent it, fall back to the role default
-    const roleIterationDefault =
-      this.role === "executor"
-        ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
-        : (config.orchestration.maxOrchestratorIterations ?? 16);
-    const modelName = modelsRegistry.getProviderForRole(this.role);
-    const maxIterations = modelsRegistry.getIterationCapForModel(modelName) ?? roleIterationDefault;
-    return maxIterations;
-  }
+// narrows without the double cast: a client only takes the turn seam if it actually implements it
+function isTurnBindable(client: unknown): client is TurnBindable {
+  return typeof (client as Partial<TurnBindable>)?.bindTurn === "function";
 }

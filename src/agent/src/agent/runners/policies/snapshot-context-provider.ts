@@ -1,30 +1,24 @@
 import type { ToolDescriptor } from "@agent-local/mcp";
-import type { ChatMessage, LLMProvider } from "../../providers/provider.js";
 import type { ContextSnapshot } from "../../context/context-loader.js";
+import type { ChatMessage, LLMProvider } from "../../providers/provider.js";
 import { buildPromptedToolInstructions } from "../../tool-adapter.js";
-import { Round, type RoundOutcome } from "./iround.js";
-import type { Turn } from "./turn.js";
+import type { RunnerContext } from "../middleware/runner-middleware.js";
+import type { Turn } from "../turn.js";
+import type { ContextProvider } from "./types.js";
 
-// turn-start context assembly: loads the role's context snapshot, builds the system/context prefix
-// (standing project direction + system prompt + prompted-tool instructions for non-native models),
-// and seeds it into the working set. runs once per turn, before summarization, so every downstream
-// round shares the same standing context
-export class SystemMessagesRound extends Round {
-  async runAsync(turn: Turn): Promise<RoundOutcome> {
-    if (turn.contextBuilt) return { kind: "continue" };
-    turn.contextBuilt = true;
-
-    const snapshot = await this.loadSnapshot(turn.role);
-    turn.setContextMessages(this.build(turn.provider, turn.visibleTools, snapshot));
-    return { kind: "continue" };
+// the default context provider: standing project direction + system prompt + prompted-tool
+// instructions for non-native models, all resolved from the role's hashed snapshot
+export class SnapshotContextProvider implements ContextProvider {
+  async build(turn: Turn, ctx: RunnerContext): Promise<ChatMessage[]> {
+    const snapshot = await this.loadSnapshot(turn.profile.role, ctx);
+    return this.assemble(turn.provider, turn.visibleTools, snapshot);
   }
 
   // the ContextMiddleware snapshot is the ONLY source of prompt+direction, so what ran always matches the hash
-  private async loadSnapshot(role: string): Promise<ContextSnapshot> {
-    const session = this.context.session;
-    const contextHash = session.contextHashes ? session.contextHashes[role] : null;
+  private async loadSnapshot(role: string, ctx: RunnerContext): Promise<ContextSnapshot> {
+    const contextHash = ctx.session.contextHashes ? ctx.session.contextHashes[role] : null;
     const snapshot = contextHash
-      ? await this.context.runtime.getContextLoader().getContextSnapshot(contextHash)
+      ? await ctx.runtime.getContextLoader().getContextSnapshot(contextHash)
       : null;
     if (!snapshot) {
       throw new Error(
@@ -35,7 +29,7 @@ export class SystemMessagesRound extends Round {
     return snapshot;
   }
 
-  private build(
+  private assemble(
     provider: LLMProvider,
     visibleTools: ToolDescriptor[],
     context: ContextSnapshot

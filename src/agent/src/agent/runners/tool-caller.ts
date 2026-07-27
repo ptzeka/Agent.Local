@@ -1,28 +1,30 @@
 import type { ToolExecutionResult } from "@agent-local/mcp";
-import type { ChatMessage, ToolCall } from "../../providers/provider.js";
-import { Round, type RoundOutcome } from "./iround.js";
+import type { ChatMessage, ToolCall } from "../providers/provider.js";
+import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
+import type { RunnerContext } from "./middleware/runner-middleware.js";
 import type { Turn } from "./turn.js";
 
-// executes the iteration's tool calls, ends the turn on a landed report_result,
-// and runs the mid-flight progress gate before persisting the round
-export class ToolRound extends Round {
-  async runAsync(turn: Turn): Promise<RoundOutcome> {
+// executes an iteration's tool calls and pairs the results into the transcript.
+// part of the loop itself, not an extension point: it reports what landed and decides nothing
+export class ToolCaller {
+  // returns the landed report_result when the mandated terminal call fired; the loop decides what that means
+  async run(turn: Turn, ctx: RunnerContext, calls: ToolCall[]): Promise<ReportedTurnResult | null> {
     const toolMessages: ChatMessage[] = [];
 
-    for (const call of turn.toolCalls) {
-      if (this.context.signal?.aborted) {
+    for (const call of calls) {
+      if (ctx.signal?.aborted) {
         throw new Error("turn aborted: user requested stop");
       }
 
-      this.context.logger.debug("tool call start", { name: call.name });
+      ctx.logger.debug("tool call start", { name: call.name });
       turn.toolCallsMade += 1;
       const execution: ToolExecutionResult = await turn.scopedClients.callTool(
         call.name,
         call.arguments,
-        this.context.events,
-        this.context.signal
+        ctx.events,
+        ctx.signal
       );
-      this.context.logger.debug("tool call end", { name: call.name, isError: execution.isError });
+      ctx.logger.debug("tool call end", { name: call.name, isError: execution.isError });
       // delegated cost rides the tool-result event (published by the scoped client) into the MetricsRegistry,
       // so the loop no longer folds it here; it stays separable as the registry's *Tallied figures
       toolMessages.push(
@@ -32,17 +34,13 @@ export class ToolRound extends Round {
 
     turn.append(...toolMessages);
 
-    // report_result is the mandated terminal action on a dispatched turn: once it lands, end the turn with the
-    // structured verdict — its status drives the outcome, so a "fail" verdict fails the step even though the
-    // agent answered honestly (the M5-9 gap: a true-but-negative answer must not bank as satisfied).
+    // the reporting path flushes with its own envelope, so only the continuing path persists here
     const reported = turn.resultSink.value;
-    if (reported) {
-      return turn.finalizeReported(reported);
-    }
-    
+    if (reported) return reported;
+
     // persist this round so a crash mid-turn loses at most the round in flight
     await turn.flush();
-    return { kind: "continue" };
+    return null;
   }
 }
 
