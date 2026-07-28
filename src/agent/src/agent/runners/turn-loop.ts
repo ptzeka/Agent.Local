@@ -4,7 +4,7 @@ import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { Turn } from "./turn.js";
 import { ModelCaller } from "./model-caller.js";
 import { ToolCaller } from "./tool-caller.js";
-import { Evaluator, type EvaluationState } from "./evaluator.js";
+import { runEvaluatorPass, type EvaluationState, EVALUATOR_SERVER_NAME } from "./evaluator-pass.js";
 import { selectCompletionPolicy } from "./policies/completion.js";
 import { MemoryContributor } from "./policies/memory-contributor.js";
 import { SnapshotContextProvider } from "./policies/snapshot-context-provider.js";
@@ -132,15 +132,19 @@ export class TurnLoop implements SessionRunner {
   // the conversation; it never changes `outcome` (the loop already set that) — it only annotates and reports
   private async runEpilogue(turn: Turn, ctx: RunnerContext, result: RunResult): Promise<void> {
     if (!turn.profile.evaluatorPass) return;
+    // the judge is a dispatch tool mounted for coordinators; absent it (evaluator role undefined) there is no pass
+    const client = ctx.runtime.getMcpClientRegistry().getClient(EVALUATOR_SERVER_NAME);
+    if (!client) return;
 
-    const evaluator = new Evaluator(ctx.runtime);
-    const verdict = await evaluator.evaluate(
+    const verdict = await runEvaluatorPass(
+      ctx.runtime,
+      client,
       {
         question: turn.turnRequest ?? "",
         proposedAnswer: result.finalMessage.content,
         transcript: turn.transcriptOfTurn(),
       },
-      { signal: ctx.signal, temperature: turn.config.orchestration.evaluatorTemperature }
+      ctx.signal
     );
     result.evaluation = { status: verdict.state, reason: verdict.reason };
   }

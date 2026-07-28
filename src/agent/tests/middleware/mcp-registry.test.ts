@@ -14,6 +14,9 @@ const stubModelsRegistry = {
   getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
   getValidMcpServersForRole: () => ["fsmcp", "excel"],
   getTimeoutForModel: () => 60000,
+  getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
+  // no evaluator role → the evaluator seam is skipped, keeping these tests focused on the mount split
+  getRoles: () => [],
 } as unknown as ModelRegistry;
 
 // the middleware reads only the external mcp.json defs off config; no test mounts stdio servers, so empty is fine
@@ -75,6 +78,8 @@ describe("McpRegistryMiddleware", () => {
       getValidMcpServersForRole: (role: string) =>
         role === "executor" ? ["fsmcp"] : ["fsreadonly", "executor"],
       getTimeoutForModel: () => 60000,
+      getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
+      getRoles: () => [],
     } as unknown as ModelRegistry;
 
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
@@ -113,6 +118,8 @@ describe("McpRegistryMiddleware", () => {
       getValidModelForRole: () => "m-exec",
       getValidMcpServersForRole: () => ["fsmcp"],
       getTimeoutForModel: () => 60000,
+      getRoleDefinition: () => ({ dispatchable: true }),
+      getRoles: () => [],
     } as unknown as ModelRegistry;
 
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
@@ -132,5 +139,41 @@ describe("McpRegistryMiddleware", () => {
     const mcpRegistry = ctx.registry.get(McpRegistryToken);
     expect(mcpRegistry.getClient("fsmcp")).toBeDefined();
     expect(mcpRegistry.getClient("executor")).toBeUndefined();
+  });
+
+  test("a coordinator role mounts the evaluator dispatch client; a leaf role does not", async () => {
+    // the evaluator seam is a dispatch tool the loop's epilogue calls — mounted for non-dispatchable roles only
+    const evaluatorAwareRegistry = {
+      getValidModelForRole: () => "m-eval",
+      getValidMcpServersForRole: () => ["fsreadonly"],
+      getTimeoutForModel: () => 60000,
+      getRoles: () => ["orchestrator", "evaluator"],
+      getRoleDefinition: (role: string) =>
+        role === "evaluator"
+          ? { dispatchable: true, dispatch: { description: "verify", returns: { required: ["status"] } } }
+          : { dispatchable: false },
+    } as unknown as ModelRegistry;
+
+    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
+    const workspace: Workspace = { workspaceId: "ws-1", root: "/tmp/workspace", projectContext: null };
+    const mount = (role: string) =>
+      makeContext({
+        session,
+        workspace,
+        sandboxRoot: "/tmp/sandbox",
+        mcpRegistry: undefined,
+        modelsRegistry: evaluatorAwareRegistry,
+        configurationRegistry: stubConfigurationRegistry,
+        sessionManager: stubSessionManager,
+      });
+
+    const coordinatorCtx = mount("orchestrator");
+    await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(coordinatorCtx, jest.fn(async () => {}));
+    expect(coordinatorCtx.registry.get(McpRegistryToken).getClient("evaluator")).toBeDefined();
+
+    const leafCtx = mount("evaluator");
+    await new McpRegistryMiddleware({ role: "evaluator" }).initialize(leafCtx, jest.fn(async () => {}));
+    // the evaluator's own child run is a leaf — no evaluator seam, so it can't recursively self-judge
+    expect(leafCtx.registry.get(McpRegistryToken).getClient("evaluator")).toBeUndefined();
   });
 });

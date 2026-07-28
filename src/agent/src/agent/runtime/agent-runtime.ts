@@ -13,7 +13,7 @@ import type { Session, UsageTotals } from "../session/session.js";
 import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
-import type { SubSessionNotification, SubSessionNotificationListener } from "../runners/subsession.js";
+import type { SubSessionNotification, SubSessionNotificationListener, SubRuntimeRefs } from "../runners/subsession.js";
 import { TurnRunner, type TurnRunnerListener, type TurnSource } from "../runners/turn-runner.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import { WorkspaceRegistry } from "../registries/workspace-registry.js";

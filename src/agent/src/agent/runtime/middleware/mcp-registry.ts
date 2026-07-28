@@ -7,6 +7,8 @@ import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthe
 import { TurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
+import { RoleDispatchLocalMcp } from "../../synthetic-mcp/role-dispatch-server.js";
+import { EVALUATOR_ROLE, EVALUATOR_SERVER_NAME, EVALUATE_TOOL } from "../../runners/evaluator-pass.js";
 import type { SubSessionCoordinator } from "../../runners/subsession.js";
 import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionManagerToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
@@ -53,6 +55,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     );
 
     await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx, validMcpClients);
+    this.mountEvaluatorSeam(mcpRegistry, modelsRegistry, ctx);
 
     ctx.logger?.debug("mcp end", { toolCount: mcpRegistry.listTools().length });
     await next();
@@ -76,6 +79,20 @@ export class McpRegistryMiddleware implements IMiddleware {
     // no coordinator: an executor must never spawn subsessions, so its seam keeps the "not available" error
     await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined);
     registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
+  }
+
+  // the terminal judge is a dispatch tool the loop's epilogue calls; it is NOT in any role's whitelist, so it
+  // never reaches a model's visible surface — mounted only for coordinator (non-dispatchable) roles, so a leaf
+  // sub-agent (the executor, or the evaluator's own child run) never carries it and can't recursively self-judge
+  private mountEvaluatorSeam(registry: McpClientRegistry, modelsRegistry: ModelRegistry, ctx: RuntimeContext): void {
+    if (modelsRegistry.getRoleDefinition(this.params.role).dispatchable) return;
+    if (!modelsRegistry.getRoles().includes(EVALUATOR_ROLE)) return;
+    const dispatch = modelsRegistry.getRoleDefinition(EVALUATOR_ROLE).dispatch;
+    if (!dispatch) return;
+    const timeout = modelsRegistry.getTimeoutForModel(modelsRegistry.getValidModelForRole(EVALUATOR_ROLE));
+    registry.registerClient(
+      new RoleDispatchLocalMcp(ctx, EVALUATOR_ROLE, dispatch, EVALUATOR_SERVER_NAME, EVALUATE_TOOL).setTimeout(timeout)
+    );
   }
 
   // synthetic servers are matched by name; any other name is looked up in mcp.json and spawned as a

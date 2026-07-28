@@ -1,6 +1,7 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
 import { Eventing } from "@agent-local/common/eventing";
+import type { Mcp } from "@agent-local/mcp";
 import type { Conversation } from "../../src/agent/conversation/conversation.js";
 import type { ContextSnapshot } from "../../src/agent/context/context-loader.js";
 import type {
@@ -20,7 +21,8 @@ import { TurnLoop } from "../../src/agent/runners/turn-loop.js";
 import { ModelCaller } from "../../src/agent/runners/model-caller.js";
 import { ToolCaller } from "../../src/agent/runners/tool-caller.js";
 import { Turn } from "../../src/agent/runners/turn.js";
-import { Evaluator } from "../../src/agent/runners/evaluator.js";
+import { runEvaluatorPass, EVALUATOR_SERVER_NAME } from "../../src/agent/runners/evaluator-pass.js";
+import { validateShape } from "../../src/agent/runners/policies/dispatch-result.js";
 import { resolveTurnProfile, type TurnProfile } from "../../src/agent/runners/turn-profile.js";
 import {
   AcceptFirstReplyCompletion,
@@ -108,8 +110,10 @@ interface HarnessOptions {
   memoryClient?: { callTool: jest.Mock } | null;
   // mounts the turn-result server, which is what puts a role into structured mode
   turnResultMounted?: boolean;
-  // what the fake evaluator-judge provider replies (parsed by the real Evaluator)
+  // the judge sub-agent's final answer (the returns JSON), and also the summarizer provider's reply
   evaluatorReply?: string;
+  // the evaluator role's tool whitelist in the fake role record
+  evaluatorTools?: string[];
   chatResponse?: ChatResponse;
   // one response per model call, in order — for driving a turn across iterations
   chatSequence?: ChatResponse[];
@@ -178,11 +182,18 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
 
   const config = opts.config ?? makeConfig();
   const turnResultClient = { name: TURN_RESULT_SERVER_NAME, listTools: () => [] };
+  // the evaluator dispatch client: its callTool returns the validated verdict JSON the real server would produce
+  const evaluatorCallTool = jest.fn(async () => ({
+    isError: false,
+    content: opts.evaluatorReply ?? '{"status":"pass","reason":"ok"}',
+  }));
+  const evaluatorClient = { name: EVALUATOR_SERVER_NAME, listTools: () => [], callTool: evaluatorCallTool };
   const runtime = {
     getMcpClientRegistry: () => ({
       getClient: (name: string) => {
         if (name === "memomcp") return opts.memoryClient ?? null;
         if (name === TURN_RESULT_SERVER_NAME) return opts.turnResultMounted ? turnResultClient : null;
+        if (name === EVALUATOR_SERVER_NAME) return evaluatorClient;
         return null;
       },
       listClients: () => [],
@@ -193,9 +204,31 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       getProviderForRole: (role: string) =>
         role === "evaluator" || role === "summarizer" ? "judge-model" : "main-model",
       getIterationCapForModel: () => undefined,
-      getValidMcpServersForRole: () => [],
+      // a tooled evaluator triggers the sub-agent path; every other role stays tool-free here
+      getValidMcpServersForRole: (role: string) =>
+        role === "evaluator" ? opts.evaluatorTools ?? [] : [],
       // the record a real models.json would carry; caps/temps derive from config so tests can drive them
       getRoleDefinition: (role: string) => {
+        if (role === "evaluator") {
+          return {
+            model: "judge-model",
+            prompt: "evaluator",
+            completion: "self-terminate",
+            dispatchable: true,
+            tools: opts.evaluatorTools,
+            dispatch: {
+              description: "verify",
+              returns: {
+                required: ["status", "reason"],
+                properties: {
+                  status: { enum: ["pass", "fail", "incomplete"], default: "pass" },
+                  reason: { default: "evaluator returned no parseable verdict; defaulting to pass" },
+                },
+                report: "EVALUATOR: {status:upper} — {reason}",
+              },
+            },
+          };
+        }
         const isExec = role === "executor";
         return {
           model: "main-model",
@@ -673,17 +706,28 @@ describe("AcceptFirstReplyCompletion", () => {
   });
 });
 
-describe("Evaluator (terminal pass)", () => {
+describe("runEvaluatorPass (terminal pass)", () => {
   const params = {
     question: "the ask",
     proposedAnswer: "done it",
     transcript: [{ role: "assistant", content: "done it" }] as ChatMessage[],
   };
+  const signal = new AbortController().signal;
+  // the judge is a dispatch MCP client whose callTool returns the validated verdict JSON (the server's output)
+  const judgeReturning = (content: string) => {
+    const callTool = jest.fn(async () => ({ isError: false, content }));
+    return { client: { name: EVALUATOR_SERVER_NAME, listTools: () => [], callTool } as unknown as Mcp, callTool };
+  };
 
   test("a PASS verdict stamps the conversation and reports pass", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: PASS all good" });
+    const h = makeHarness();
 
-    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+    const verdict = await runEvaluatorPass(
+      h.ctx.runtime,
+      judgeReturning('{"status":"pass","reason":"all good"}').client,
+      params,
+      signal
+    );
 
     expect(verdict).toEqual({ state: "pass", reason: "all good" });
     expect(h.conversation.messages.at(-1)).toEqual({
@@ -697,28 +741,71 @@ describe("Evaluator (terminal pass)", () => {
   });
 
   test("an INCOMPLETE verdict is reported and stamped", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: INCOMPLETE still missing the file" });
+    const h = makeHarness();
 
-    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+    const verdict = await runEvaluatorPass(
+      h.ctx.runtime,
+      judgeReturning('{"status":"incomplete","reason":"still missing the file"}').client,
+      params,
+      signal
+    );
 
     expect(verdict).toMatchObject({ state: "incomplete", reason: "still missing the file" });
     expect(h.conversation.messages.at(-1)!.content).toBe("EVALUATOR: INCOMPLETE — still missing the file");
   });
 
-  test("a FAIL verdict is reported", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: FAIL cannot be done" });
+  test("calls the evaluate tool with the judge input built from the request", async () => {
+    const h = makeHarness();
+    const { client, callTool } = judgeReturning('{"status":"fail","reason":"cannot be done"}');
 
-    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+    const verdict = await runEvaluatorPass(h.ctx.runtime, client, params, signal);
 
+    expect(callTool).toHaveBeenCalledWith("evaluate", { ask: expect.stringContaining("the ask") }, signal);
     expect(verdict).toMatchObject({ state: "fail", reason: "cannot be done" });
   });
 
-  test("an unparseable reply fails open to pass — a flaky judge never traps the caller", async () => {
-    const h = makeHarness({ evaluatorReply: "I think it looks fine?" });
+  test("an unparseable answer fails open to the declared default — a flaky judge never traps the caller", async () => {
+    const h = makeHarness();
 
-    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+    const verdict = await runEvaluatorPass(
+      h.ctx.runtime,
+      judgeReturning('{"status":"pass","reason":"evaluator returned no parseable verdict; defaulting to pass"}').client,
+      params,
+      signal
+    );
 
     expect(verdict.state).toBe("pass");
+    expect(h.conversation.messages.at(-1)!.content).toContain("EVALUATOR: PASS — evaluator returned no parseable");
+  });
+
+  test("a thrown dispatch fails open to pass without trapping the turn", async () => {
+    const h = makeHarness();
+    const callTool = jest.fn(async () => {
+      throw new Error("child died");
+    });
+    const client = { name: EVALUATOR_SERVER_NAME, listTools: () => [], callTool } as unknown as Mcp;
+
+    const verdict = await runEvaluatorPass(h.ctx.runtime, client, params, signal);
+
+    expect(verdict.state).toBe("pass");
+    expect(eventTypes(h)).toContain(OrchestratorEventTypes.WARNING);
+  });
+});
+
+describe("validateShape", () => {
+  const schema = {
+    required: ["status", "reason"],
+    properties: { status: { enum: ["pass", "fail", "incomplete"] } },
+  };
+
+  test("a well-formed value has no violations", () => {
+    expect(validateShape({ status: "pass", reason: "ok" }, schema)).toEqual([]);
+  });
+
+  test("flags a missing required field and an out-of-enum value", () => {
+    const violations = validateShape({ status: "maybe" }, schema);
+    expect(violations.some((m) => m.includes("reason"))).toBe(true);
+    expect(violations.some((m) => m.includes("status"))).toBe(true);
   });
 });
 
@@ -824,7 +911,7 @@ describe("TurnLoop.run", () => {
     const h = makeHarness({
       inbox: ["do the thing"],
       chatResponse: chatReply("all done"),
-      evaluatorReply: "EVALUATOR: PASS looks complete",
+      evaluatorReply: '{"status":"pass","reason":"looks complete"}',
       config: makeConfig({ evaluatorEnabled: true }),
     });
 

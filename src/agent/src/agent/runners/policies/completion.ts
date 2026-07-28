@@ -9,7 +9,7 @@ import type { CompletionPolicy, CompletionVerdict } from "./types.js";
 // ---------------------------------------------------------------------------
 
 // the role's `completion` contract name picks the policy; adding a contract is a new case here,
-// never an `if` on a role name. evaluation is not a gate — it runs as a terminal pass (see Evaluator)
+// never an `if` on a role name. evaluation is not a gate — it runs as a terminal pass (see evaluator-pass)
 export function selectCompletionPolicy(profile: TurnProfile): CompletionPolicy {
   switch (profile.completion) {
     case "tool-evidence":

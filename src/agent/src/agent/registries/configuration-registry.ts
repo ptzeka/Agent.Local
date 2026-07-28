@@ -18,11 +18,15 @@ export interface ModelDefinition {
 
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 
-// the explicit shape a dispatchable role must return; enforced at the tool-client boundary AND advertised
-// in the dispatch tool's description, so the caller knows what it gets back (see ScopedToolClient validation)
+// the explicit shape a dispatchable role must return; enforced at the dispatch boundary AND advertised
+// in the dispatch tool's description, so the caller knows what it gets back (see finishDispatch).
+// per-property `default`/`enum` live inside `properties`; `report` templates the stamped-back line
 export interface RoleReturnsSchema {
   required?: string[];
+  // per field: `{ enum?, default? }` — enum constrains validation, default fills a missing/unparseable field
   properties?: Record<string, unknown>;
+  // template for the conversation line stamped after a dispatch settles; {field} / {field:upper} placeholders
+  report?: string;
 }
 
 // the contract for calling a role as a sub-agent tool: what it does + the shape it returns

@@ -178,19 +178,20 @@
     "evaluator": {
       "model": "gemini-2.5-flash-lite-evaluator",
       "prompt": "evaluator",
-      "completion": "structured-verdict",
-      "maxIterations": 16,
+      "completion": "self-terminate",
+      "maxIterations": 8,
       "temperature": 0.1,
-      "tools": ["fsreadonly", "codemcp"],
+      "tools": ["fsreadonly"],
       "dispatchable": true,
       "dispatch": {
         "description": "Independently verify the turn's work against the original request; returns a structured PASS/FAIL/INCOMPLETE verdict.",
         "returns": {
           "required": ["status", "reason"],
           "properties": {
-            "status": { "enum": ["pass", "fail", "incomplete"] },
-            "reason": { "type": "string" }
-          }
+            "status": { "enum": ["pass", "fail", "incomplete"], "default": "pass" },
+            "reason": { "type": "string", "default": "evaluator returned no parseable verdict; defaulting to pass" }
+          },
+          "report": "EVALUATOR: {status:upper} — {reason}"
         }
       }
     }

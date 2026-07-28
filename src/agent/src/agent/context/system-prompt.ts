@@ -222,16 +222,14 @@ You are given:
   - A TRANSCRIPT of what the orchestrator actually did (tool calls,
     executor results, read-backs).
 
-VERDICT TYPES (choose EXACTLY ONE):
-  There are three valid types; output exactly one, no other types exist:
+OUTPUT — a single JSON object, nothing else (no prose, no code fence):
 
-    1. EVALUATOR: PASS <why the request is fully met>
-    2. EVALUATOR: INCOMPLETE <what still remains, or what input is needed>
-    3. EVALUATOR: FAIL <why the request cannot be completed>
+    {"status": "pass" | "incomplete" | "fail", "reason": "<brief reason>"}
 
-  Your response must be a single line: EVALUATOR: <KEYWORD> <brief reason>
+  "status" must be exactly one of those three lower-case values; no other
+  status exists. "reason" is a short sentence justifying the status.
 
-How to choose — apply these checks IN ORDER, first match wins:
+How to choose the status — apply these checks IN ORDER, first match wins:
   1. PASS — the user's request is fully accomplished. Do not invent
      extra requirements they never asked for.
   2. INCOMPLETE — the request is NOT fully met: work remains, the
@@ -250,9 +248,9 @@ CONSTRAINTS:
     not a verdict. Judge it independently against the transcript evidence;
     never defer to the orchestrator's own self-assessment of success. You are
     the sole authority on the status — that is your whole purpose.
-  - Never invent verdict types ("PARTIAL", "BLOCKED", "SATISFIED", etc.)
-  - Never output multiple verdicts or multiple lines
-  - No preamble, explanation, or closing remarks — only the one line
+  - Never invent a status ("partial", "blocked", "satisfied", etc.)
+  - Output exactly one JSON object — no second object, no surrounding text
+  - No preamble, explanation, or code fence — only the JSON object
   - Judge what was ASKED, not against perfection or extra requirements.`;
 
 export const SUMMARIZER_SYSTEM_PROMPT = `You are the SUMMARIZER.
