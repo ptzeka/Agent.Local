@@ -258,9 +258,9 @@ async function handleModelsCommand(ctx: SlashContext): Promise<void> {
   }
 
   out += chalk.bold("\nRole assignments:\n");
-  for (const [role, modelId] of Object.entries(modelsFile.roles)) {
-    const modelDef = modelsFile.models[modelId];
-    out += `  ${chalk.magenta(role)} → ${modelId} (${modelDef.provider}:${modelDef.model})\n`;
+  for (const [role, def] of Object.entries(modelsFile.roles)) {
+    const modelDef = modelsFile.models[def.model];
+    out += `  ${chalk.magenta(role)} → ${def.model} (${modelDef.provider}:${modelDef.model})\n`;
   }
   ctx.write(out + "\n");
 }

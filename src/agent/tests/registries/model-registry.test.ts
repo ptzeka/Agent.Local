@@ -1,7 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import { ModelRegistry } from "../../src/agent/registries/model-registry.js";
-import type { ModelsFile } from "../../src/agent/registries/configuration-registry.js";
+import type { ModelsFile, RoleDefinition } from "../../src/agent/registries/configuration-registry.js";
 
 // maps logical roles onto declared models and exposes each role model's per-model MCP server whitelist
 // (the `mcp` array from models.json); loading/parsing lives in ConfigurationRegistry, so the registry is
@@ -14,9 +14,13 @@ function makeRegistry(
     string,
     { provider: string; model: string; supportsTools: boolean; mcp?: string[]; toolTimeoutMs?: number; iterationCap?: number }
   >,
-  roles: Record<string, string> = { orchestrator: "m-orch", executor: "m-exec" }
+  roleModels: Record<string, string> = { orchestrator: "m-orch", executor: "m-exec" }
 ): ModelRegistry {
-  const modelsFile: ModelsFile = { models, roles, orchestration: {} };
+  const roles: Record<string, RoleDefinition> = {};
+  for (const [role, model] of Object.entries(roleModels)) {
+    roles[role] = { model, prompt: role, completion: "self-terminate" };
+  }
+  const modelsFile: ModelsFile = { models, roles, orchestration: {}, summaryWordThreshold: 2 };
   return new ModelRegistry(modelsFile);
 }
 
@@ -81,6 +85,17 @@ describe("ModelRegistry", () => {
     const anchor = registry.getAnchorText("delete hello_world.txt");
     expect(anchor).toContain("«delete hello_world.txt»");
     expect(anchor).not.toContain("{REQUEST}"); // placeholder must be consumed
+  });
+
+  test("construction rejects a role assigned to a model that is not defined", () => {
+    expect(() =>
+      makeRegistry({ "m-orch": { ...base } }, { orchestrator: "m-orch", executor: "ghost" })
+    ).toThrow(/not defined in models.json/);
+  });
+
+  test("getProviderForRole throws for a role that is not defined", () => {
+    const registry = makeRegistry({ "m-orch": { ...base }, "m-exec": { ...base } });
+    expect(() => registry.getProviderForRole("evaluator")).toThrow(/No role "evaluator" defined/);
   });
 
   test("assignRole repoints a role and rejects an undefined model", () => {

@@ -9,21 +9,21 @@ import type {
   LLMProvider,
   ToolCall,
 } from "../../src/agent/providers/provider.js";
-import type { ModelsFile } from "../../src/agent/registries/configuration-registry.js";
+import type { ModelsFile, RoleDefinition } from "../../src/agent/registries/configuration-registry.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ScopedToolClient } from "../../src/agent/scoped-tool-client.js";
 import type { AgentRuntimeQueryable } from "../../src/agent/runtime/types.js";
 import { DispatchTracker } from "../../src/agent/synthetic-mcp/dispatch-tracker.js";
 import { TurnResultCapture } from "../../src/agent/synthetic-mcp/turn-result-tools.js";
 import { TURN_RESULT_SERVER_NAME } from "../../src/agent/synthetic-mcp/turn-result-server.js";
-import { Orchestrator } from "../../src/agent/runners/orchestrator.js";
+import { TurnLoop } from "../../src/agent/runners/turn-loop.js";
 import { ModelCaller } from "../../src/agent/runners/model-caller.js";
 import { ToolCaller } from "../../src/agent/runners/tool-caller.js";
 import { Turn } from "../../src/agent/runners/turn.js";
+import { Evaluator } from "../../src/agent/runners/evaluator.js";
 import { resolveTurnProfile, type TurnProfile } from "../../src/agent/runners/turn-profile.js";
 import {
   AcceptFirstReplyCompletion,
-  EvaluatorCompletion,
   ReportRequiredCompletion,
   ToolEvidenceCompletion,
   selectCompletionPolicy,
@@ -39,7 +39,7 @@ import type { RunnerContext } from "../../src/agent/runners/middleware/runner-mi
 import { OrchestratorEventTypes } from "../../src/agent/runners/runner-events.js";
 
 // Two levels are exercised here: each policy/step in isolation against a hand-built Turn, and the
-// whole Orchestrator loop against a faked runtime. The harness fakes only the seams the loop touches
+// whole TurnLoop against a faked runtime. The harness fakes only the seams the loop touches
 // (conversation, providers, registries, context loader) and records every published event.
 
 // ---------------------------------------------------------------------------
@@ -145,9 +145,8 @@ const ORCHESTRATOR_PROFILE: TurnProfile = {
   maxIterations: 16,
   temperature: 0.2,
   needsTurnBinding: true,
-  structuredMode: false,
-  terminatesOnToolFreeReply: false,
-  evaluatorGated: false,
+  completion: "self-terminate",
+  evaluatorPass: false,
 };
 
 function makeHarness(opts: HarnessOptions = {}): Harness {
@@ -195,6 +194,27 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
         role === "evaluator" || role === "summarizer" ? "judge-model" : "main-model",
       getIterationCapForModel: () => undefined,
       getValidMcpServersForRole: () => [],
+      // the record a real models.json would carry; caps/temps derive from config so tests can drive them
+      getRoleDefinition: (role: string) => {
+        const isExec = role === "executor";
+        return {
+          model: "main-model",
+          prompt: role,
+          // a mounted turn-result server means this role's contract is structured-verdict (mirrors real config)
+          completion: isExec
+            ? "tool-evidence"
+            : opts.turnResultMounted
+              ? "structured-verdict"
+              : "self-terminate",
+          maxIterations: isExec
+            ? config.orchestration.maxExecutorIterationsPerAsk ?? 6
+            : config.orchestration.maxOrchestratorIterations ?? 16,
+          temperature: isExec
+            ? config.orchestration.executorTemperature
+            : config.orchestration.orchestratorTemperature,
+          dispatchable: isExec,
+        };
+      },
     }),
     getProvidersRegistry: () => ({
       getProvider: (name: string) => (name === "judge-model" ? evaluatorProvider : provider),
@@ -204,6 +224,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       getContextSnapshot: async () => opts.contextSnapshot ?? { systemPrompt: "", projectContext: "" },
     }),
     getConversation: () => conversation,
+    getEvents: () => eventBus,
     isStreamOutputEnabled: () => false,
     getSession: () => ({ contextHashes: { summarizer: "h" } }),
   } as unknown as AgentRuntimeQueryable;
@@ -253,18 +274,23 @@ function eventTypes(h: Harness): string[] {
 // ---------------------------------------------------------------------------
 
 describe("resolveTurnProfile", () => {
-  const modelsRegistry = {
-    getProviderForRole: () => "m",
-    getIterationCapForModel: () => undefined,
-  } as unknown as ModelRegistry;
+  // a fake registry serving one role record, so the test drives the profile purely from data
+  const registryFor = (def: Partial<RoleDefinition>, modelCap?: number): ModelRegistry =>
+    ({
+      getRoleDefinition: () => ({ model: "m", prompt: "p", completion: "self-terminate", ...def }),
+      getIterationCapForModel: () => modelCap,
+    }) as unknown as ModelRegistry;
 
-  test("the orchestrator role gets the evaluator gate, turn binding, and its own cap", () => {
-    const config = makeConfig({ evaluatorEnabled: true });
+  test("a coordinator role binds, runs the evaluator pass, and takes its declared cap/temp/completion", () => {
     const profile = resolveTurnProfile({
       role: "orchestrator",
-      config,
-      modelsRegistry,
-      structuredAvailable: true,
+      config: makeConfig({ evaluatorEnabled: true }),
+      modelsRegistry: registryFor({
+        completion: "self-terminate",
+        maxIterations: 16,
+        temperature: 0.2,
+        dispatchable: false,
+      }),
     });
 
     expect(profile).toMatchObject({
@@ -272,43 +298,37 @@ describe("resolveTurnProfile", () => {
       maxIterations: 16,
       temperature: 0.2,
       needsTurnBinding: true,
-      structuredMode: true,
-      terminatesOnToolFreeReply: false,
-      evaluatorGated: true,
+      completion: "self-terminate",
+      evaluatorPass: true,
     });
   });
 
-  test("the executor role never binds, never reports structurally, and ends on a tool-free reply", () => {
-    const config = makeConfig({ evaluatorEnabled: true });
+  test("a dispatchable (leaf) role never binds and never self-evaluates", () => {
     const profile = resolveTurnProfile({
       role: "executor",
-      config,
-      modelsRegistry,
-      // mounted for the runtime, but the executor reports to its parent, not a workflow
-      structuredAvailable: true,
+      config: makeConfig({ evaluatorEnabled: true }),
+      modelsRegistry: registryFor({
+        completion: "tool-evidence",
+        maxIterations: 6,
+        temperature: 0.1,
+        dispatchable: true,
+      }),
     });
 
     expect(profile).toMatchObject({
       maxIterations: 6,
       temperature: 0.1,
       needsTurnBinding: false,
-      structuredMode: false,
-      terminatesOnToolFreeReply: true,
-      evaluatorGated: false,
+      completion: "tool-evidence",
+      evaluatorPass: false,
     });
   });
 
-  test("a model's own iteration cap wins over the role default", () => {
-    const capped = {
-      getProviderForRole: () => "m",
-      getIterationCapForModel: () => 3,
-    } as unknown as ModelRegistry;
-
+  test("a model's own iteration cap wins over the role's declared cap", () => {
     const profile = resolveTurnProfile({
       role: "orchestrator",
       config: makeConfig(),
-      modelsRegistry: capped,
-      structuredAvailable: false,
+      modelsRegistry: registryFor({ maxIterations: 16 }, 3),
     });
 
     expect(profile.maxIterations).toBe(3);
@@ -582,17 +602,17 @@ describe("selectCompletionPolicy", () => {
     ...overrides,
   });
 
-  test("maps each profile shape to its gate, tool-free termination winning first", () => {
-    expect(selectCompletionPolicy(profileOf({ terminatesOnToolFreeReply: true }))).toBeInstanceOf(
+  test("maps each completion contract name to its policy", () => {
+    expect(selectCompletionPolicy(profileOf({ completion: "tool-evidence" }))).toBeInstanceOf(
       ToolEvidenceCompletion
     );
-    expect(selectCompletionPolicy(profileOf({ structuredMode: true }))).toBeInstanceOf(
+    expect(selectCompletionPolicy(profileOf({ completion: "structured-verdict" }))).toBeInstanceOf(
       ReportRequiredCompletion
     );
-    expect(selectCompletionPolicy(profileOf({ evaluatorGated: true }))).toBeInstanceOf(
-      EvaluatorCompletion
+    // the evaluator is no longer a completion gate — a plain orchestrator turn settles on its own word
+    expect(selectCompletionPolicy(profileOf({ completion: "self-terminate" }))).toBeInstanceOf(
+      AcceptFirstReplyCompletion
     );
-    expect(selectCompletionPolicy(profileOf({}))).toBeInstanceOf(AcceptFirstReplyCompletion);
   });
 });
 
@@ -653,67 +673,70 @@ describe("AcceptFirstReplyCompletion", () => {
   });
 });
 
-describe("EvaluatorCompletion", () => {
-  const reply: ChatMessage = { role: "assistant", content: "done it" };
+describe("Evaluator (terminal pass)", () => {
+  const params = {
+    question: "the ask",
+    proposedAnswer: "done it",
+    transcript: [{ role: "assistant", content: "done it" }] as ChatMessage[],
+  };
 
-  test("a satisfied verdict settles", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: SATISFIED all good" });
-    const turn = h.makeTurn({ turnRequest: "the ask" });
+  test("a PASS verdict stamps the conversation and reports pass", async () => {
+    const h = makeHarness({ evaluatorReply: "EVALUATOR: PASS all good" });
 
-    const verdict = await new EvaluatorCompletion().judge(turn, reply, h.ctx);
+    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
 
-    expect(verdict).toEqual({ kind: "settle", outcome: "satisfied" });
-  });
-
-  test("awaiting-input stays distinct from satisfied so headless cannot read it as success", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: AWAITING-INPUT needs a decision" });
-    const turn = h.makeTurn({ turnRequest: "the ask" });
-
-    const verdict = await new EvaluatorCompletion().judge(turn, reply, h.ctx);
-
-    expect(verdict).toEqual({ kind: "settle", outcome: "awaiting-input" });
-  });
-
-  test("an unsatisfied verdict nudges with the verbatim request", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: UNSATISFIED nothing actually ran" });
-    const turn = h.makeTurn({ turnRequest: "the ask" });
-
-    const verdict = await new EvaluatorCompletion().judge(turn, reply, h.ctx);
-
-    expect(verdict.kind).toBe("continue");
-    expect((verdict as { nudge: string }).nudge).toContain("off track — nothing actually ran");
-    expect((verdict as { nudge: string }).nudge).toContain("«the ask»");
+    expect(verdict).toEqual({ state: "pass", reason: "all good" });
+    expect(h.conversation.messages.at(-1)).toEqual({
+      role: "system",
+      content: "EVALUATOR: PASS — all good",
+    });
     expect(eventTypes(h)).toEqual([
       OrchestratorEventTypes.EVALUATION_START,
       OrchestratorEventTypes.EVALUATION_VERDICT,
     ]);
   });
 
-  test("a failed verdict is terminal rather than another nudge", async () => {
-    const h = makeHarness({ evaluatorReply: "EVALUATOR: FAILED cannot be done" });
-    const turn = h.makeTurn({ turnRequest: "the ask" });
+  test("an INCOMPLETE verdict is reported and stamped", async () => {
+    const h = makeHarness({ evaluatorReply: "EVALUATOR: INCOMPLETE still missing the file" });
 
-    const verdict = await new EvaluatorCompletion().judge(turn, reply, h.ctx);
+    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
 
-    expect(verdict).toMatchObject({ kind: "fail", reason: "cannot be done" });
+    expect(verdict).toMatchObject({ state: "incomplete", reason: "still missing the file" });
+    expect(h.conversation.messages.at(-1)!.content).toBe("EVALUATOR: INCOMPLETE — still missing the file");
+  });
+
+  test("a FAIL verdict is reported", async () => {
+    const h = makeHarness({ evaluatorReply: "EVALUATOR: FAIL cannot be done" });
+
+    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+
+    expect(verdict).toMatchObject({ state: "fail", reason: "cannot be done" });
+  });
+
+  test("an unparseable reply fails open to pass — a flaky judge never traps the caller", async () => {
+    const h = makeHarness({ evaluatorReply: "I think it looks fine?" });
+
+    const verdict = await new Evaluator(h.ctx.runtime).evaluate(params);
+
+    expect(verdict.state).toBe("pass");
   });
 });
 
 // ---------------------------------------------------------------------------
-// Orchestrator — the loop end to end
+// TurnLoop — the loop end to end
 // ---------------------------------------------------------------------------
 
-describe("Orchestrator.run", () => {
-  test("a cold wake with nothing queued settles without context assembly or a model call", async () => {
+describe("TurnLoop.run", () => {
+  test("a cold wake with nothing queued settles before a Turn is even assembled", async () => {
     const h = makeHarness({ inbox: [] });
 
-    const result = await new Orchestrator("orchestrator").run(h.ctx);
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
 
-    expect(result).toMatchObject({ outcome: "satisfied", iterations: 0 });
+    expect(result).toMatchObject({ outcome: "satisfied", iterations: 0, dispatches: 0 });
     expect(h.chat).not.toHaveBeenCalled();
     expect(h.conversation.messages).toHaveLength(0);
-    // START still fires so a host sees the turn was considered; nothing downstream of it runs
-    expect(eventTypes(h)).toEqual([OrchestratorEventTypes.START]);
+    // silent by design: no tools mounted, no servers bound, so START would announce a turn that never ran
+    expect(h.events).toHaveLength(0);
   });
 
   test("one prompt drives the whole turn: a tool iteration then an answer, request intact throughout", async () => {
@@ -725,7 +748,7 @@ describe("Orchestrator.run", () => {
       ],
     });
 
-    const result = await new Orchestrator("orchestrator").run(h.ctx);
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
 
     expect(result).toMatchObject({
       outcome: "satisfied",
@@ -749,7 +772,7 @@ describe("Orchestrator.run", () => {
       chatSequence: [chatReply("", [TOOL_CALL]), chatReply("final")],
     });
 
-    await new Orchestrator("orchestrator").run(h.ctx);
+    await new TurnLoop("orchestrator").run(h.ctx);
 
     expect(memoryClient.callTool).toHaveBeenCalledTimes(1);
     expect(eventTypes(h).filter((type) => type === OrchestratorEventTypes.INJECTED_INPUT)).toHaveLength(1);
@@ -763,7 +786,7 @@ describe("Orchestrator.run", () => {
     });
     // the sink is filled the way a bound turn-result server would fill it, mid tool round
     h.callTool.mockImplementationOnce(async () => ({ content: "ok", isError: false }));
-    const orchestrator = new Orchestrator("orchestrator", {
+    const turnLoop = new TurnLoop("orchestrator", {
       contributors: [
         {
           name: "report-injector",
@@ -774,7 +797,7 @@ describe("Orchestrator.run", () => {
       ],
     });
 
-    const result = await orchestrator.run(h.ctx);
+    const result = await turnLoop.run(h.ctx);
 
     expect(result).toMatchObject({ outcome: "failed", reported: { status: "fail" } });
     const envelope = JSON.parse(h.conversation.messages.at(-1)!.content);
@@ -790,11 +813,29 @@ describe("Orchestrator.run", () => {
       chatResponse: chatReply("", [TOOL_CALL]),
     });
 
-    const result = await new Orchestrator("orchestrator").run(h.ctx);
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
 
     expect(result).toMatchObject({ outcome: "capped", iterations: 2 });
     expect(h.conversation.messages.at(-1)!.content).toContain("hit iteration cap of 2");
     expect(h.events.some((event) => event.type === OrchestratorEventTypes.WARNING)).toBe(true);
+  });
+
+  test("the evaluator pass runs after the turn settles, stamping the result and transcript", async () => {
+    const h = makeHarness({
+      inbox: ["do the thing"],
+      chatResponse: chatReply("all done"),
+      evaluatorReply: "EVALUATOR: PASS looks complete",
+      config: makeConfig({ evaluatorEnabled: true }),
+    });
+
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(result.outcome).toBe("satisfied");
+    expect(result.evaluation).toEqual({ status: "pass", reason: "looks complete" });
+    expect(h.conversation.messages.at(-1)).toEqual({
+      role: "system",
+      content: "EVALUATOR: PASS — looks complete",
+    });
   });
 
   test("an already-aborted signal stops the loop before the first model call", async () => {
@@ -802,7 +843,7 @@ describe("Orchestrator.run", () => {
     controller.abort();
     const h = makeHarness({ inbox: ["do X"], signal: controller.signal });
 
-    await expect(new Orchestrator("orchestrator").run(h.ctx)).rejects.toThrow("turn aborted");
+    await expect(new TurnLoop("orchestrator").run(h.ctx)).rejects.toThrow("turn aborted");
     expect(h.chat).not.toHaveBeenCalled();
   });
 
@@ -812,7 +853,7 @@ describe("Orchestrator.run", () => {
       chatSequence: [chatReply("", [TOOL_CALL]), chatReply("changed the file")],
     });
 
-    const result = await new Orchestrator("executor").run(h.ctx);
+    const result = await new TurnLoop("executor").run(h.ctx);
 
     expect(result).toMatchObject({ outcome: "satisfied", iterations: 2 });
   });
@@ -823,7 +864,7 @@ describe("Orchestrator.run", () => {
       chatResponse: chatReply("I would edit the file"),
     });
 
-    const result = await new Orchestrator("executor").run(h.ctx);
+    const result = await new TurnLoop("executor").run(h.ctx);
 
     expect(result).toMatchObject({ outcome: "failed", iterations: 1 });
     expect(h.conversation.messages.at(-1)!.content).toContain("SYSTEM-FAILURE");
@@ -838,7 +879,7 @@ describe("Orchestrator.run", () => {
       chatResponse: chatReply("all done, trust me"),
     });
 
-    const result = await new Orchestrator("orchestrator").run(h.ctx);
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
 
     // fails closed: no parseable verdict ever landed, so the turn caps rather than reporting success
     expect(result.outcome).toBe("capped");
@@ -858,7 +899,7 @@ describe("Orchestrator.run", () => {
       contribute: async (turn) => turn.injectTransient({ role: "system", content: "EXTRA CONTEXT" }),
     };
 
-    await new Orchestrator("orchestrator", { contributors: [contributor] }).run(h.ctx);
+    await new TurnLoop("orchestrator", { contributors: [contributor] }).run(h.ctx);
 
     const sent = h.chat.mock.calls[0]![0] as ChatMessage[];
     expect(sent.some((message) => message.content === "EXTRA CONTEXT")).toBe(true);
@@ -872,7 +913,7 @@ describe("Orchestrator.run", () => {
       judge: async () => ({ kind: "settle", outcome: "awaiting-input" }),
     };
 
-    const result = await new Orchestrator("orchestrator", { completion }).run(h.ctx);
+    const result = await new TurnLoop("orchestrator", { completion }).run(h.ctx);
 
     expect(result.outcome).toBe("awaiting-input");
   });
@@ -883,7 +924,7 @@ describe("Orchestrator.run", () => {
       build: async () => [{ role: "system" as const, content: "REPLACED PREFIX" }],
     };
 
-    await new Orchestrator("orchestrator", { contextProvider }).run(h.ctx);
+    await new TurnLoop("orchestrator", { contextProvider }).run(h.ctx);
 
     const sent = h.chat.mock.calls[0]![0] as ChatMessage[];
     expect(sent[0]).toEqual({ role: "system", content: "REPLACED PREFIX" });

@@ -52,22 +52,23 @@ export class McpRegistryMiddleware implements IMiddleware {
       ctx.registry.get(SessionManagerToken)
     );
 
-    await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx);
+    await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx, validMcpClients);
 
     ctx.logger?.debug("mcp end", { toolCount: mcpRegistry.listTools().length });
     await next();
   }
 
-  // executor__dispatch is the orchestrator's ONLY path to mutation, so the seam is mounted for every
-  // non-executor role regardless of whitelist — it can't be removed by config, and a child executor
-  // never gets one (no grandchildren). The executor's write tools live in a SEPARATE registry,
-  // enumerable only through the dispatch descriptor's enum, never reachable via the scoped client.
+  // executor__dispatch is a tool GRANT: a role gets the seam only when it whitelists the executor server. So a
+  // coordinator (orchestrator) that lists it can mutate via dispatch, while a leaf sub-agent — the executor
+  // itself, or a read-only role like the evaluator — never does. The executor's write tools live in a SEPARATE
+  // registry, enumerable only through the dispatch descriptor's enum, never reachable via the scoped client.
   private async mountExecutorSeam(
     registry: McpClientRegistry,
     modelsRegistry: ModelRegistry,
-    ctx: RuntimeContext
+    ctx: RuntimeContext,
+    whitelist: string[]
   ): Promise<void> {
-    if (this.params.role === EXECUTOR_ROLE) return;
+    if (!whitelist.includes(EXECUTOR_SERVER_NAME)) return;
     const executorServers = new McpClientRegistry(ctx.sandboxRoot);
     const executorModel = modelsRegistry.getValidModelForRole(EXECUTOR_ROLE);
     const executorTimeout = modelsRegistry.getTimeoutForModel(executorModel);

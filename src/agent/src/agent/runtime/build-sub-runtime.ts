@@ -9,7 +9,7 @@ import { ConversationMiddleware } from "./middleware/conversation.js";
 import { InheritedUserMiddleware } from "./middleware/inherited-user.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { LoggerMiddleware } from "./middleware/logger.js";
-import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
+import { TurnLoopMiddleware } from "./middleware/turn-loop.js";
 import { MetricsRegistryMiddleware } from "./middleware/metrics-registry.js";
 import { RunnerPipelineMiddleware } from "./middleware/runner-pipeline.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
@@ -58,7 +58,7 @@ export function buildSubRuntime(deps: AgentRuntimeDeps, refs: SubRuntimeRefs): A
     // before the MCP step (same as the parent pipeline); capped at 0 so this leaf coordinator refuses every spawn
     .add(new SessionManagerMiddleware({ maxActivePerParent: 0 }))
     .add(new McpRegistryMiddleware({ role: childDeps.orchestratorRole }))
-    .add(new OrchestratorMiddleware({ role: childDeps.orchestratorRole }))
+    .add(new TurnLoopMiddleware({ role: childDeps.orchestratorRole }))
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: childDeps.orchestratorRole, includeSubSessions: false }))
     .add(new InputInboxMiddleware());

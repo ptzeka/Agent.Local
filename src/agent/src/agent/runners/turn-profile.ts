@@ -1,56 +1,41 @@
 import type { ModelsFile } from "../registries/configuration-registry.js";
 import type { ModelRegistry } from "../registries/model-registry.js";
 
-// every per-role behavioural difference of the loop expressed as data, so a new kind of turn is a
-// profile rather than another branch inside the orchestrator
-// this is the ONLY place a role name is tested; everything downstream reads flags
+// the loop's per-turn knobs, all sourced from the role's data record — a new kind of turn is a role
+// record, never another branch inside the loop
 export interface TurnProfile {
   readonly role: string;
   readonly maxIterations: number;
   readonly temperature: number;
-  // the executor sub-run neither dispatches nor reports, so no server needs per-turn state bound for it
+  // coordinator roles bind the turn-scoped servers (dispatch tracker / result sink); leaf sub-agents don't
   readonly needsTurnBinding: boolean;
-  // "is report_result mounted" — the executor reports to its parent, not a workflow, so it is excluded
-  readonly structuredMode: boolean;
-  // the executor's first tool-free reply IS the result; the orchestrator's goes to a gate
-  readonly terminatesOnToolFreeReply: boolean;
-  readonly evaluatorGated: boolean;
+  // completion contract name → policy (self-terminate | tool-evidence | structured-verdict)
+  readonly completion: string;
+  // run the terminal evaluator pass after the turn settles (stamps a PASS/FAIL/INCOMPLETE verdict)
+  readonly evaluatorPass: boolean;
 }
 
 export interface ResolveProfileParams {
   role: string;
   config: ModelsFile;
   modelsRegistry: ModelRegistry;
-  // whether the turn-result server is mounted at all; the profile decides if this role may use it
-  structuredAvailable: boolean;
 }
 
+// the ONE place a role is read, and it reads the record's FIELDS — never the role name
 export function resolveTurnProfile(params: ResolveProfileParams): TurnProfile {
-  const { role, config, modelsRegistry, structuredAvailable } = params;
-  const orchestration = config.orchestration;
-  const isExecutor = role === "executor";
+  const { role, config, modelsRegistry } = params;
+  const def = modelsRegistry.getRoleDefinition(role);
+  // a model's own iterationCap wins; absent it, the role's declared cap; absent that, a floor
+  const modelCap = modelsRegistry.getIterationCapForModel(def.model);
 
   return {
     role,
-    maxIterations: resolveIterationCap(role, isExecutor, config, modelsRegistry),
-    temperature: (isExecutor ? orchestration.executorTemperature : orchestration.orchestratorTemperature)!,
-    needsTurnBinding: !isExecutor,
-    structuredMode: structuredAvailable && !isExecutor,
-    terminatesOnToolFreeReply: isExecutor,
-    evaluatorGated: !isExecutor && !!orchestration.evaluatorEnabled,
+    maxIterations: modelCap ?? def.maxIterations ?? 16,
+    temperature: def.temperature ?? 0.2,
+    // a dispatchable role is a leaf sub-agent; a non-dispatchable role coordinates and binds
+    needsTurnBinding: !def.dispatchable,
+    completion: def.completion,
+    // never on a dispatchable (leaf) role, else the evaluator would recursively evaluate itself
+    evaluatorPass: !def.dispatchable && !!config.orchestration.evaluatorEnabled,
   };
-}
-
-// the model's own iterationCap wins; absent it, fall back to the role default
-function resolveIterationCap(
-  role: string,
-  isExecutor: boolean,
-  config: ModelsFile,
-  modelsRegistry: ModelRegistry
-): number {
-  const roleDefault = isExecutor
-    ? (config.orchestration.maxExecutorIterationsPerAsk ?? 6)
-    : (config.orchestration.maxOrchestratorIterations ?? 16);
-  const modelName = modelsRegistry.getProviderForRole(role);
-  return modelsRegistry.getIterationCapForModel(modelName) ?? roleDefault;
 }

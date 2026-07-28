@@ -71,8 +71,9 @@ describe("McpRegistryMiddleware", () => {
     // orchestrator's own registry.
     const splitModelsRegistry = {
       getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
+      // the orchestrator whitelists "executor" — the tool grant that mounts the dispatch seam
       getValidMcpServersForRole: (role: string) =>
-        role === "executor" ? ["fsmcp"] : ["fsreadonly"],
+        role === "executor" ? ["fsmcp"] : ["fsreadonly", "executor"],
       getTimeoutForModel: () => 60000,
     } as unknown as ModelRegistry;
 

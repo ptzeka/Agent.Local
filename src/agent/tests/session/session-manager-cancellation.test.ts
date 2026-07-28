@@ -2,7 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import { SessionManager } from "../../src/agent/session/session-manager.js";
 import type { ChildRuntime, SubRuntimeRefs } from "../../src/agent/runners/subsession.js";
-import type { RunResult } from "../../src/agent/runners/orchestrator.js";
+import type { RunResult } from "../../src/agent/runners/turn-loop.js";
 import { newUsageTotals, type Session } from "../../src/agent/session/session.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 

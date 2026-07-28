@@ -15,7 +15,7 @@ import {
   SessionToken,
   ConversationToken,
   WorkspaceToken,
-  OrchestratorToken,
+  TurnLoopToken,
   InboxToken,
   SessionManagerToken,
 } from "../../src/agent/runtime/tokens.js";
@@ -43,7 +43,7 @@ const SERVICE_TOKENS: Record<string, Token<unknown>> = {
   session: SessionToken,
   conversation: ConversationToken,
   workspace: WorkspaceToken,
-  orchestrator: OrchestratorToken,
+  turnLoop: TurnLoopToken,
   inbox: InboxToken,
   sessionManager: SessionManagerToken,
 };

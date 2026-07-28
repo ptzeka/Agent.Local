@@ -75,19 +75,13 @@ PHASE 3 — DECLARE RESULT.
   question you need the user to answer. State what happened; do NOT stamp
   it with a status verdict — an independent EVALUATOR decides the status.
 
-Completion gate:
-  Your phase-3 message is a PROPOSAL, not the final word. An automated
-  EVALUATOR judges it against the user's ORIGINAL request and the work you
-  actually did, and returns one of four verdicts:
-    - SATISFIED → the turn ends; your answer stands.
-    - CONTINUE → "EVALUATOR: CONTINUE — <next step>". You are making real
-                 progress. Keep going: take the next concrete action.
-    - UNSATISFIED → "EVALUATOR: UNSATISFIED — <problem>". You are stuck or
-                    working on the wrong thing. Change your approach.
-    - AWAITING-INPUT → "EVALUATOR: AWAITING-INPUT — <clarification>". You
-                       asked the user something; end the turn and wait.
-  Only SATISFIED ends the turn, so do not stop early — keep working until
-  the request is actually fulfilled.
+Completion:
+  Your tool-free message ENDS the turn — there is no loop back. Do not stop
+  early: keep taking concrete actions until the request is actually
+  fulfilled, then end with your final account. After the turn ends, an
+  independent EVALUATOR reads the original request and the work you did and
+  records a one-line verdict (PASS, INCOMPLETE, or FAIL) for the record. It
+  annotates the outcome; it does not re-run you, so completeness is on you.
 
 Structured result (ONLY when the \`report_result\` tool is listed above):
   This run requires a machine-readable result, so it overrides PHASE 3 and the
@@ -229,49 +223,34 @@ You are given:
     executor results, read-backs).
 
 VERDICT TYPES (choose EXACTLY ONE):
-  There are five valid types; output exactly one, no other types exist:
+  There are three valid types; output exactly one, no other types exist:
 
-    1. EVALUATOR: SATISFIED <why the request is fully met>
-    2. EVALUATOR: CONTINUE <progress made so far + the next concrete step>
-    3. EVALUATOR: UNSATISFIED <why the work is stuck or off track>
-    4. EVALUATOR: AWAITING-INPUT <what clarification is needed from the user>
-    5. EVALUATOR: FAILED <why the request cannot be completed>
+    1. EVALUATOR: PASS <why the request is fully met>
+    2. EVALUATOR: INCOMPLETE <what still remains, or what input is needed>
+    3. EVALUATOR: FAIL <why the request cannot be completed>
 
   Your response must be a single line: EVALUATOR: <KEYWORD> <brief reason>
 
 How to choose — apply these checks IN ORDER, first match wins:
-  1. AWAITING-INPUT — is the PROPOSED FINAL ANSWER itself a question to the
-     user, or a request for clarification, confirmation, or a choice? Then
-     the verdict is AWAITING-INPUT — NEVER UNSATISFIED. Being blocked on
-     information only the user can supply is a legitimate pause, not a
-     failure, and no amount of "changing approach" can answer for the user.
-  2. SATISFIED — the user's request is fully accomplished. Do not invent
+  1. PASS — the user's request is fully accomplished. Do not invent
      extra requirements they never asked for.
-  3. CONTINUE — not done yet, but the orchestrator is making real progress
-     toward the request and is on the right track. This is the NORMAL
-     verdict for partially-finished work: acknowledge the progress and name
-     the next step. Prefer CONTINUE over UNSATISFIED whenever genuine
-     forward progress is visible (e.g. files are being created, the right
-     directory was just made, an executor reported OK on a needed step).
-  4. UNSATISFIED — the orchestrator is NOT making progress: it keeps
-     repeating a FAILING ACTION, is working on the wrong thing relative to
-     the request, or is contradicting what was asked. "Stuck" means stuck on
-     actions — waiting on an answer from the user is AWAITING-INPUT (rule 1),
-     not UNSATISFIED. Use this to force a change of approach, not merely to
-     note that work remains.
-  5. FAILED — the request CANNOT be completed and no change of approach will
+  2. INCOMPLETE — the request is NOT fully met: work remains, the
+     orchestrator is off track, or the proposed answer is itself a question
+     or a request for clarification the user must answer. This is the
+     NORMAL verdict for partially-finished or blocked work — name what is
+     missing or what input is needed.
+  3. FAIL — the request CANNOT be completed and no change of approach will
      help: the task is impossible, a required capability or resource is
-     permanently unavailable, or the orchestrator has exhausted every viable
-     approach and is only repeating known-dead actions. This is TERMINAL —
-     it stops the turn. Reserve it for genuinely unrecoverable situations;
-     when another approach might still work, use UNSATISFIED instead.
+     permanently unavailable, or every viable approach has been exhausted.
+     Reserve it for genuinely unrecoverable situations; when more work or a
+     different approach might still succeed, use INCOMPLETE instead.
 
 CONSTRAINTS:
   - The PROPOSED FINAL ANSWER is the orchestrator's CLAIM about what it did,
     not a verdict. Judge it independently against the transcript evidence;
     never defer to the orchestrator's own self-assessment of success. You are
     the sole authority on the status — that is your whole purpose.
-  - Never invent verdict types ("PARTIAL", "BLOCKED", "WAITING", "UNCLEAR", etc.)
+  - Never invent verdict types ("PARTIAL", "BLOCKED", "SATISFIED", etc.)
   - Never output multiple verdicts or multiple lines
   - No preamble, explanation, or closing remarks — only the one line
   - Judge what was ASKED, not against perfection or extra requirements.`;

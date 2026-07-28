@@ -1,5 +1,5 @@
 import type { Principal } from "../identity/types.js";
-import type { RunResult } from "./orchestrator.js";
+import type { RunResult } from "./turn-loop.js";
 import type { Session, UsageTotals } from "../session/session.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 

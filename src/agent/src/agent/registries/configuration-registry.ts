@@ -18,6 +18,39 @@ export interface ModelDefinition {
 
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 
+// the explicit shape a dispatchable role must return; enforced at the tool-client boundary AND advertised
+// in the dispatch tool's description, so the caller knows what it gets back (see ScopedToolClient validation)
+export interface RoleReturnsSchema {
+  required?: string[];
+  properties?: Record<string, unknown>;
+}
+
+// the contract for calling a role as a sub-agent tool: what it does + the shape it returns
+export interface RoleDispatch {
+  description: string;
+  returns?: RoleReturnsSchema;
+}
+
+// a role is a pure-data record: model, prompt, completion contract, and its behavioural knobs. This is the ONLY
+// place role behaviour is declared — the runtime reads these fields, it never branches on a role NAME
+export interface RoleDefinition {
+  // an addressable model id from `models`
+  model: string;
+  // prompt id resolved to a system prompt (see ModelRegistry.getPromptTemplate)
+  prompt: string;
+  // completion contract name → policy (self-terminate | tool-evidence | structured-verdict)
+  completion: string;
+  // fallback iteration cap; a model's own iterationCap still wins
+  maxIterations?: number;
+  temperature?: number;
+  // exposed as a sub-agent tool other roles can dispatch
+  dispatchable?: boolean;
+  // per-role tool whitelist; falls back to the model's own `mcp` list when omitted
+  tools?: string[];
+  // the tool contract when this role is dispatched as a sub-agent
+  dispatch?: RoleDispatch;
+}
+
 
 export interface OrchestrationConfig {
   maxOrchestratorIterations: number;
@@ -56,7 +89,7 @@ export const DEFAULT_SUMMARY_WORD_THRESHOLD = 2;
 
 export interface ModelsFile {
   models: Record<string, ModelDefinition>;
-  roles: Record<string, string>;
+  roles: Record<string, RoleDefinition>;
   orchestration: Partial<OrchestrationConfig>;
   summaryWordThreshold: number;
 }

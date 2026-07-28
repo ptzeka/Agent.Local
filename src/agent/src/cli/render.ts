@@ -101,15 +101,11 @@ export function formatEvent(event: RunnerEvent): string {
       const state = String(event.data.state ?? "");
       const reason = String(event.data.reason ?? "");
       const stamp =
-        state === "satisfied"
-          ? chalk.greenBright("SATISFIED")
-          : state === "continue"
-            ? chalk.cyanBright("CONTINUE")
-            : state === "awaiting-input"
-              ? chalk.blueBright("AWAITING-INPUT")
-              : state === "failed"
-                ? chalk.redBright("FAILED")
-                : chalk.yellowBright(state.toUpperCase() || "UNSATISFIED");
+        state === "pass"
+          ? chalk.greenBright("PASS")
+          : state === "fail"
+            ? chalk.redBright("FAIL")
+            : chalk.yellowBright(state.toUpperCase() || "INCOMPLETE");
       // turn-transient (never persisted), so gray label per the saved-keeps-color convention; verdict word stays colored
       return chalk.gray("  [EVALUATOR] ") + stamp + chalk.gray(` — ${reason}\n`);
     }

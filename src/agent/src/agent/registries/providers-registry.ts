@@ -20,10 +20,8 @@ export class ProvidersRegistry
         const ollamaHost = process.env.OLLAMA_HOST ?? "http://localhost:11434";
 
         // build one provider per role-referenced model only, skipping unused definitions
-        for (const [_, def] of Object.entries(this.modelsFile.roles)) {
-
-            var m = this.modelsFile.models[def];
-            this.definitions[def] = m;
+        for (const role of Object.values(this.modelsFile.roles)) {
+            this.definitions[role.model] = this.modelsFile.models[role.model];
         };
 
         for (const [id, def] of Object.entries(this.definitions)) {

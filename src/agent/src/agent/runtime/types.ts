@@ -30,9 +30,10 @@ export interface AgentRuntimeQueryable {
 export interface AgentRuntimeDeps {
   // parsed once at the edge (cli/server) and injected as an object; the runtime never reads config files itself
   config: RuntimeConfig;
-  // "workflow-orchestrator" is the dispatched-run twin of "orchestrator": its model whitelists turnresult, so
-  // report_result is mounted and the turn must finish with a structured verdict envelope (interactive uses "orchestrator")
-  orchestratorRole: "orchestrator" | "executor" | "workflow-orchestrator";
+  // the role this runtime runs as — any key in models.json `roles`. It selects model, prompt, tools, and the
+  // completion contract, all as data; the runtime never branches on the value (e.g. "workflow-orchestrator" is
+  // just an orchestrator-prompt role whose completion is structured-verdict)
+  orchestratorRole: string;
   sessionsDir: string;
   // agent.sqlite handle, opened once at process startup and shared down the runtime tree (sub-runtimes included)
   db: DatabaseHandle;

@@ -1,7 +1,7 @@
 import type { TokenUsage } from "@agent-local/common/tokenusage";
 import { MetricsRegistryToken } from "../../runtime/tokens.js";
 import { OrchestratorEventTypes } from "../runner-events.js";
-import type { RunResult } from "../orchestrator.js";
+import type { RunResult } from "../turn-loop.js";
 import { RunnerMiddlewareBase, type RunnerContext } from "./runner-middleware.js";
 
 // folds a turn's usage into the MetricsRegistry off the event bus, so token accounting is a turn-scoped

@@ -121,16 +121,79 @@
       "mcp": ["fsmcp", "codemcp", "excel"],
       "toolTimeoutMs": 600000,
       "iterationCap": 6
+    },
+    "gemini-2.5-flash-lite-evaluator": {
+      "provider": "gemini",
+      "model": "gemini-2.5-flash-lite",
+      "supportsTools": true,
+      "description": "Evaluator/judge binding: tool-free (mcp:[]) — runs the terminal PASS|FAIL|INCOMPLETE verdict pass, reading the transcript only. Output $0.40. Requires GEMINI_API_KEY.",
+      "mcp": [],
+      "toolTimeoutMs": 60000,
+      "iterationCap": 16
     }
   },
   "summaryWordThreshold": 2,
   "roles": {
-    "orchestrator": "gemini-2.5-flash-lite-orchestrator",
-    "workflow-orchestrator": "gemini-2.5-flash-lite-workflow-orchestrator",
-    "executor": "claude-haiku-4-5-executor",
-    "coder": "gemini-2.5-flash-lite-coder",
-    "summarizer": "llama-fast",
-    "evaluator": "gemini-2.5-flash-lite-orchestrator"
+    "orchestrator": {
+      "model": "gemini-2.5-flash-lite-orchestrator",
+      "prompt": "orchestrator",
+      "completion": "self-terminate",
+      "maxIterations": 16,
+      "temperature": 0.2,
+      "dispatchable": false
+    },
+    "workflow-orchestrator": {
+      "model": "gemini-2.5-flash-lite-workflow-orchestrator",
+      "prompt": "orchestrator",
+      "completion": "structured-verdict",
+      "maxIterations": 16,
+      "temperature": 0.2,
+      "dispatchable": false
+    },
+    "executor": {
+      "model": "claude-haiku-4-5-executor",
+      "prompt": "executor",
+      "completion": "tool-evidence",
+      "maxIterations": 6,
+      "temperature": 0.1,
+      "dispatchable": true,
+      "dispatch": {
+        "description": "Spawn the EXECUTOR sub-agent to perform exactly one mutation and report what it observed."
+      }
+    },
+    "coder": {
+      "model": "gemini-2.5-flash-lite-coder",
+      "prompt": "orchestrator",
+      "completion": "self-terminate",
+      "maxIterations": 6,
+      "temperature": 0.2,
+      "dispatchable": false
+    },
+    "summarizer": {
+      "model": "llama-fast",
+      "prompt": "summarizer",
+      "completion": "self-terminate",
+      "temperature": 0.2
+    },
+    "evaluator": {
+      "model": "gemini-2.5-flash-lite-evaluator",
+      "prompt": "evaluator",
+      "completion": "structured-verdict",
+      "maxIterations": 16,
+      "temperature": 0.1,
+      "tools": ["fsreadonly", "codemcp"],
+      "dispatchable": true,
+      "dispatch": {
+        "description": "Independently verify the turn's work against the original request; returns a structured PASS/FAIL/INCOMPLETE verdict.",
+        "returns": {
+          "required": ["status", "reason"],
+          "properties": {
+            "status": { "enum": ["pass", "fail", "incomplete"] },
+            "reason": { "type": "string" }
+          }
+        }
+      }
+    }
   },
 
   "orchestration": {
@@ -140,7 +203,7 @@
     "orchestratorTemperature": 0.2,
     "executorTemperature": 0.1,
     "evaluatorTemperature": 0.1,
-    "evaluatorEnabled": false,
+    "evaluatorEnabled": true,
     "summarizeAtMessages": 30,
     "summarizerKeepLastN": 8
   }

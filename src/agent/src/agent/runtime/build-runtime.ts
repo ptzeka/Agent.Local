@@ -10,7 +10,7 @@ import { IdentityMiddleware } from "./middleware/identity.js";
 import { SessionMiddleware } from "./middleware/session.js";
 import { InputInboxMiddleware } from "./middleware/input-inbox.js";
 import { LoggerMiddleware } from "./middleware/logger.js";
-import { OrchestratorMiddleware } from "./middleware/orchestrator.js";
+import { TurnLoopMiddleware } from "./middleware/turn-loop.js";
 import { MetricsRegistryMiddleware } from "./middleware/metrics-registry.js";
 import { RunnerPipelineMiddleware } from "./middleware/runner-pipeline.js";
 import { SessionManagerMiddleware } from "./middleware/session-manager.js";
@@ -41,7 +41,7 @@ export function buildRuntime(deps: AgentRuntimeDeps, sessionId?: string): AgentR
     // before the MCP step: the registry wires the coordinator into the subsessions server at mount time
     .add(new SessionManagerMiddleware({ subRuntimeFactory: (refs) => buildSubRuntime({ ...deps, orchestratorRole: "orchestrator" }, refs) }))
     .add(new McpRegistryMiddleware({ role: deps.orchestratorRole }))
-    .add(new OrchestratorMiddleware({ role: deps.orchestratorRole }))
+    .add(new TurnLoopMiddleware({ role: deps.orchestratorRole }))
     .add(new RunnerPipelineMiddleware())
     .add(new ContextMiddleware({ roleName: deps.orchestratorRole }))
     .add(new InputInboxMiddleware());

@@ -1,16 +1,10 @@
-import { ScopedToolClient } from "../scoped-tool-client.js";
 import type { ChatMessage } from "../providers/provider.js";
-import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
-import type { TurnBindable, TurnBinding } from "../synthetic-mcp/types.js";
-import { TURN_RESULT_SERVER_NAME } from "../synthetic-mcp/turn-result-server.js";
-import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
-import { Eventing } from "@agent-local/common/eventing";
 import { Turn } from "./turn.js";
 import { ModelCaller } from "./model-caller.js";
 import { ToolCaller } from "./tool-caller.js";
-import { resolveTurnProfile } from "./turn-profile.js";
+import { Evaluator, type EvaluationState } from "./evaluator.js";
 import { selectCompletionPolicy } from "./policies/completion.js";
 import { MemoryContributor } from "./policies/memory-contributor.js";
 import { SnapshotContextProvider } from "./policies/snapshot-context-provider.js";
@@ -36,16 +30,19 @@ export interface RunResult {
   // the agent's structured verdict from report_result on a dispatched turn; absent when the tool wasn't mounted
   // or wasn't called (interactive, capped, or system-failed turns) — the dispatch boundary fills a fallback then
   reported?: ReportedTurnResult;
+  // the terminal evaluator pass's independent judgement, stamped into the conversation; absent when the pass
+  // is disabled for the role or skipped (trivially short request). Distinct from `outcome`, which the loop sets
+  evaluation?: { status: EvaluationState; reason: string };
 }
 
-// narrow contract satisfied structurally by Orchestrator, so the manager stays decoupled and construction acyclic
+// narrow contract satisfied structurally by TurnLoop, so the manager stays decoupled and construction acyclic
 export interface SessionRunner {
   run(ctx: RunnerContext): Promise<RunResult>;
 }
 
 // the four extension slots; anything omitted falls back to the built-in default
 // contributors are additive and unbounded, the other three are singular because they decide
-export interface OrchestratorPolicies {
+export interface TurnPolicies {
   contextProvider?: ContextProvider;
   compaction?: CompactionPolicy;
   contributors?: readonly ContextContributor[];
@@ -54,8 +51,8 @@ export interface OrchestratorPolicies {
 }
 
 // drives the agentic loop for any role; the profile carries every per-role difference as data
-// STATELESS: holds only its role and its policy slots; per-turn state lives in the Turn
-export class Orchestrator {
+// STATELESS: holds only its role and its policy slots; per-turn state and assembly live in the Turn
+export class TurnLoop implements SessionRunner {
   private readonly contextProvider: ContextProvider;
   private readonly compaction: CompactionPolicy;
   private readonly contributors: readonly ContextContributor[];
@@ -65,7 +62,7 @@ export class Orchestrator {
   private readonly model = new ModelCaller();
   private readonly tools = new ToolCaller();
 
-  constructor(private readonly role: string, policies: OrchestratorPolicies = {}) {
+  constructor(private readonly role: string, policies: TurnPolicies = {}) {
     this.contextProvider = policies.contextProvider ?? new SnapshotContextProvider();
     this.compaction = policies.compaction ?? new SummarizeCompaction();
     this.contributors = policies.contributors ?? [new MemoryContributor()];
@@ -76,19 +73,27 @@ export class Orchestrator {
   // the loop persists per iteration so a crash loses at most the iteration in flight,
   // with the runtime's finalize() backstopping the tail
   public async run(ctx: RunnerContext): Promise<RunResult> {
-    const turn = await this.openTurn(ctx);
-
-    // cold wake: the inbox was already drained by the turn that woke with it, so settle
-    // before paying for context assembly or compaction — nothing would consume them
+    // cold wake: the inbox was already drained by the turn that woke with it, so settle before
+    // assembling anything — mounting tools and binding servers would all be discarded
     if (!ctx.hasPending?.()) {
       ctx.logger.debug("empty turn — no queued input, settling without model call", {
         sessionId: ctx.session.sessionId,
       });
-      return turn.idle();
+      return Turn.idle();
     }
 
+    const turn = await Turn.open(ctx, this.role);
     await this.runPrologue(turn, ctx);
+    const result = await this.iterate(turn, ctx);
+    await this.runEpilogue(turn, ctx, result);
+    return result;
+  }
 
+  // ---------------------------------------------------------------------------
+  // Iteration loop
+  // ---------------------------------------------------------------------------
+
+  private async iterate(turn: Turn, ctx: RunnerContext): Promise<RunResult> {
     const completion = this.completionOverride ?? selectCompletionPolicy(turn.profile);
     const maxIterations = turn.profile.maxIterations;
 
@@ -120,73 +125,24 @@ export class Orchestrator {
   }
 
   // ---------------------------------------------------------------------------
-  // Turn setup
+  // Epilogue — the terminal evaluator pass, runs ONCE after the turn settles
   // ---------------------------------------------------------------------------
 
-  // resolves the profile, mounts the role's tools, and binds the per-turn seam before any work runs
-  private async openTurn(ctx: RunnerContext): Promise<Turn> {
-    const modelsRegistry = ctx.runtime.getModelsRegistry();
-    const mcpRegistry = ctx.runtime.getMcpClientRegistry();
-    const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration()!;
+  // a separate role reads this turn's transcript and stamps an independent PASS/FAIL/INCOMPLETE verdict into
+  // the conversation; it never changes `outcome` (the loop already set that) — it only annotates and reports
+  private async runEpilogue(turn: Turn, ctx: RunnerContext, result: RunResult): Promise<void> {
+    if (!turn.profile.evaluatorPass) return;
 
-    const provider = ctx.runtime
-      .getProvidersRegistry()
-      .getProvider(modelsRegistry.getProviderForRole(this.role));
-
-    const profile = resolveTurnProfile({
-      role: this.role,
-      config,
-      modelsRegistry,
-      structuredAvailable: !!mcpRegistry.getClient(TURN_RESULT_SERVER_NAME),
-    });
-
-    const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, this.role);
-    const visibleTools = scopedClients.listTools();
-    const tracker = new DispatchTracker(
-      config.orchestration.maxExecutorDispatchesPerTurn!,
-      config.orchestration.validatorCheckIntervalDispatches ?? 0
+    const evaluator = new Evaluator(ctx.runtime);
+    const verdict = await evaluator.evaluate(
+      {
+        question: turn.turnRequest ?? "",
+        proposedAnswer: result.finalMessage.content,
+        transcript: turn.transcriptOfTurn(),
+      },
+      { signal: ctx.signal, temperature: turn.config.orchestration.evaluatorTemperature }
     );
-    // minted regardless so the post-tool check is uniform; only a bound server can ever fill it
-    const resultSink = new TurnResultCapture();
-
-    if (profile.needsTurnBinding) {
-      this.bindTurnScopedServers(ctx, mcpRegistry.listClients(), tracker, resultSink);
-    }
-
-    ctx.events.publish(OrchestratorEventTypes.START, {
-      orchestratorModel: provider.modelId,
-      orchestratorTools: visibleTools,
-      readToolCount: visibleTools.length,
-      maxIterations: profile.maxIterations,
-    });
-
-    return new Turn(ctx, {
-      profile,
-      provider,
-      scopedClients,
-      visibleTools,
-      tracker,
-      resultSink,
-      conversation: ctx.runtime.getConversation(),
-      config,
-      streaming: ctx.runtime.isStreamOutputEnabled(),
-    });
-  }
-
-  // ONE per-turn seam: servers register once at build; those holding turn state take it here
-  private bindTurnScopedServers(
-    ctx: RunnerContext,
-    clients: readonly unknown[],
-    tracker: DispatchTracker,
-    resultSink: TurnResultCapture
-  ): void {
-    // chained under the turn so what bound servers publish bubbles up
-    const mcpClientEvents = new Eventing();
-    ctx.events.add(mcpClientEvents);
-    const binding: TurnBinding = { signal: ctx.signal, tracker, events: mcpClientEvents, resultSink };
-    for (const client of clients) {
-      if (isTurnBindable(client)) client.bindTurn(binding);
-    }
+    result.evaluation = { status: verdict.state, reason: verdict.reason };
   }
 
   // ---------------------------------------------------------------------------
@@ -237,9 +193,4 @@ export class Orchestrator {
       outcome: "capped",
     };
   }
-}
-
-// narrows without the double cast: a client only takes the turn seam if it actually implements it
-function isTurnBindable(client: unknown): client is TurnBindable {
-  return typeof (client as Partial<TurnBindable>)?.bindTurn === "function";
 }

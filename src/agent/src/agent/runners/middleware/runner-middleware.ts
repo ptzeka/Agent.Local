@@ -3,7 +3,7 @@ import type { Eventing } from "@agent-local/common/eventing";
 import type { ILogger } from "@agent-local/common/ilogger";
 import type { Session } from "../../session/session.js";
 import type { AgentRuntimeQueryable } from "../../runtime/types.js";
-import type { RunResult } from "../orchestrator.js";
+import type { RunResult } from "../turn-loop.js";
 
 // shared mutable state for one turn, threaded through every onion link so units read/write
 // the same turn instead of closure-captured locals; registry resolves runtime services on demand

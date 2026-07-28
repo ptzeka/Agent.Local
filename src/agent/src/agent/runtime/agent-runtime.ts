@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Conversation } from "../conversation/conversation.js";
 import { InputInbox } from "../runners/input-inbox.js";
-import { Orchestrator, type RunResult } from "../runners/orchestrator.js";
+import { TurnLoop, type RunResult } from "../runners/turn-loop.js";
 import {
   composeRunnerPipeline,
   type IRunnerMiddleware,
@@ -33,7 +33,7 @@ import {
   McpRegistryToken,
   MetricsRegistryToken,
   ModelsToken,
-  OrchestratorToken,
+  TurnLoopToken,
   ProvidersToken,
   RunnerMiddlewareToken,
   SessionManagerToken,
@@ -71,7 +71,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private providersRegistry!: ProvidersRegistry;
   private mcpClientRegistry!: McpClientRegistry;
   private contextLoader!: ContextLoader;
-  private orchestrator!: Orchestrator;
+  private turnLoop!: TurnLoop;
   private inbox!: InputInbox;
   private sessionManager!: SessionManager;
   private store!: SessionStore;
@@ -138,7 +138,7 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.session = ctx.registry.get(SessionToken);
     this.conversation = ctx.registry.get(ConversationToken);
     this.workspace = ctx.registry.get(WorkspaceToken);
-    this.orchestrator = ctx.registry.get(OrchestratorToken);
+    this.turnLoop = ctx.registry.get(TurnLoopToken);
     this.inbox = ctx.registry.get(InboxToken);
     this.sessionManager = ctx.registry.get(SessionManagerToken);
     this.container = ctx.registry;
@@ -188,10 +188,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.logger.debug("runtime running", { sessionId: this.session.sessionId });
     this.logger.debug("turn start", { sessionId: this.session.sessionId });
 
-    // the orchestrator run is the pipeline core; registered units fold around it as an onion
+    // the turn-loop run is the pipeline core; registered units fold around it as an onion
     const ctx = this.beginTurn(options);
     const runTurn = composeRunnerPipeline(this.runnerMiddlewares, ctx, () =>
-      this.orchestrator.run(ctx)
+      this.turnLoop.run(ctx)
     );
 
     try {
@@ -444,8 +444,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     return this.mcpClientRegistry;
   }
 
-  getOrchestrator(): Orchestrator {
-    return this.orchestrator;
+  getTurnLoop(): TurnLoop {
+    return this.turnLoop;
   }
 
   getLogger(): ILogger {

@@ -1,5 +1,5 @@
 import { Eventing, type ILogger } from "@agent-local/common";
-import type { RunResult } from "../../agent/runners/orchestrator.js";
+import type { RunResult } from "../../agent/runners/turn-loop.js";
 import {
   EXECUTION_REQUESTED,
   EXECUTION_RESULT,

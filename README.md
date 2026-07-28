@@ -1,50 +1,82 @@
 # Agent.Local
 
-A local coding agent powered by [Ollama](https://ollama.com), built in TypeScript
-with a multi-agent orchestration loop (planner + executor) and MCP-based tools.
+**A resilient agentic orchestrator.** A TypeScript coding agent built around one
+configurable turn loop: any model provider, any host, role-scoped tools, and
+extension points instead of forks.
 
-Everything runs on your machine. No cloud calls.
+Models are configuration, not code — run entirely local against
+[Ollama](https://ollama.com), or point a role at Anthropic or Gemini. Mix them:
+a cheap local model can execute while a stronger one orchestrates.
 
-The auth service, host, Temporal integration, and web console live in the sibling
-[Agent.Workflow](../Agent.Workflow) repo; shared primitives (`@agent-local/common`) live in
-[Agent.Common](../Agent.Common); MCP servers this agent registers (`codemcp`, `memomcp`) live in
-[agent.tools](../agent.tools).
+---
+
+## What you get
+
+**Core runtime** (this repo)
+
+- **Multi-mode run** — the same runtime drives an interactive CLI REPL, an HTTP
+  server (`/events`, `/receive`), or a headless single-shot run with meaningful
+  exit codes for CI and job runners.
+- **Configurable providers** — Ollama, Anthropic, and Gemini today, behind one
+  `LLMProvider` interface. Roles map to models in `models.json` and hot-swap at
+  runtime; native tool-calling and prompted-JSON models are both supported.
+- **Extendable runtime** — the runtime is assembled by middleware into a DI
+  container. Add a step, register a service, resolve it by token — no edits to
+  the core.
+- **Extendable turn** — the turn loop exposes four typed slots (context provider,
+  compaction, context contributors, completion policy). Register one to change
+  behaviour; leave it unset and the built-in default applies.
+- **Role-based tool authorization** — a role sees only its whitelisted MCP
+  servers. Tool access is resolved per role at turn assembly, never at the call
+  site, so a role cannot reach a tool it was not granted.
+- **Enforced turn semantics** — a dispatched turn must report a structured
+  verdict, and an executor that produced prose without calling a single tool
+  fails rather than banking a no-op.
+
+**Platform** (sibling [Agent.Workflow](../Agent.Workflow) repo)
+
+- Web console for authorized workflow and agent management
+- Authentication service issuing the tokens this agent's role scoping trusts
+- Temporal-backed durable task execution
+
+Shared primitives (`@agent-local/common`) live in [Agent.Common](../Agent.Common);
+the `codemcp` / `memomcp` MCP servers live in [agent.tools](../agent.tools).
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────┐
-│  CLI REPL (src/cli)      │  user input, slash commands, rendering
-├──────────────────────────┤
-│  Orchestrator            │  planner phase → executor loop → tool sync
-│  (src/agent)             │
-│   ├─ ModelRegistry       │  role → LLMProvider, hot-swappable
-│   ├─ Providers           │  Ollama today; pluggable interface
-│   ├─ McpToolClient       │  spawns MCP servers, dispatches tool calls
-│   └─ ToolAdapter         │  native function calls OR prompted JSON fallback
-├──────────────────────────┤
-│  MCP Tools Server        │  child node process, stdio transport
-│  (src/tools)             │   ├─ read_file, write_file, edit_file, list_dir
-│                          │   └─ glob, grep
-└──────────────────────────┘
+┌────────────────────────────────┐
+│  Hosts                         │  CLI REPL · HTTP server · headless run
+├────────────────────────────────┤
+│  AgentRuntime                  │  middleware-built DI container, one per session
+│   ├─ Registries                │  models · providers · MCP · workspace · config
+│   └─ Runner middleware         │  onion around every turn (metrics, counters)
+├────────────────────────────────┤
+│  TurnLoop                      │  gate → assemble → prologue → iterate → cap
+│   ├─ Turn                      │  per-turn state, transcript, settled results
+│   ├─ ModelCaller / ToolCaller  │  the loop's own steps — they decide nothing
+│   └─ Policies                  │  context · compaction · contributors · completion
+├────────────────────────────────┤
+│  ScopedToolClient              │  role → whitelist → the only tools this turn sees
+├────────────────────────────────┤
+│  MCP servers                   │  fs, code search, memory — separate processes
+└────────────────────────────────┘
 ```
 
-The three layers only call downward, per the project's architectural guidelines:
-UI → Services → Repository/External.
+Layers only call downward: hosts → runtime → loop → tools.
 
 ---
 
-## Two-agent flow per user turn
+## Concepts
 
-1. **Planner** (a reasoning model like `deepseek-r1`) reads the user request and
-   produces an ordered plan. No tools. `<think>` blocks are stripped.
-2. **Executor** (a tool-calling model like `qwen2.5-coder`) receives the plan
-   as a system message and runs an iterative tool-call loop against the MCP server
-   until it produces a final answer.
-3. The conversation history is preserved across turns. Use `/think off` to skip
-   the planner phase for quick questions.
+| Term | Meaning |
+| --- | --- |
+| **Turn** | One user request, start to finish. Owns its transcript and its settled result. |
+| **Role** | Which job a model is doing — `orchestrator` plans and delegates, `executor` acts, plus `evaluator` / `summarizer` support roles. Roles map to models in `models.json`. |
+| **Profile** | Every per-role difference expressed as data (iteration cap, temperature, which completion gate). Adding a kind of turn means adding a profile, not a branch in the loop. |
+| **Policy** | A swappable decision: what context to build, when to compact, whether the turn is done. Exactly one policy may end a turn. |
 
 ---
 

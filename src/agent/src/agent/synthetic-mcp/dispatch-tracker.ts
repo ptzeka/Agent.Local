@@ -6,7 +6,7 @@ export interface DispatchAsk {
 }
 
 // per-turn accounting bundling the dispatch cap, duplicate-mutation guard, and periodic-validator gate
-// one instance per Orchestrator.run, shared with the dispatch tool; the orchestrator only queries dueForPeriodicCheck
+// one instance per TurnLoop.run, shared with the dispatch tool; the orchestrator only queries dueForPeriodicCheck
 export class DispatchTracker {
   private dispatches = 0;
   private dispatchesSinceCheck = 0;

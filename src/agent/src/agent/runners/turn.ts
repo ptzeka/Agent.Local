@@ -1,15 +1,16 @@
 import type { ToolDescriptor } from "@agent-local/mcp";
+import { Eventing } from "@agent-local/common/eventing";
 import type { Conversation } from "../conversation/conversation.js";
 import type { ChatMessage, LLMProvider } from "../providers/provider.js";
 import type { ModelsFile } from "../registries/configuration-registry.js";
-import type { ScopedToolClient } from "../scoped-tool-client.js";
-import type { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
-import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
-import type { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
-import type { RunResult } from "./orchestrator.js";
+import { ScopedToolClient } from "../scoped-tool-client.js";
+import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
+import type { ReportedTurnResult, TurnBindable, TurnBinding } from "../synthetic-mcp/types.js";
+import { TurnResultCapture } from "../synthetic-mcp/turn-result-tools.js";
+import type { RunResult } from "./turn-loop.js";
 import { OrchestratorEventTypes } from "./runner-events.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
-import type { TurnProfile } from "./turn-profile.js";
+import { resolveTurnProfile, type TurnProfile } from "./turn-profile.js";
 import { randomUUID } from "node:crypto";
 
 // everything a turn is born with; the orchestrator assembles it once, the Turn exposes it read-only
@@ -68,6 +69,66 @@ export class Turn {
     this.config = options.config;
     this.streaming = options.streaming;
     this.seedOpeningSet();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Assembly
+  // ---------------------------------------------------------------------------
+
+  // resolves the profile, mounts the role's tools, and binds the per-turn seam before any work runs;
+  // assembly lives here rather than in the loop so TurnLoop holds control flow only
+  static async open(ctx: RunnerContext, role: string): Promise<Turn> {
+    const modelsRegistry = ctx.runtime.getModelsRegistry();
+    const mcpRegistry = ctx.runtime.getMcpClientRegistry();
+    const config = await ctx.runtime.getConfigurationRegistry().getModelsConfiguration();
+
+    const provider = ctx.runtime
+      .getProvidersRegistry()
+      .getProvider(modelsRegistry.getProviderForRole(role));
+
+    const profile = resolveTurnProfile({ role, config, modelsRegistry });
+
+    const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, role);
+    const visibleTools = scopedClients.listTools();
+    const tracker = new DispatchTracker(
+      config.orchestration.maxExecutorDispatchesPerTurn!,
+      config.orchestration.validatorCheckIntervalDispatches ?? 0
+    );
+    // minted regardless so the post-tool check is uniform; only a bound server can ever fill it
+    const resultSink = new TurnResultCapture();
+
+    if (profile.needsTurnBinding) {
+      bindTurnScopedServers(ctx, mcpRegistry.listClients(), tracker, resultSink);
+    }
+
+    ctx.events.publish(OrchestratorEventTypes.START, {
+      orchestratorModel: provider.modelId,
+      orchestratorTools: visibleTools,
+      readToolCount: visibleTools.length,
+      maxIterations: profile.maxIterations,
+    });
+
+    return new Turn(ctx, {
+      profile,
+      provider,
+      scopedClients,
+      visibleTools,
+      tracker,
+      resultSink,
+      conversation: ctx.runtime.getConversation(),
+      config,
+      streaming: ctx.runtime.isStreamOutputEnabled(),
+    });
+  }
+
+  // a wake whose inbox was already drained: nothing ran, so no turn is assembled and none is counted
+  static idle(): RunResult {
+    return {
+      finalMessage: { role: "assistant", content: "" },
+      iterations: 0,
+      dispatches: 0,
+      outcome: "satisfied",
+    };
   }
 
   // ---------------------------------------------------------------------------
@@ -131,16 +192,6 @@ export class Turn {
   // Results
   // ---------------------------------------------------------------------------
 
-  // a wake whose inbox was already drained: nothing ran, and headless accounting must see that
-  idle(): RunResult {
-    return {
-      finalMessage: { role: "assistant", content: "" },
-      iterations: 0,
-      dispatches: this.tracker.count,
-      outcome: "satisfied",
-    };
-  }
-
   settle(finalMessage: ChatMessage, outcome: "satisfied" | "awaiting-input"): RunResult {
     return {
       finalMessage,
@@ -188,4 +239,29 @@ export class Turn {
       reported,
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Turn-scoped server binding
+// ---------------------------------------------------------------------------
+
+// ONE per-turn seam: servers register once at build; those holding turn state take it here
+function bindTurnScopedServers(
+  ctx: RunnerContext,
+  clients: readonly unknown[],
+  tracker: DispatchTracker,
+  resultSink: TurnResultCapture
+): void {
+  // chained under the turn so what bound servers publish bubbles up
+  const mcpClientEvents = new Eventing();
+  ctx.events.add(mcpClientEvents);
+  const binding: TurnBinding = { signal: ctx.signal, tracker, events: mcpClientEvents, resultSink };
+  for (const client of clients) {
+    if (isTurnBindable(client)) client.bindTurn(binding);
+  }
+}
+
+// narrows without the double cast: a client only takes the turn seam if it actually implements it
+function isTurnBindable(client: unknown): client is TurnBindable {
+  return typeof (client as Partial<TurnBindable>)?.bindTurn === "function";
 }

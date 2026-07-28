@@ -8,7 +8,7 @@ import type { WorkspaceRegistry, Workspace } from "../registries/workspace-regis
 import type { Principal } from "../identity/types.js";
 import type { Session } from "../session/session.js";
 import type { Conversation } from "../conversation/conversation.js";
-import type { Orchestrator } from "../runners/orchestrator.js";
+import type { TurnLoop } from "../runners/turn-loop.js";
 import type { InputInbox } from "../runners/input-inbox.js";
 import type { SessionManager } from "../session/session-manager.js";
 import type { IRunnerMiddleware } from "../runners/middleware/runner-middleware.js";
@@ -32,7 +32,7 @@ export const UserToken = token<Principal>("user");
 export const SessionToken = token<Session>("session");
 export const ConversationToken = token<Conversation>("conversation");
 export const WorkspaceToken = token<Workspace>("workspace");
-export const OrchestratorToken = token<Orchestrator>("orchestrator");
+export const TurnLoopToken = token<TurnLoop>("turnLoop");
 export const InboxToken = token<InputInbox>("inbox");
 export const SessionManagerToken = token<SessionManager>("sessionManager");
 // group handle: runner-middleware units register via .by(), AgentRuntime folds them with getAll() around each turn

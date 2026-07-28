@@ -187,7 +187,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     let usage: ToolExecutionResult["usage"];
     let runtime: Awaited<ReturnType<typeof childRuntime.build>> | undefined;
 
-    try {
+    try { 
       runtime = await childRuntime.build();
       // bridge the child's events up as `executor-event` so the renderer tags them as the sub-run's, not the parent's
       const detach = runtime.getEvents().subscribe((event) =>

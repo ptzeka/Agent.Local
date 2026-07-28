@@ -1,40 +1,65 @@
 import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
-import { ModelsFile, ModelDefinition, DEFAULT_TOOL_TIMEOUT_MS } from "./configuration-registry.js";
+import { ModelsFile, ModelDefinition, RoleDefinition, DEFAULT_TOOL_TIMEOUT_MS } from "./configuration-registry.js";
 
-// maps logical roles onto declared models so swapping a model is a models.json/assignRole change, never code
+// prompts addressed by id, so a role's `prompt` field selects one by data — the registry never switches on a role NAME
+const PROMPTS: Record<string, string> = {
+  project: PROJECT_CONTEXT,
+  orchestrator: ORCHESTRATOR_SYSTEM_PROMPT,
+  executor: EXECUTOR_SYSTEM_PROMPT,
+  evaluator: EVALUATOR_SYSTEM_PROMPT,
+  summarizer: SUMMARIZER_SYSTEM_PROMPT,
+};
+
+// serves the pure-data role records so swapping a model/prompt/behaviour is a models.json change, never code
 export class ModelRegistry {
 
   private definitions: Record<string, ModelDefinition>;
-  private roleAssignments: Record<string, string>;
+  private roleDefs: Record<string, RoleDefinition>;
 
   constructor(private modelsFile: ModelsFile) {
     this.definitions = { ...modelsFile.models };
-    this.roleAssignments = { ...modelsFile.roles };
+    this.roleDefs = { ...modelsFile.roles };
+    this.assertRolesResolve();
+  }
+
+  // gate at construction: every declared role must resolve to a DEFINED model and carry its required fields,
+  // so a typo'd or half-declared role fails loudly at boot rather than lazily deep in a turn
+  private assertRolesResolve(): void {
+    for (const [role, def] of Object.entries(this.roleDefs)) {
+      if (!def.model || !this.definitions[def.model]) {
+        throw new Error(
+          `Role "${role}" is assigned to model "${def.model}", which is not defined in models.json.`
+        );
+      }
+      if (!def.prompt || !def.completion) {
+        throw new Error(`Role "${role}" must declare both a "prompt" and a "completion" in models.json.`);
+      }
+    }
+  }
+
+  // the full data record for a role; the runtime reads its fields instead of branching on the role name
+  public getRoleDefinition(role: string): RoleDefinition {
+    const def = this.roleDefs[role];
+    if (!def) {
+      throw new Error(`No role "${role}" defined in models.json.`);
+    }
+    return def;
   }
 
   public getProviderForRole(role: string): string {
-    return this.roleAssignments[role];
+    return this.getRoleDefinition(role).model;
   }
 
-  public getPromptTemplate(role: string): string {
-    switch (role) {
-      case "project":
-        return PROJECT_CONTEXT;
-      case "orchestrator":
-      // dispatched-run twin of orchestrator: same prompt, whose guarded "Structured result" section self-activates
-      // because this role always has report_result mounted (its model whitelists turnresult)
-      case "workflow-orchestrator":
-        return ORCHESTRATOR_SYSTEM_PROMPT;
-      case "executor":
-        return EXECUTOR_SYSTEM_PROMPT;
-      case "evaluator":
-        return EVALUATOR_SYSTEM_PROMPT;
-      case "summarizer":
-        return SUMMARIZER_SYSTEM_PROMPT;
-      default:
-        throw new Error(`No prompt template for role "${role}".`);
+  // resolves a system prompt by id: a role name maps through its `prompt` field, a bare id (e.g. "project") direct
+  public getPromptTemplate(roleOrPromptId: string): string {
+    const def = this.roleDefs[roleOrPromptId];
+    const promptId = def ? def.prompt : roleOrPromptId;
+    const prompt = PROMPTS[promptId];
+    if (prompt === undefined) {
+      throw new Error(`No prompt template for "${promptId}".`);
     }
+    return prompt;
   }
 
   // served through the registry, not the template, so anchor wording can be swapped without touching orchestrator code
@@ -44,31 +69,27 @@ export class ModelRegistry {
 
   public getValidModels(): Array<string>
   {
-    var result = new Array<string>();
-     for (const [_, modelName] of Object.entries(this.modelsFile.roles)) {
-        if (this.definitions[modelName])
-          result.push(modelName)
-     }
-     return result;
+    const result = new Array<string>();
+    for (const def of Object.values(this.roleDefs)) {
+      if (this.definitions[def.model]) result.push(def.model);
+    }
+    return result;
   }
 
   public getRoles(): Array<string>
   {
-    var result = new Array<string>();
-     for (const [roleName, _] of Object.entries(this.modelsFile.roles)) {
-          result.push(roleName)
-     }
-     return result;
-  }
-    
-  public getValidModelForRole(role: string): string {
-    return this.roleAssignments[role];
+    return Object.keys(this.roleDefs);
   }
 
+  public getValidModelForRole(role: string): string {
+    return this.getRoleDefinition(role).model;
+  }
+
+  // a role's own tool whitelist wins; absent it, the role's model's `mcp` list is the fallback
   public getValidMcpServersForRole(role: string): string[] {
-    var modelName = this.roleAssignments[role];
-    var model = this.definitions[modelName];
-    return model.mcp || [];
+    const def = this.getRoleDefinition(role);
+    if (def.tools) return def.tools;
+    return this.definitions[def.model]?.mcp ?? [];
   }
 
   public getTimeoutForModel(name: string): number {
@@ -81,10 +102,13 @@ export class ModelRegistry {
     return this.definitions[name]?.iterationCap;
   }
 
+  // repoints an existing role's model (the /model command); other role fields are preserved. A brand-new
+  // role gets minimal defaults so the REPL can introduce one without a full record
   public assignRole(role: string, modelId: string): void {
     if (!this.definitions[modelId]) {
       throw new Error(`Model "${modelId}" is not defined in models.json`);
     }
-    this.roleAssignments[role] = modelId;
+    const existing = this.roleDefs[role] ?? { prompt: role, completion: "self-terminate" };
+    this.roleDefs[role] = { ...existing, model: modelId };
   }
 }
