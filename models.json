@@ -100,7 +100,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp", "filesagent", "excelagent"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     },
@@ -109,7 +109,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp", "turnresult"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "turnresult"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     },
@@ -140,7 +140,8 @@
       "completion": "self-terminate",
       "maxIterations": 16,
       "temperature": 0.2,
-      "dispatchable": false
+      "dispatchable": false,
+      "agents": ["filesagent", "excelagent"]
     },
     "workflow-orchestrator": {
       "model": "gemini-2.5-flash-lite-workflow-orchestrator",
@@ -148,7 +149,8 @@
       "completion": "structured-verdict",
       "maxIterations": 16,
       "temperature": 0.2,
-      "dispatchable": false
+      "dispatchable": false,
+      "agents": ["filesagent", "excelagent"]
     },
     "executor": {
       "model": "claude-haiku-4-5-executor",
@@ -157,6 +159,7 @@
       "maxIterations": 6,
       "temperature": 0.1,
       "dispatchable": true,
+      "agents": [],
       "dispatch": {
         "description": "Spawn the EXECUTOR sub-agent to perform exactly one mutation and report what it observed."
       }
@@ -167,13 +170,15 @@
       "completion": "self-terminate",
       "maxIterations": 6,
       "temperature": 0.2,
-      "dispatchable": false
+      "dispatchable": false,
+      "agents": []
     },
     "summarizer": {
       "model": "llama-fast",
       "prompt": "summarizer",
       "completion": "self-terminate",
-      "temperature": 0.2
+      "temperature": 0.2,
+      "agents": []
     },
     "evaluator": {
       "model": "gemini-2.5-flash-lite-evaluator",
@@ -183,6 +188,7 @@
       "temperature": 0.1,
       "tools": ["fsreadonly"],
       "dispatchable": true,
+      "agents": [],
       "dispatch": {
         "description": "Independently verify the turn's work against the original request; returns a structured PASS/FAIL/INCOMPLETE verdict.",
         "returns": {
@@ -203,6 +209,7 @@
       "temperature": 0.1,
       "tools": ["fsreadonly"],
       "dispatchable": true,
+      "agents": [],
       "dispatch": {
         "description": "Ask the FILES sub-agent about the workspace files. It reads (never writes) and reports what it found.",
         "returns": {
@@ -223,6 +230,7 @@
       "temperature": 0.1,
       "tools": ["excelreadonly"],
       "dispatchable": true,
+      "agents": [],
       "dispatch": {
         "description": "Ask the EXCEL sub-agent about workbooks in the workspace. It reads (never writes) and reports what it found.",
         "returns": {

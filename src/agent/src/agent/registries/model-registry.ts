@@ -85,6 +85,11 @@ export class ModelRegistry {
     return this.getRoleDefinition(role).model;
   }
 
+  // the roles this one may spawn as sub-agents; absent ⇒ none, which is what makes a leaf a leaf
+  public getAgentsForRole(role: string): string[] {
+    return this.getRoleDefinition(role).agents ?? [];
+  }
+
   // a role's own tool whitelist wins; absent it, the role's model's `mcp` list is the fallback
   public getValidMcpServersForRole(role: string): string[] {
     const def = this.getRoleDefinition(role);

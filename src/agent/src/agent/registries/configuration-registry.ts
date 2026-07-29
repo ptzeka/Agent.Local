@@ -49,6 +49,9 @@ export interface RoleDefinition {
   dispatchable?: boolean;
   // per-role tool whitelist; falls back to the model's own `mcp` list when omitted
   tools?: string[];
+  // OTHER roles this one may spawn as sub-agents, each mounted as `<role>__ask`. Separate axis from `tools`:
+  // that grants MCP servers, this grants agents. An empty/absent list makes the role a leaf — the recursion bound
+  agents?: string[];
   // the tool contract when this role is dispatched as a sub-agent
   dispatch?: RoleDispatch;
 }

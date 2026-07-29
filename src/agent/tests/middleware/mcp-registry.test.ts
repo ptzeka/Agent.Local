@@ -17,6 +17,8 @@ const stubModelsRegistry = {
   getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
   // no evaluator role → the evaluator seam is skipped, keeping these tests focused on the mount split
   getRoles: () => [],
+  // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
+  getAgentsForRole: () => [],
 } as unknown as ModelRegistry;
 
 // the middleware reads only the external mcp.json defs off config; no test mounts stdio servers, so empty is fine
@@ -80,6 +82,8 @@ describe("McpRegistryMiddleware", () => {
       getTimeoutForModel: () => 60000,
       getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
       getRoles: () => [],
+      // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
+      getAgentsForRole: () => [],
     } as unknown as ModelRegistry;
 
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
@@ -120,6 +124,8 @@ describe("McpRegistryMiddleware", () => {
       getTimeoutForModel: () => 60000,
       getRoleDefinition: () => ({ dispatchable: true }),
       getRoles: () => [],
+      // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
+      getAgentsForRole: () => [],
     } as unknown as ModelRegistry;
 
     const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
@@ -148,6 +154,8 @@ describe("McpRegistryMiddleware", () => {
       getValidMcpServersForRole: () => ["fsreadonly"],
       getTimeoutForModel: () => 60000,
       getRoles: () => ["orchestrator", "evaluator"],
+      // the evaluator seam is NOT an `agents` grant — the epilogue reaches it directly, so no role lists it
+      getAgentsForRole: () => [],
       getRoleDefinition: (role: string) =>
         role === "evaluator"
           ? { dispatchable: true, dispatch: { description: "verify", returns: { required: ["status"] } } }
@@ -175,5 +183,47 @@ describe("McpRegistryMiddleware", () => {
     await new McpRegistryMiddleware({ role: "evaluator" }).initialize(leafCtx, jest.fn(async () => {}));
     // the evaluator's own child run is a leaf — no evaluator seam, so it can't recursively self-judge
     expect(leafCtx.registry.get(McpRegistryToken).getClient("evaluator")).toBeUndefined();
+  });
+
+  test("a role's `agents` list mounts each granted role as <role>__ask; an empty list is a leaf", async () => {
+    // `agents` is the grant, separate from `tools`: depth is bounded by config, so a role granting none is a leaf
+    const agentAwareRegistry = {
+      getValidModelForRole: () => "m-orch",
+      getValidMcpServersForRole: () => ["fsreadonly"],
+      getTimeoutForModel: () => 60000,
+      getRoles: () => ["orchestrator", "filesagent", "notdispatchable"],
+      getAgentsForRole: (role: string) =>
+        role === "orchestrator" ? ["filesagent", "notdispatchable", "missingrole"] : [],
+      getRoleDefinition: (role: string) =>
+        role === "filesagent"
+          ? { dispatchable: true, dispatch: { description: "ask files", returns: { required: ["found"] } } }
+          : { dispatchable: false },
+    } as unknown as ModelRegistry;
+
+    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
+    const workspace: Workspace = { workspaceId: "ws-1", root: "/tmp/workspace", projectContext: null };
+    const mount = () =>
+      makeContext({
+        session,
+        workspace,
+        sandboxRoot: "/tmp/sandbox",
+        mcpRegistry: undefined,
+        modelsRegistry: agentAwareRegistry,
+        configurationRegistry: stubConfigurationRegistry,
+        sessionManager: stubSessionManager,
+      });
+
+    const granterCtx = mount();
+    await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(granterCtx, jest.fn(async () => {}));
+    const granted = granterCtx.registry.get(McpRegistryToken);
+    expect(granted.getClient("filesagent")).toBeDefined();
+    expect(granted.listTools().map((t) => t.name)).toContain("filesagent__ask");
+    // granted-but-ungrantable names drop out rather than throwing: not dispatchable, and not a role at all
+    expect(granted.getClient("notdispatchable")).toBeUndefined();
+    expect(granted.getClient("missingrole")).toBeUndefined();
+
+    const leafCtx = mount();
+    await new McpRegistryMiddleware({ role: "filesagent" }).initialize(leafCtx, jest.fn(async () => {}));
+    expect(leafCtx.registry.get(McpRegistryToken).getClient("filesagent")).toBeUndefined();
   });
 });
