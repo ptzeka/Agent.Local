@@ -7,7 +7,9 @@ import type { RoleDispatch } from "../registries/configuration-registry.js";
 import type { RuntimeContext } from "../runtime/types.js";
 import { SessionToken } from "../runtime/tokens.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
-import { parseDispatchResult, validateShape } from "../runners/policies/dispatch-result.js";
+
+// every role-agent advertises the same verb; the role's own `description` carries what it is for
+export const DISPATCH_TOOL = "ask" as const;
 
 // generic dispatch-as-a-tool: runs a dispatchable role as a fresh child and validates its answer against
 // the role's declared `returns`. The MCP call IS the contract gate — inputSchema gates the payload, `returns`
@@ -37,6 +39,8 @@ export class RoleDispatchLocalMcp extends LocalMcp {
             ask: { type: "string", description: "The full instruction / question for the sub-agent." },
           },
         },
+        // the role's declared `returns` IS the contract; LocalMcp.callTool gates the answer against it
+        outputSchema: dispatch.returns,
       },
       invoke: (args, cutoffscope) => this.run(args, cutoffscope.signal),
     });
@@ -46,8 +50,8 @@ export class RoleDispatchLocalMcp extends LocalMcp {
     this.scope.cancel("role-dispatch-shutdown");
   }
 
-  // builds a scratch child for the role, runs the one ask, then GATES the answer on the declared `returns`:
-  // JSON is the contract, defaults fill a flaky answer, and a shape violation surfaces as isError
+  // builds a scratch child for the role and runs the one ask; the answer's shape is NOT checked here —
+  // the descriptor's outputSchema makes that the client's job, so every server is gated the same way
   private async run(args: Record<string, unknown>, callSignal: AbortSignal): Promise<ToolExecutionResult> {
     const ask = String(args.ask ?? "");
     if (!ask) return { isError: true, content: "[dispatch-error] ask is required" };
@@ -93,10 +97,7 @@ export class RoleDispatchLocalMcp extends LocalMcp {
       }
     }
 
-    // the response gate: normalise to the declared shape, then flag any violation as an error result
-    const returns = this.dispatch.returns;
-    const record = parseDispatchResult(content, returns);
-    const violations = returns ? validateShape(record, returns) : [];
-    return { isError: !ok || violations.length > 0, content: JSON.stringify(record), usage };
+    // `ok` reflects only whether the child's run settled; the shape gate runs one layer up, in the client
+    return { isError: !ok, content, usage };
   }
 }

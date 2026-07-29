@@ -1,6 +1,7 @@
 import { CancellationToken } from "@agent-local/common/lifetime";
 import type { ToolDescriptor } from "./tooldescriptor.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
+import { enforceOutputContract } from "./output-contract.js";
 
 // invoke owns its domain errors and shapes them into a ToolExecutionResult so each server keeps its wording
 // cutoffscope cancels from a parent signal OR the server timeout, collapsing this call and all it spawns
@@ -36,6 +37,7 @@ export class LocalMcp implements Mcp {
       name: `${this.name}__${tool.descriptor.name}`,
       description: tool.descriptor.description,
       inputSchema: tool.descriptor.inputSchema,
+      outputSchema: tool.descriptor.outputSchema,
     }));
   }
 
@@ -62,7 +64,8 @@ export class LocalMcp implements Mcp {
           }
         }, this.timeout);
       }
-      return await tool.invoke(args, cutoff);
+      // the client owns the response gate, so a tool body never re-implements its own contract check
+      return enforceOutputContract(await tool.invoke(args, cutoff), tool.descriptor.outputSchema);
     } catch (err) {
       return {
         isError: true,

@@ -1,13 +1,15 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 
 import { CancellationToken } from "@agent-local/common/lifetime";
-import type { ToolDescriptor } from "./tooldescriptor.js";
+import type { ToolDescriptor, ToolOutputSchema } from "./tooldescriptor.js";
 import type { Mcp, ToolExecutionResult } from "./mcp.js";
+import { enforceOutputContract } from "./output-contract.js";
 
 // wraps one MCP server connection; stateless, returns POCO results for the caller to act on
 export class McpClient {
   private tools: ToolDescriptor[];
-  private readonly toolIndex = new Map<string, string>();
+  // keyed to the descriptor, not the bare name, so callTool can reach the declared response contract
+  private readonly toolIndex = new Map<string, ToolDescriptor>();
   private timeout?: number;
   constructor(
     private readonly serverName: string,
@@ -19,7 +21,7 @@ export class McpClient {
     this.tools = tools;
     this.timeout = timeout;
     for (const tool of tools) {
-      this.toolIndex.set(tool.name, tool.name);
+      this.toolIndex.set(tool.name, tool);
     }
     // self-disposal: nobody tracks clients for teardown, so the owning scope's signal is the lifecycle
     if (signal) {
@@ -46,6 +48,7 @@ export class McpClient {
       name: `${this.serverName}__${tool.name}`,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      outputSchema: tool.outputSchema,
     }));
   }
 
@@ -54,7 +57,8 @@ export class McpClient {
     args: Record<string, unknown>,
     signal?: AbortSignal
   ): Promise<ToolExecutionResult> {
-    if (!this.toolIndex.has(toolName)) {
+    const descriptor = this.toolIndex.get(toolName);
+    if (!descriptor) {
       return {
         isError: true,
         content: `Unknown tool "${toolName}" on server "${this.serverName}".`,
@@ -78,11 +82,11 @@ export class McpClient {
         { signal: cutoff.signal }
       );
 
-      const text = extractTextContent(response.content);
-      return {
-        isError: response.isError === true,
-        content: text,
-      };
+      // a spawned server is gated exactly like an in-process one: same helper, same wording
+      return enforceOutputContract(
+        { isError: response.isError === true, content: extractTextContent(response.content) },
+        descriptor.outputSchema
+      );
     } catch (err) {
       return {
         isError: true,
@@ -108,10 +112,12 @@ export class McpClient {
     signal?: AbortSignal
   ): Promise<McpClient> {
     const toolsResponse = await client.listTools();
+    // outputSchema is optional in the spec and absent on older servers, so it is read defensively
     const tools: ToolDescriptor[] = toolsResponse.tools.map((tool) => ({
       name: tool.name,
       description: tool.description ?? "",
       inputSchema: (tool.inputSchema ?? {}) as Record<string, unknown>,
+      outputSchema: (tool as { outputSchema?: ToolOutputSchema }).outputSchema,
     }));
 
     return new McpClient(serverName, client, tools, undefined, signal);

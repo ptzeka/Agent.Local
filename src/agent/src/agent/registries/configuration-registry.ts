@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentServerSettings } from "../../server/appsettings.js";
+import type { ToolOutputSchema } from "@agent-local/mcp/tooldescriptor";
 import type { McpServerDef } from "../runtime/middleware/external-mcp.js";
 
 export interface ModelDefinition {
@@ -18,13 +19,10 @@ export interface ModelDefinition {
 
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
 
-// the explicit shape a dispatchable role must return; enforced at the dispatch boundary AND advertised
-// in the dispatch tool's description, so the caller knows what it gets back (see finishDispatch).
-// per-property `default`/`enum` live inside `properties`; `report` templates the stamped-back line
-export interface RoleReturnsSchema {
-  required?: string[];
-  // per field: `{ enum?, default? }` — enum constrains validation, default fills a missing/unparseable field
-  properties?: Record<string, unknown>;
+// the explicit shape a dispatchable role must return; it IS the dispatch tool's `outputSchema`, so the
+// MCP client enforces it on every call and no tool body re-checks it. `report` is the one field the
+// client has no use for — it templates the line stamped back into the PARENT conversation
+export interface RoleReturnsSchema extends ToolOutputSchema {
   // template for the conversation line stamped after a dispatch settles; {field} / {field:upper} placeholders
   report?: string;
 }

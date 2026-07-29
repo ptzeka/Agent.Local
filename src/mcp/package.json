@@ -8,6 +8,7 @@
     ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
     "./tooldescriptor": { "types": "./dist/tooldescriptor.d.ts", "default": "./dist/tooldescriptor.js" },
     "./mcp": { "types": "./dist/mcp.d.ts", "default": "./dist/mcp.js" },
+    "./output-contract": { "types": "./dist/output-contract.d.ts", "default": "./dist/output-contract.js" },
     "./mcp-client": { "types": "./dist/mcp-client.d.ts", "default": "./dist/mcp-client.js" },
     "./local-mcp": { "types": "./dist/local-mcp.d.ts", "default": "./dist/local-mcp.js" },
     "./tool-server": { "types": "./dist/tool-server.d.ts", "default": "./dist/tool-server.js" }

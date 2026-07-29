@@ -2687,6 +2687,93 @@ parser/grammar version drift — possibly related to the stashed per-workspace
 
 **Done when:** `npm test -w @agent-local/codeindex` is green.
 
+### M9-4 · `LocalTool<Deps>` — tools are data, context is a constructor arg — `~0.5d` · P1
+[LocalTool](src/mcp/src/local-mcp.ts) declares `invoke(args, cutoffscope)` with
+no deps parameter, so any tool needing `RuntimeContext` must either close over
+it (a `create*LocalMcp` factory) or subclass `LocalMcp`. Both workarounds are in
+use, and the closure route grew a hand-rolled deps injector —
+`bindToolContext`/`SyntheticMcp`/`ToolContext`/`RichToolResult` in
+[synthetic-mcp/types.ts](src/agent/src/agent/synthetic-mcp/types.ts). The
+sibling `agent.tools` repo already solved this with `ServerTool<Deps>` +
+`McpToolServer<Deps>` (`mcp-tool-server/src/tool-server.ts`), whose own note
+reads *"behavior is configured through options, not subclassing"*. Port the
+shape, not the class — `McpToolServer` is a stdio host and `LocalMcp` must stay
+transport-free.
+- [ ] `LocalTool<Deps = void>`: add a third `deps: Deps` argument to `invoke`;
+      `LocalMcp<Deps = void>` takes `deps` as its third constructor arg and
+      passes it through `callTool`. Default `void` keeps every existing
+      zero-dep tool source-compatible.
+- [ ] Widen `descriptor` to `ToolDescriptor | (() => ToolDescriptor)`, resolved
+      in `listTools()`. This is the ONLY reason `ExecutorLocalMcp` overrides
+      `listTools` (live dispatch enum), so the thunk retires the subclass.
+- [ ] Convert the `create*LocalMcp` factories (fs, excel, subsessions, delay) to
+      module-level `LocalTool<Deps>` consts + `new LocalMcp(name, tools, deps)`.
+- [ ] Delete `bindToolContext`, `SyntheticMcp`, `ToolContext`, `RichToolResult`.
+- [ ] Rehome the two genuinely per-turn bindings (`DispatchTracker`,
+      `TurnResultSink`) by resolving them from `ctx.registry` at call time, so
+      `Deps` stays static and `TurnBindable`/`TurnBinding` can go.
+
+**Done when:** no synthetic server subclasses `LocalMcp` and no tool closes over
+its context; `grep "extends LocalMcp"` returns nothing.
+
+### M9-6 · One agent tool — collapse three spawn seams into a single call — `~1.5d` · P1
+A sub-agent is spawned three different ways —
+[session-manager.ts:229](src/agent/src/agent/session/session-manager.ts#L229)
+(detached), [executor-server.ts:147](src/agent/src/agent/synthetic-mcp/executor-server.ts#L147)
+(blocking, mutex), [role-dispatch-server.ts:51](src/agent/src/agent/synthetic-mcp/role-dispatch-server.ts#L51)
+(blocking, gated) — each hand-copying an 8-field `AgentRuntimeDeps` literal off
+`RuntimeContext` (dropping `eventing`/`streamOutput`) and each calling
+`finalize()` without `shutdown()`, so a child's scope is never cancelled on the
+happy path and its external MCP clients never self-dispose (latent only because
+no `mcp.json` is present today). Collapse to one rule: **an agent IS a tool —
+one call builds a child runtime, runs one ask, returns a shaped answer.**
+Depends on M9-4 (deps generic + descriptor thunk); the client-side shape gate it
+relies on landed with M9-5 (see [BACKLOG.DONE.md](BACKLOG.DONE.md)).
+- [ ] One module-level `agentTool: LocalTool<RuntimeContext>`: build via
+      `buildSubRuntime({ ...ctx, orchestratorRole: role }, refs)` — `RuntimeContext`
+      is already a superset of `AgentRuntimeDeps`, so the spread replaces all
+      three literals — then `dispatchAsync(ask)`, return
+      `ToolExecutionResult.usage` from `metricsTotals()`, and `shutdown({ mode:
+      "drain" })` in a `finally`. The `returns` gate is M9-5's, not this body's.
+- [ ] Mount one `new LocalMcp(role, [agentTool], ctx)` per dispatchable role in
+      the whitelist. Recursion guard collapses to one rule — a dispatchable role
+      mounts no agent tools — retiring the cap-0 coordinator in
+      [build-sub-runtime.ts:59](src/agent/src/agent/runtime/build-sub-runtime.ts#L59).
+- [ ] Delete `RoleDispatchLocalMcp` and `ExecutorLocalMcp` (its two decorations
+      — live tool enum, dispatch tracker — become the descriptor thunk and a
+      registry-resolved guard).
+- [ ] Delete `SessionManager`, `subsessions-server` + its tools,
+      `SubSessionCoordinator`, `ChildRuntime`, `SubRuntimeFactory`, the
+      `SubSessionNotification` seam, `SessionManagerMiddleware` (both
+      pipelines), `awaitSubSessions`/`awaitAllSubSessions`,
+      `rewireTurnWake`'s notification arm, and `includeSubSessions`.
+- [ ] Fix while collapsing: `mountExternal`'s `switch`
+      ([mcp-registry.ts:183](src/agent/src/agent/runtime/middleware/mcp-registry.ts#L183))
+      handles only `memomcp`, so `codemcp` — whitelisted for the executor role —
+      silently mounts nothing despite the middleware comment claiming both spawn.
+- [ ] Tests: a dispatched role returns a validated record; a child's usage lands
+      in the parent's `MetricsRegistry`; a turn abort collapses the child; a
+      dispatchable role advertises no agent tools.
+
+**Done when:** one code path builds a child runtime, `grep buildSubRuntime`
+shows a single call site, and no child is finalized without being shut down.
+
+**Blocked on one decision:** sub-sessions today can outlive their parent turn
+and report back through the inbox. This collapse makes every agent call
+blocking. Confirm nothing depends on detached children before deleting
+`SessionManager` — if something does, the fallback is a `detach: true`
+descriptor flag on the same tool rather than the separate seam. Note that
+[tool-caller.ts:14](src/agent/src/agent/runners/tool-caller.ts#L14) runs calls
+sequentially, so parallel fan-out needs M1-10 to survive this change.
+
+**Deliberately not doing:** moving sub-agents out-of-process. The registry holds
+`Mcp`, and both `LocalMcp` and `McpClient` implement it, so the orchestrator
+cannot tell an in-process server from a spawned one — a role can move from the
+synthetic mount to `mcp.json` later with no upstream change. Staying in-memory
+keeps free usage folding, the child→parent event bridge, the shared `agent.sqlite`
+handle, and zero spawn cost; the process split stays a per-agent deployment
+decision, not an architectural commitment.
+
 ---
 
 ## Open decisions — track, don't drift

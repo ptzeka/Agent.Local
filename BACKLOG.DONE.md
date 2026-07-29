@@ -14,6 +14,50 @@ Newest milestones first.
 
 ---
 
+## M9 — Consolidation follow-ups
+
+### M9-5 · MCP client enforces the declared response shape
+Response-shape validation lived in one tool body
+(`synthetic-mcp/role-dispatch-server.ts`), so only that seam got it — a stdio
+server declaring the same contract was unchecked, and a second dispatch tool
+would have had to re-implement it. The MCP call was already the contract gate
+for the payload (`inputSchema`); this closes the other half at the *client*, so
+every server, in-process or spawned, is held to its declared output.
+- [x] `ToolOutputSchema` + `outputSchema?` on
+      [ToolDescriptor](src/mcp/src/tooldescriptor.ts) — the
+      `properties`/`required`/`enum`/`default` subset `RoleReturnsSchema`
+      already used. `parseDispatchResult`/`validateShape` moved out of
+      `runners/policies/dispatch-result.ts` into
+      [output-contract.ts](src/mcp/src/output-contract.ts) as
+      `parseOutput`/`validateOutput`/`enforceOutputContract`; the agent layer
+      keeps only `renderReport`/`stampReport`.
+- [x] Enforced in BOTH `Mcp` implementations' `callTool` —
+      [LocalMcp](src/mcp/src/local-mcp.ts) and
+      [McpClient](src/mcp/src/mcp-client.ts) — through that one helper. A
+      conforming body is rewritten to the parsed record; a violation returns
+      `isError: true` listing the offending fields; an already-failed call keeps
+      the server's own wording. No `outputSchema` ⇒ byte-identical passthrough.
+      `McpClient` now indexes descriptors (not bare names) so `callTool` can
+      reach the contract, reads `outputSchema` defensively off the SDK's
+      `listTools` (optional in the spec, absent on older servers), and both
+      implementations advertise it through `listTools`.
+- [x] `RoleReturnsSchema extends ToolOutputSchema`, and
+      `RoleDispatchLocalMcp` declares `outputSchema: dispatch.returns` on its
+      descriptor — the role config stays the single source, and the tool body no
+      longer parses or validates its own answer.
+- [x] Tests: [output-contract.test.ts](src/mcp/src/tests/output-contract.test.ts)
+      — violation names the field, declared `default` fills a gap rather than
+      failing, prose/```json-fenced object still parses, usage survives the gate,
+      no `outputSchema` is untouched, plus `LocalMcp.callTool` end-to-end.
+
+**Done when:** a server that declares an `outputSchema` and returns a
+non-conforming body fails at the client, with no agent-layer code involved. ✔
+`@agent-local/mcp` 14/14 and `@agent-local/agent` 249/249 green.
+
+_created 2026-07-28 · updated 2026-07-28 · by ptzeka_
+
+---
+
 ## Hardening & consolidation sweep — 2026-07-02
 
 One-day pass driven by a full-repo scan (reusability / security / standard

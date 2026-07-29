@@ -7,7 +7,7 @@ import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthe
 import { TurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
-import { RoleDispatchLocalMcp } from "../../synthetic-mcp/role-dispatch-server.js";
+import { RoleDispatchLocalMcp, DISPATCH_TOOL } from "../../synthetic-mcp/role-dispatch-server.js";
 import { EVALUATOR_ROLE, EVALUATOR_SERVER_NAME, EVALUATE_TOOL } from "../../runners/evaluator-pass.js";
 import type { SubSessionCoordinator } from "../../runners/subsession.js";
 import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionManagerToken, SessionToken, WorkspaceToken } from "../tokens.js";
@@ -51,7 +51,9 @@ export class McpRegistryMiddleware implements IMiddleware {
       ctx,
       serverTimeout,
       // runs after SessionManagerMiddleware so subsession tools route to the live coordinator
-      ctx.registry.get(SessionManagerToken)
+      ctx.registry.get(SessionManagerToken),
+      // a coordinator may mount role-agents; a dispatchable role is a leaf and must not (the recursion guard)
+      modelsRegistry.getRoleDefinition(this.params.role).dispatchable ? undefined : modelsRegistry
     );
 
     await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx, validMcpClients);
@@ -76,8 +78,8 @@ export class McpRegistryMiddleware implements IMiddleware {
     const executorModel = modelsRegistry.getValidModelForRole(EXECUTOR_ROLE);
     const executorTimeout = modelsRegistry.getTimeoutForModel(executorModel);
     const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
-    // no coordinator: an executor must never spawn subsessions, so its seam keeps the "not available" error
-    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined);
+    // neither coordinator nor role-agents: an executor is a leaf, so its seam keeps the "not available" error
+    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined, undefined);
     registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
   }
 
@@ -95,15 +97,17 @@ export class McpRegistryMiddleware implements IMiddleware {
     );
   }
 
-  // synthetic servers are matched by name; any other name is looked up in mcp.json and spawned as a
-  // stdio server (codemcp, memomcp). A name in neither place drops out — the declared-but-unmounted
-  // semantics the executor relies on.
+  // synthetic servers are matched by name; any other name is either a dispatchable ROLE (mounted as a
+  // sub-agent tool) or looked up in mcp.json and spawned as a stdio server (codemcp, memomcp). A name in
+  // none of the three drops out — the declared-but-unmounted semantics the executor relies on.
   private async mountServers(
     registry: McpClientRegistry,
     serverNames: string[] | undefined,
     ctx: RuntimeContext,
     serverTimeout: number,
-    coordinator: SubSessionCoordinator | undefined
+    coordinator: SubSessionCoordinator | undefined,
+    // present ⇒ a whitelisted name may resolve to a role-agent; undefined on a leaf, which mounts none
+    dispatchRoles: ModelRegistry | undefined
   ): Promise<void> {
     const session = ctx.registry.get(SessionToken);
     const workspace = ctx.registry.get(WorkspaceToken);
@@ -158,9 +162,32 @@ export class McpRegistryMiddleware implements IMiddleware {
           // the seam is mounted once in mountExecutorSeam(); a whitelist entry here is declarative, so swallow it
           break;
         default:
-          await this.mountExternal(registry, mcp, externalDefs, ctx, serverTimeout, session);
+          // the whitelist entry IS the role name, so adding a sub-agent is a models.json record, never code here
+          if (!this.mountRoleAgent(registry, dispatchRoles, mcp, ctx)) {
+            await this.mountExternal(registry, mcp, externalDefs, ctx, serverTimeout, session);
+          }
       }
     }
+  }
+
+  // mounts a whitelisted name that resolves to a dispatchable role as `<role>__ask`: one call runs that role
+  // as a fresh child and gates its answer on the role's `returns`. Returns false when the name is not a
+  // role-agent, so the caller falls through to the mcp.json lookup.
+  private mountRoleAgent(
+    registry: McpClientRegistry,
+    dispatchRoles: ModelRegistry | undefined,
+    name: string,
+    ctx: RuntimeContext
+  ): boolean {
+    if (!dispatchRoles || !dispatchRoles.getRoles().includes(name)) return false;
+    const role = dispatchRoles.getRoleDefinition(name);
+    if (!role.dispatchable || !role.dispatch) return false;
+    const timeout = dispatchRoles.getTimeoutForModel(dispatchRoles.getValidModelForRole(name));
+    registry.registerClient(
+      new RoleDispatchLocalMcp(ctx, name, role.dispatch, name, DISPATCH_TOOL).setTimeout(timeout)
+    );
+    ctx.logger?.debug("mcp role-agent mounted", { role: name });
+    return true;
   }
 
   // spawns a stdio server from its mcp.json definition; a failed spawn is logged and skipped so one

@@ -255,10 +255,8 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined, true).build();
   boot.registerRuntime(runtime);
 
-  // surface sub-sessions that report back out-of-band between turns
-  const unsubscribe = runtime.onSubSessionEvent((notification) =>
-    process.stdout.write(formatSubSessionNotification(notification))
-  );
+  // sub-session reports are the REPL's to render: it subscribes through ScreenLayout, the sole TTY writer.
+  // a second raw write here would desync readline's row count and the next repaint's erase would eat the line
   try {
     await runRepl({
       workspaceRoot: projectRoot,
@@ -267,7 +265,6 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
       resumed: choice.kind === "resume",
     });
   } finally {
-    unsubscribe();
     // bounded drain (escalates to abort on expiry) so a hung child can't wedge the process
     await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });
   }
@@ -289,9 +286,10 @@ async function runHeadless(
     const runtime = await buildRuntime(boot, eventing, sessionId).build();
     boot.registerRuntime(runtime);
 
+    // to stderr with the rest of the progress output, so stdout stays reserved for the final answer
     const unsubscribe = runtime.onSubSessionEvent((notification) =>
-    process.stdout.write(formatSubSessionNotification(notification))
-  );
+      process.stderr.write(formatSubSessionNotification(notification))
+    );
 
     process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 

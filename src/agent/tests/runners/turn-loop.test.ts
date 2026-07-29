@@ -22,7 +22,7 @@ import { ModelCaller } from "../../src/agent/runners/model-caller.js";
 import { ToolCaller } from "../../src/agent/runners/tool-caller.js";
 import { Turn } from "../../src/agent/runners/turn.js";
 import { runEvaluatorPass, EVALUATOR_SERVER_NAME } from "../../src/agent/runners/evaluator-pass.js";
-import { validateShape } from "../../src/agent/runners/policies/dispatch-result.js";
+import { validateOutput } from "@agent-local/mcp/output-contract";
 import { resolveTurnProfile, type TurnProfile } from "../../src/agent/runners/turn-profile.js";
 import {
   AcceptFirstReplyCompletion,
@@ -792,18 +792,18 @@ describe("runEvaluatorPass (terminal pass)", () => {
   });
 });
 
-describe("validateShape", () => {
+describe("validateOutput", () => {
   const schema = {
     required: ["status", "reason"],
     properties: { status: { enum: ["pass", "fail", "incomplete"] } },
   };
 
   test("a well-formed value has no violations", () => {
-    expect(validateShape({ status: "pass", reason: "ok" }, schema)).toEqual([]);
+    expect(validateOutput({ status: "pass", reason: "ok" }, schema)).toEqual([]);
   });
 
   test("flags a missing required field and an out-of-enum value", () => {
-    const violations = validateShape({ status: "maybe" }, schema);
+    const violations = validateOutput({ status: "maybe" }, schema);
     expect(violations.some((m) => m.includes("reason"))).toBe(true);
     expect(violations.some((m) => m.includes("status"))).toBe(true);
   });

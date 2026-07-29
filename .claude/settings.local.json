@@ -16,7 +16,10 @@
       "Bash(sed -n 1-10p /Applications/WWW/Agent.Local/src/host/src/index.ts)",
       "Bash(echo \"exit=$?\")",
       "Bash(node -e \"require\\('/Applications/WWW/Agent.Local/node_modules/tree-sitter-c-sharp'\\); console.log\\('csharp grammar loads'\\)\")",
-      "Bash(npm test *)"
+      "Bash(npm test *)",
+      "mcp__codemcp__locate_code",
+      "mcp__codemcp__get_symbol",
+      "mcp__codemcp__locate_file"
     ]
   }
 }

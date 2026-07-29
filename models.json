@@ -100,7 +100,7 @@
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
       "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "subsessions", "delaymcp", "memomcp", "filesagent", "excelagent"],
       "toolTimeoutMs": 600000,
       "iterationCap": 16
     },
@@ -192,6 +192,46 @@
             "reason": { "type": "string", "default": "evaluator returned no parseable verdict; defaulting to pass" }
           },
           "report": "EVALUATOR: {status:upper} — {reason}"
+        }
+      }
+    },
+    "filesagent": {
+      "model": "gemini-2.5-flash-lite-coder",
+      "prompt": "executor",
+      "completion": "tool-evidence",
+      "maxIterations": 6,
+      "temperature": 0.1,
+      "tools": ["fsreadonly"],
+      "dispatchable": true,
+      "dispatch": {
+        "description": "Ask the FILES sub-agent about the workspace files. It reads (never writes) and reports what it found.",
+        "returns": {
+          "required": ["found", "summary"],
+          "properties": {
+            "found": { "enum": ["yes", "no"], "default": "no" },
+            "summary": { "type": "string", "default": "the files agent returned no parseable answer" }
+          },
+          "report": "FILES: {found:upper} — {summary}"
+        }
+      }
+    },
+    "excelagent": {
+      "model": "gemini-2.5-flash-lite-coder",
+      "prompt": "executor",
+      "completion": "tool-evidence",
+      "maxIterations": 6,
+      "temperature": 0.1,
+      "tools": ["excelreadonly"],
+      "dispatchable": true,
+      "dispatch": {
+        "description": "Ask the EXCEL sub-agent about workbooks in the workspace. It reads (never writes) and reports what it found.",
+        "returns": {
+          "required": ["found", "summary"],
+          "properties": {
+            "found": { "enum": ["yes", "no"], "default": "no" },
+            "summary": { "type": "string", "default": "the excel agent returned no parseable answer" }
+          },
+          "report": "EXCEL: {found:upper} — {summary}"
         }
       }
     }
