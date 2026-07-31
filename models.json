@@ -2,23 +2,20 @@
   "$schema": "./models.schema.json",
 
   "//": [
-    "Each entry under `models` is an addressable model the agent can talk to.",
-    "Each entry under `roles` maps a logical role onto one of those models.",
+    "`models` is PURE model configuration: how to reach a model and what it can natively do.",
+    "Nothing about how a role USES the model lives here — one entry per real model, so the same",
+    "model backing three roles is one entry, not three.",
+    "`roles` is where usage lives: which model, which prompt/completion contract, and the role's",
+    "own knobs — `mcp` (server whitelist), `toolTimeoutMs`, `maxIterations`, `temperature`, `agents`.",
     "Roles: `orchestrator` (coordinates, read-only tools + dispatch_executor) and",
     "`executor` (the only role allowed to mutate state). Legacy names",
     "`coder` and `planner` are still accepted and alias to `orchestrator`.",
     "`reranker` names the model memomcp uses to re-rank recall(rank=true) results;",
     "it is not a chat role, so the agent's LLM provider registry skips it.",
     "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`.",
-    "`mcp` is an optional per-model list of MCP server names (e.g. `fsmcp`, `codemcp`)",
-    "the model can access. It layers on top of the role split: a model only sees",
-    "tools from servers that are both role-appropriate AND listed here. Omit the key",
-    "for no restriction; an empty array advertises zero tools.",
     "`fsreadonly`/`excelreadonly` are inspection-only mounts of the same servers:",
-    "give them to orchestrator-role models so the read-only contract is ENFORCED",
-    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor models.",
-    "`iterationCap` is an optional per-model override of the role's iteration cap;",
-    "omit it to fall back to maxExecutorIterationsPerAsk / maxOrchestratorIterations."
+    "give them to orchestrator-role roles so the read-only contract is ENFORCED",
+    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor roles."
   ],
 
   "models": {
@@ -26,138 +23,83 @@
       "provider": "ollama",
       "model": "qwen3-coder:30b-a3b-q4_K_M",
       "supportsTools": true,
-      "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available.",
-      "mcp": ["fsmcp", "codemcp", "excel"],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 6
+      "description": "Strong 30B coding model with native Ollama tool calling. NOTE: ~18 GB — overflows a 16 GB GPU and crashes llama-server at CUDA init; use qwen-coder-14b until more VRAM is available."
     },
     "qwen-coder-14b": {
       "provider": "ollama",
       "model": "qwen2.5-coder:14b",
       "supportsTools": true,
-      "description": "Coder model that fits in 16 GB VRAM (~9 GB). Default executor; replaces qwen3-coder:30b which overflows the GPU.",
-      "mcp": ["fsmcp", "codemcp", "excel", "delaymcp"],
-      "toolTimeoutMs": 600000,
-      "iterationCap": 6
+      "description": "Coder model that fits in 16 GB VRAM (~9 GB); replaces qwen3-coder:30b which overflows the GPU."
     },
     "deepseek-r1": {
       "provider": "ollama",
       "model": "deepseek-r1:14b",
       "supportsTools": false,
       "reasoning": true,
-      "description": "Reasoning-focused model. Available for orchestrator if you prefer planning depth over tool reliability; <think> blocks are stripped before handoff.",
-      "mcp": ["fsreadonly", "codemcp"],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
+      "description": "Reasoning-focused model. Planning depth over tool reliability; <think> blocks are stripped before handoff."
     },
     "llama-fast": {
       "provider": "ollama",
       "model": "gemma3:4b",
       "supportsTools": true,
-      "description": "Small, quick model for summarization and lightweight follow-ups.",
-      "mcp": [],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
+      "description": "Small, quick model for summarization and lightweight follow-ups."
     },
     "claude-haiku-4-5": {
       "provider": "anthropic",
       "model": "claude-haiku-4-5-20251001",
       "supportsTools": true,
-      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable judge — used for the evaluator/completion gate. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
-    },
-    "claude-haiku-4-5-executor": {
-      "provider": "anthropic",
-      "model": "claude-haiku-4-5-20251001",
-      "supportsTools": true,
-      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast, reliable executor — runs one mutation per dispatch. Output $5. Requires ANTHROPIC_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel"],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
+      "description": "Anthropic Claude Haiku 4.5 (cloud). Fast and reliable. Output $5. Requires ANTHROPIC_API_KEY."
     },
     "gemini-3.1-flash-lite": {
       "provider": "gemini",
       "model": "gemini-3.1-flash-lite",
       "supportsTools": true,
-      "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing.. Output $1.50. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "codemcp", "excelreadonly", "subsessions"],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
+      "description": "Google most cost-efficient model, optimized for high-volume agentic tasks, translation, and simple data processing. Output $1.50. Requires GEMINI_API_KEY."
     },
-    "gemini-2.5-flash-lite-coder": {
+    "gemini-2.5-flash-lite": {
       "provider": "gemini",
       "model": "gemini-2.5-flash-lite",
       "supportsTools": true,
-      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
-      "toolTimeoutMs": 600000,
-      "iterationCap": 6
-    },
-    "gemini-2.5-flash-lite-orchestrator": {
-      "provider": "gemini",
-      "model": "gemini-2.5-flash-lite",
-      "supportsTools": true,
-      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp"],
-      "toolTimeoutMs": 600000,
-      "iterationCap": 16
-    },
-    "gemini-2.5-flash-lite-workflow-orchestrator": {
-      "provider": "gemini",
-      "model": "gemini-2.5-flash-lite",
-      "supportsTools": true,
-      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "turnresult"],
-      "toolTimeoutMs": 600000,
-      "iterationCap": 16
-    },
-    "gemini-2.5-flash-lite-executor": {
-      "provider": "gemini",
-      "model": "gemini-2.5-flash-lite",
-      "supportsTools": true,
-      "description": "Executor binding for gemini-2.5-flash-lite: WRITE mounts (fsmcp/excel) so a dispatch can actually mutate state. Deliberately omits `executor` so the executor cannot dispatch to itself.",
-      "mcp": ["fsmcp", "codemcp", "excel"],
-      "toolTimeoutMs": 600000,
-      "iterationCap": 6
-    },
-    "gemini-2.5-flash-lite-evaluator": {
-      "provider": "gemini",
-      "model": "gemini-2.5-flash-lite",
-      "supportsTools": true,
-      "description": "Evaluator/judge binding: tool-free (mcp:[]) — runs the terminal PASS|FAIL|INCOMPLETE verdict pass, reading the transcript only. Output $0.40. Requires GEMINI_API_KEY.",
-      "mcp": [],
-      "toolTimeoutMs": 60000,
-      "iterationCap": 16
+      "description": "Google smallest and most cost effective model, built for at scale usage. Output $0.40. Requires GEMINI_API_KEY."
     }
   },
+
   "summaryWordThreshold": 2,
+
   "roles": {
     "orchestrator": {
-      "model": "gemini-2.5-flash-lite-orchestrator",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Coordinates the turn: read-only mounts plus the executor dispatch seam.",
       "prompt": "orchestrator",
       "completion": "self-terminate",
       "maxIterations": 16,
       "temperature": 0.2,
+      "toolTimeoutMs": 600000,
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "subsessions"],
       "dispatchable": false,
       "agents": ["filesagent", "excelagent"]
     },
     "workflow-orchestrator": {
-      "model": "gemini-2.5-flash-lite-workflow-orchestrator",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Orchestrator variant for headless workflow runs; mounts turnresult so the turn settles on a structured verdict.",
       "prompt": "orchestrator",
       "completion": "structured-verdict",
       "maxIterations": 16,
       "temperature": 0.2,
+      "toolTimeoutMs": 600000,
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "turnresult"],
       "dispatchable": false,
       "agents": ["filesagent", "excelagent"]
     },
     "executor": {
-      "model": "claude-haiku-4-5-executor",
+      "model": "claude-haiku-4-5",
+      "description": "The only role allowed to mutate state; WRITE mounts, and deliberately no `executor` server so it cannot dispatch to itself.",
       "prompt": "executor",
       "completion": "tool-evidence",
       "maxIterations": 6,
       "temperature": 0.1,
+      "toolTimeoutMs": 60000,
+      "mcp": ["fsmcp", "codemcp", "excel"],
       "dispatchable": true,
       "agents": [],
       "dispatch": {
@@ -165,28 +107,36 @@
       }
     },
     "coder": {
-      "model": "gemini-2.5-flash-lite-coder",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Legacy orchestrator alias with write mounts.",
       "prompt": "orchestrator",
       "completion": "self-terminate",
       "maxIterations": 6,
       "temperature": 0.2,
+      "toolTimeoutMs": 600000,
+      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
       "dispatchable": false,
       "agents": []
     },
     "summarizer": {
       "model": "llama-fast",
+      "description": "Compacts the conversation prefix once it grows past summarizeAtMessages.",
       "prompt": "summarizer",
       "completion": "self-terminate",
       "temperature": 0.2,
+      "toolTimeoutMs": 60000,
+      "mcp": [],
       "agents": []
     },
     "evaluator": {
-      "model": "gemini-2.5-flash-lite-evaluator",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Terminal judge: reads the transcript and returns PASS/FAIL/INCOMPLETE.",
       "prompt": "evaluator",
       "completion": "self-terminate",
       "maxIterations": 8,
       "temperature": 0.1,
-      "tools": ["fsreadonly"],
+      "toolTimeoutMs": 60000,
+      "mcp": ["fsreadonly"],
       "dispatchable": true,
       "agents": [],
       "dispatch": {
@@ -202,12 +152,14 @@
       }
     },
     "filesagent": {
-      "model": "gemini-2.5-flash-lite-coder",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Read-only workspace file lookups on behalf of a coordinator.",
       "prompt": "executor",
       "completion": "tool-evidence",
       "maxIterations": 6,
       "temperature": 0.1,
-      "tools": ["fsreadonly"],
+      "toolTimeoutMs": 600000,
+      "mcp": ["fsreadonly"],
       "dispatchable": true,
       "agents": [],
       "dispatch": {
@@ -223,12 +175,14 @@
       }
     },
     "excelagent": {
-      "model": "gemini-2.5-flash-lite-coder",
+      "model": "gemini-2.5-flash-lite",
+      "description": "Read-only workbook lookups on behalf of a coordinator.",
       "prompt": "executor",
       "completion": "tool-evidence",
       "maxIterations": 6,
       "temperature": 0.1,
-      "tools": ["excelreadonly"],
+      "toolTimeoutMs": 600000,
+      "mcp": ["excelreadonly"],
       "dispatchable": true,
       "agents": [],
       "dispatch": {
@@ -246,12 +200,7 @@
   },
 
   "orchestration": {
-    "maxOrchestratorIterations": 4,
     "maxExecutorDispatchesPerTurn": 8,
-    "maxExecutorIterationsPerAsk": 4,
-    "orchestratorTemperature": 0.2,
-    "executorTemperature": 0.1,
-    "evaluatorTemperature": 0.1,
     "evaluatorEnabled": true,
     "summarizeAtMessages": 30,
     "summarizerKeepLastN": 8

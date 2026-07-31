@@ -30,6 +30,7 @@ import {
   ToolEvidenceCompletion,
   selectCompletionPolicy,
 } from "../../src/agent/runners/policies/completion.js";
+import type { ExecutedTurn } from "../../src/agent/runners/input-inbox.js";
 import { MemoryContributor } from "../../src/agent/runners/policies/memory-contributor.js";
 import { SnapshotContextProvider } from "../../src/agent/runners/policies/snapshot-context-provider.js";
 import { SummarizeCompaction } from "../../src/agent/runners/policies/summarize-compaction.js";
@@ -88,12 +89,7 @@ function makeConfig(overrides: Partial<ModelsFile["orchestration"]> = {}): Model
     roles: {},
     orchestration: {
       evaluatorEnabled: false,
-      evaluatorTemperature: 0,
-      orchestratorTemperature: 0.2,
-      executorTemperature: 0.1,
       maxExecutorDispatchesPerTurn: 10,
-      maxOrchestratorIterations: 16,
-      maxExecutorIterationsPerAsk: 6,
       // high enough that compaction never fires unless a test lowers it
       summarizeAtMessages: 100,
       summarizerKeepLastN: 2,
@@ -121,6 +117,10 @@ interface HarnessOptions {
   signal?: AbortSignal;
   contextSnapshot?: ContextSnapshot;
   config?: ModelsFile;
+  // the cap in the fake role record; the loop reads it off the role now, not off orchestration config
+  maxIterations?: number;
+  // stands in for the inbox's executed ledger: non-null makes the drained request a replay
+  executed?: ExecutedTurn | null;
 }
 
 interface TurnOverrides {
@@ -141,6 +141,7 @@ interface Harness {
   callTool: jest.Mock;
   config: ModelsFile;
   inbox: string[];
+  recorded: ExecutedTurn[];
   makeTurn: (overrides?: TurnOverrides) => Turn;
 }
 
@@ -203,11 +204,12 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
       // the auxiliary models resolve through the same seam, so the role decides which fake answers
       getProviderForRole: (role: string) =>
         role === "evaluator" || role === "summarizer" ? "judge-model" : "main-model",
-      getIterationCapForModel: () => undefined,
       // a tooled evaluator triggers the sub-agent path; every other role stays tool-free here
       getValidMcpServersForRole: (role: string) =>
         role === "evaluator" ? opts.evaluatorTools ?? [] : [],
-      // the record a real models.json would carry; caps/temps derive from config so tests can drive them
+      // no role-agent grants: these tests drive the loop, not the sub-agent mount
+      getAgentsForRole: () => [],
+      // the record a real models.json would carry; the role owns its caps/temps/tools now
       getRoleDefinition: (role: string) => {
         if (role === "evaluator") {
           return {
@@ -215,7 +217,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
             prompt: "evaluator",
             completion: "self-terminate",
             dispatchable: true,
-            tools: opts.evaluatorTools,
+            mcp: opts.evaluatorTools,
             dispatch: {
               description: "verify",
               returns: {
@@ -239,12 +241,8 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
             : opts.turnResultMounted
               ? "structured-verdict"
               : "self-terminate",
-          maxIterations: isExec
-            ? config.orchestration.maxExecutorIterationsPerAsk ?? 6
-            : config.orchestration.maxOrchestratorIterations ?? 16,
-          temperature: isExec
-            ? config.orchestration.executorTemperature
-            : config.orchestration.orchestratorTemperature,
+          maxIterations: opts.maxIterations ?? (isExec ? 6 : 16),
+          temperature: isExec ? 0.1 : 0.2,
           dispatchable: isExec,
         };
       },
@@ -263,6 +261,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
   } as unknown as AgentRuntimeQueryable;
 
   const inbox = [...(opts.inbox ?? [])];
+  const recorded: ExecutedTurn[] = [];
   const ctx: RunnerContext = {
     // contextHashes present for every role so the context provider resolves a snapshot
     session: { sessionId: "s1", contextHashes: { orchestrator: "h", executor: "h" } },
@@ -272,8 +271,15 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     registry: {},
     runtime,
     hasPending: () => inbox.length > 0,
-    // FIFO to mirror the real InputInbox.dequeue
-    pullInjectedPrompt: () => inbox.shift() ?? "",
+    // FIFO to mirror the real InputInbox.dequeue, which now hands back the fingerprinted item
+    pullInjectedPrompt: () => {
+      const content = inbox.shift();
+      return content === undefined
+        ? null
+        : { content, fingerprint: `fp:${content}`, source: "user" };
+    },
+    executedRecord: () => opts.executed ?? null,
+    recordExecuted: (_item, record) => recorded.push(record),
   } as unknown as RunnerContext;
 
   const makeTurn = (overrides: TurnOverrides = {}): Turn => {
@@ -295,7 +301,7 @@ function makeHarness(opts: HarnessOptions = {}): Harness {
     return turn;
   };
 
-  return { ctx, conversation, events, chat, callTool, config, inbox, makeTurn };
+  return { ctx, conversation, events, chat, callTool, config, inbox, recorded, makeTurn };
 }
 
 function eventTypes(h: Harness): string[] {
@@ -308,10 +314,9 @@ function eventTypes(h: Harness): string[] {
 
 describe("resolveTurnProfile", () => {
   // a fake registry serving one role record, so the test drives the profile purely from data
-  const registryFor = (def: Partial<RoleDefinition>, modelCap?: number): ModelRegistry =>
+  const registryFor = (def: Partial<RoleDefinition>): ModelRegistry =>
     ({
       getRoleDefinition: () => ({ model: "m", prompt: "p", completion: "self-terminate", ...def }),
-      getIterationCapForModel: () => modelCap,
     }) as unknown as ModelRegistry;
 
   test("a coordinator role binds, runs the evaluator pass, and takes its declared cap/temp/completion", () => {
@@ -357,14 +362,14 @@ describe("resolveTurnProfile", () => {
     });
   });
 
-  test("a model's own iteration cap wins over the role's declared cap", () => {
+  test("a role with no declared cap falls back to the floor", () => {
     const profile = resolveTurnProfile({
       role: "orchestrator",
       config: makeConfig(),
-      modelsRegistry: registryFor({ maxIterations: 16 }, 3),
+      modelsRegistry: registryFor({}),
     });
 
-    expect(profile.maxIterations).toBe(3);
+    expect(profile.maxIterations).toBe(16);
   });
 });
 
@@ -892,10 +897,9 @@ describe("TurnLoop.run", () => {
   });
 
   test("hitting the iteration cap returns capped with the truncation notice on record", async () => {
-    const config = makeConfig({ maxOrchestratorIterations: 2 });
     const h = makeHarness({
       inbox: ["do X"],
-      config,
+      maxIterations: 2,
       // always a tool call, so the loop can never reach a completion verdict
       chatResponse: chatReply("", [TOOL_CALL]),
     });
@@ -958,10 +962,9 @@ describe("TurnLoop.run", () => {
   });
 
   test("structured mode never settles on prose: it nudges for report_result until the cap", async () => {
-    const config = makeConfig({ maxOrchestratorIterations: 2 });
     const h = makeHarness({
       inbox: ["do X"],
-      config,
+      maxIterations: 2,
       turnResultMounted: true,
       chatResponse: chatReply("all done, trust me"),
     });
@@ -1015,5 +1018,99 @@ describe("TurnLoop.run", () => {
 
     const sent = h.chat.mock.calls[0]![0] as ChatMessage[];
     expect(sent[0]).toEqual({ role: "system", content: "REPLACED PREFIX" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Budget ceilings — a breach ends the turn deterministically
+// ---------------------------------------------------------------------------
+
+describe("TurnLoop budget stop", () => {
+  // the cutoff cancelled before the loop starts: the same state the counter middleware produces mid-turn
+  function budgetAborted(): AbortSignal {
+    const controller = new AbortController();
+    controller.abort({ kind: "budget-exceeded", detail: "session token ceiling reached (10/10)" });
+    return controller.signal;
+  }
+
+  test("ends budget-capped instead of throwing, and never calls the model", async () => {
+    const h = makeHarness({ inbox: ["do X"], signal: budgetAborted() });
+
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(result.outcome).toBe("budget-capped");
+    expect(h.chat).not.toHaveBeenCalled();
+  });
+
+  test("the reason reaches the transcript, so the record says WHY the turn stopped", async () => {
+    const h = makeHarness({ inbox: ["do X"], signal: budgetAborted() });
+
+    await new TurnLoop("orchestrator").run(h.ctx);
+
+    const last = h.conversation.getMessages().at(-1)!;
+    expect(last.content).toContain("session token ceiling");
+    expect(last.content).toContain("maxTokensPerTurn");
+  });
+
+  test("a user stop is still a thrown abort, never a budget stop", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const h = makeHarness({ inbox: ["do X"], signal: controller.signal });
+
+    await expect(new TurnLoop("orchestrator").run(h.ctx)).rejects.toThrow("user requested stop");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Idempotency — an already-executed request is answered from the record
+// ---------------------------------------------------------------------------
+
+describe("TurnLoop idempotency", () => {
+  const settled: ExecutedTurn = {
+    turnId: "t-earlier",
+    outcome: "satisfied",
+    finalContent: "already answered that",
+    finishedAt: Date.now(),
+  };
+
+  test("a replay returns the recorded outcome with zero model and tool calls", async () => {
+    const h = makeHarness({ inbox: ["child A finished"], executed: settled });
+
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(result.outcome).toBe("satisfied");
+    expect(result.finalMessage.content).toBe("already answered that");
+    expect(result.iterations).toBe(0);
+    expect(h.chat).not.toHaveBeenCalled();
+    expect(h.callTool).not.toHaveBeenCalled();
+  });
+
+  test("a replay consumes the queued prompt, so the pump cannot spin on it", async () => {
+    const h = makeHarness({ inbox: ["child A finished"], executed: settled });
+
+    await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(h.inbox).toHaveLength(0);
+  });
+
+  test("a replay writes nothing to the transcript — the work is already on record", async () => {
+    const h = makeHarness({ inbox: ["child A finished"], executed: settled });
+    const before = h.conversation.getMessages().length;
+
+    await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(h.conversation.getMessages()).toHaveLength(before);
+  });
+
+  test("a settled turn records what it executed, so the next replay can short-circuit", async () => {
+    const h = makeHarness({ inbox: ["do X"] });
+
+    const result = await new TurnLoop("orchestrator").run(h.ctx);
+
+    expect(h.recorded).toHaveLength(1);
+    expect(h.recorded[0]).toMatchObject({
+      outcome: result.outcome,
+      finalContent: result.finalMessage.content,
+    });
   });
 });

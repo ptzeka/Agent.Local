@@ -90,21 +90,13 @@ export class ModelRegistry {
     return this.getRoleDefinition(role).agents ?? [];
   }
 
-  // a role's own tool whitelist wins; absent it, the role's model's `mcp` list is the fallback
+  // the servers a role may mount; absent ⇒ none, so a role advertises tools only by declaring them
   public getValidMcpServersForRole(role: string): string[] {
-    const def = this.getRoleDefinition(role);
-    if (def.tools) return def.tools;
-    return this.definitions[def.model]?.mcp ?? [];
+    return this.getRoleDefinition(role).mcp ?? [];
   }
 
-  public getTimeoutForModel(name: string): number {
-    const model = this.definitions[name];
-    return model.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
-  }
-
-  // undefined when the model defers to the role default
-  public getIterationCapForModel(name: string): number | undefined {
-    return this.definitions[name]?.iterationCap;
+  public getTimeoutForRole(role: string): number {
+    return this.getRoleDefinition(role).toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS;
   }
 
   // repoints an existing role's model (the /model command); other role fields are preserved. A brand-new

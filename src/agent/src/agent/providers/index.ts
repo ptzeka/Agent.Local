@@ -1,6 +1,8 @@
 import { AnthropicProvider } from "./anthropic-provider.js";
 import { GeminiProvider } from "./gemini-provider.js";
 import { OllamaProvider } from "./ollama-provider.js";
+import { ResilientProvider } from "./resilient-provider.js";
+import type { ResiliencePolicy } from "../resilience.js";
 import type { LLMProvider } from "./provider.js";
 
 // plug in a new backend by adding a case below; the model registry calls createProvider per models.json entry
@@ -14,9 +16,17 @@ export interface ProviderFactoryInput {
   apiKey?: string;
   // falls back to apiKey when absent
   geminiApiKey?: string;
+  // when supplied every backend is wrapped, so resilience is a property of the PORT and a new case
+  // below inherits retry/backoff/breaker without containing any of it
+  resilience?: ResiliencePolicy;
 }
 
 export function createProvider(input: ProviderFactoryInput): LLMProvider {
+  const provider = buildProvider(input);
+  return input.resilience ? new ResilientProvider(provider, input.resilience) : provider;
+}
+
+function buildProvider(input: ProviderFactoryInput): LLMProvider {
   switch (input.provider) {
     case "ollama":
       return new OllamaProvider({

@@ -121,6 +121,17 @@ export class Turn {
     });
   }
 
+  // a request already answered: return the recorded outcome without assembling a turn, so a replay
+  // costs zero model calls and zero tool calls. Nothing is appended — the transcript already has the work
+  static replayOf(executed: { outcome: RunResult["outcome"]; finalContent: string }): RunResult {
+    return {
+      finalMessage: { role: "assistant", content: executed.finalContent },
+      iterations: 0,
+      dispatches: 0,
+      outcome: executed.outcome,
+    };
+  }
+
   // a wake whose inbox was already drained: nothing ran, so no turn is assembled and none is counted
   static idle(): RunResult {
     return {
@@ -198,6 +209,23 @@ export class Turn {
       iterations: this.iteration,
       dispatches: this.tracker.count,
       outcome,
+    };
+  }
+
+  // ends the turn on a token ceiling. NOT a failure and NOT a user cancel: the work was stopped by policy,
+  // so the notice goes on record and the outcome is its own tag the host can price rather than debug
+  async budgetCapped(detail: string): Promise<RunResult> {
+    const notice: ChatMessage = {
+      role: "assistant",
+      content: `ORCHESTRATOR: stopped — ${detail}. Raise maxTokensPerTurn/maxTokensPerSession in models.json or narrow the request.`,
+    };
+    this.conversation.append(notice);
+    await this.flush();
+    return {
+      finalMessage: notice,
+      iterations: this.iteration,
+      dispatches: this.tracker.count,
+      outcome: "budget-capped",
     };
   }
 

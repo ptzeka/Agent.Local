@@ -17,7 +17,7 @@ describe("InputInboxMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
 
     inbox!.push("s1", "hello");
-    expect(inbox!.dequeue("s1")).toBe("hello");
+    expect(inbox!.dequeue("s1")?.content).toBe("hello");
     expect(inbox!.hasPending("s1")).toBe(false);
   });
 
@@ -28,6 +28,6 @@ describe("InputInboxMiddleware", () => {
 
     const inbox = ctx.registry.get(InboxToken);
     expect(inbox.hasPending("s1")).toBe(false);
-    expect(inbox.dequeue("s1")).toBe("");
+    expect(inbox.dequeue("s1")).toBeNull();
   });
 });

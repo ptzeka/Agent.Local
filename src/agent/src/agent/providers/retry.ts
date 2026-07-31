@@ -7,13 +7,19 @@
 // the SDKs surface an HTTP status either as a numeric `.status` on the error or only inside the message JSON
 const TRANSIENT_STATUS = new Set([429, 500, 502, 503, 504]);
 
-export function isTransientError(err: unknown): boolean {
+// depth bound: a cause chain is walked, not trusted — a cyclic or pathological chain must not hang classification
+const MAX_CAUSE_DEPTH = 4;
+
+export function isTransientError(err: unknown, depth = 0): boolean {
   const status = (err as { status?: unknown })?.status;
   if (typeof status === "number" && TRANSIENT_STATUS.has(status)) return true;
   const message = err instanceof Error ? err.message : String(err);
   // fall back to the code/status string the providers embed in the error text when no numeric status is exposed
   if (/(^|\D)(429|500|502|503|504)(\D|$)/.test(message)) return true;
-  return /UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|overloaded/i.test(message);
+  if (/UNAVAILABLE|RESOURCE_EXHAUSTED|INTERNAL|overloaded/i.test(message)) return true;
+  // a port-level policy sees the provider's WRAPPED error, whose numeric status lives on the cause
+  const cause = (err as { cause?: unknown })?.cause;
+  return cause !== undefined && depth < MAX_CAUSE_DEPTH ? isTransientError(cause, depth + 1) : false;
 }
 
 export interface RetryOptions {

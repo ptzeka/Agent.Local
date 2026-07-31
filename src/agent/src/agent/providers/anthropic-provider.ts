@@ -71,32 +71,24 @@ export class AnthropicProvider implements LLMProvider {
 
     const startedAt = Date.now();
     let response;
-    // 529 overloaded / 429 / 5xx are transient "try again later" blips — retry with backoff instead of failing the
-    // turn. streaming carve-out: a re-run would re-fire text deltas, so once any has streamed we don't retry; only a
-    // clean pre-token failure is retried.
-    let hasStreamed = false;
+    // retry/backoff/breaker for transient 529/429/5xx live at the PORT (ResilientProvider), not here —
+    // including the streaming carve-out, which the port sees by wrapping the delta sink
     try {
-      response = await retryTransient(
-        async () => {
-          // stream so high max_tokens can't trip the SDK's non-streaming HTTP timeout
-          const stream = this.client.messages.stream(request, { signal: options.signal });
-          // forward text deltas live when a sink is supplied; finalMessage() still returns the whole
-          // message, so the persisted/append path stays byte-identical whether or not anyone is streaming
-          if (options.onDelta) {
-            stream.on("text", (textDelta) => {
-              hasStreamed = true;
-              options.onDelta!(textDelta);
-            });
-          }
-          return stream.finalMessage();
-        },
-        { signal: options.signal, shouldRetry: (err) => isTransientError(err) && !hasStreamed },
-      );
+      // stream so high max_tokens can't trip the SDK's non-streaming HTTP timeout
+      const stream = this.client.messages.stream(request, { signal: options.signal });
+      // forward text deltas live when a sink is supplied; finalMessage() still returns the whole
+      // message, so the persisted/append path stays byte-identical whether or not anyone is streaming
+      if (options.onDelta) {
+        stream.on("text", (textDelta) => options.onDelta!(textDelta));
+      }
+      response = await stream.finalMessage();
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      // cause preserved so the port can read the SDK's numeric status through this wrapper
       throw new Error(
         `Provider(anthropic:${this.modelId}) failed: ${errorMsg}. ` +
-        `Check that the API key is valid and the model "${this.modelId}" is available.`
+        `Check that the API key is valid and the model "${this.modelId}" is available.`,
+        { cause: err }
       );
     }
     const totalDurationMs = Date.now() - startedAt;

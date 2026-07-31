@@ -161,7 +161,10 @@ entries under `mcpServers`. The agent will auto-discover every tool they expose.
 
 ### `models.json`
 
-Declares the models you have available and which role each one plays:
+Two sections with a clean split. `models` is **pure model configuration** — how to
+reach a model and what it natively supports; one entry per real model. `roles` is
+**how a role uses one** — its prompt, completion contract, tool whitelist, timeout
+and caps. The same model backing three roles stays one entry:
 
 ```json
 {
@@ -170,14 +173,27 @@ Declares the models you have available and which role each one plays:
     "deepseek-r1": { "provider": "ollama", "model": "deepseek-r1:14b",   "supportsTools": false, "reasoning": true }
   },
   "roles": {
-    "planner": "deepseek-r1",
-    "coder":   "qwen-coder"
+    "orchestrator": {
+      "model": "deepseek-r1",
+      "prompt": "orchestrator", "completion": "self-terminate",
+      "maxIterations": 16, "temperature": 0.2, "toolTimeoutMs": 600000,
+      "mcp": ["fsreadonly", "executor"],
+      "dispatchable": false, "agents": ["filesagent"]
+    },
+    "executor": {
+      "model": "qwen-coder",
+      "prompt": "executor", "completion": "tool-evidence",
+      "maxIterations": 6, "temperature": 0.1,
+      "mcp": ["fsmcp", "codemcp"],
+      "dispatchable": true, "agents": [],
+      "dispatch": { "description": "Perform exactly one mutation and report what you observed." }
+    }
   }
 }
 ```
 
 Add a model: register it under `models`, then point a role at it.
-Swap a model at runtime: `/model coder=llama-fast` in the REPL.
+Swap a model at runtime: `/model executor=qwen-coder` in the REPL.
 
 ### `.env`
 

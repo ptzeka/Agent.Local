@@ -125,13 +125,85 @@ that the model whitelist would otherwise allow, enforced at mount time.
       `finally`) and fold it before re-throw.
 - [ ] Update the code comment in `session/session.ts` that documents the gap.
 
-### M1-3 · Budget ceilings — `~1d` · P1
-- [ ] `orchestration` config: `maxTokensPerTurn`, `maxTokensPerSession`
-      (0 = unlimited). Check after each accumulate; on breach, end the turn
-      deterministically with a new outcome `"budget-capped"` (mirror the
-      existing `"capped"` path in `runners/orchestrator.ts` ~L343).
-- [ ] Headless exit code for budget-capped (extend `cli/index.ts` codes).
-- [ ] Test: tiny budget + fake provider → loop stops with the right outcome.
+### M1-3 · Budget ceilings — token spend cancels the turn — `~1d` · P1
+> **Reframed (2026-07-30):** the original wording predates both the
+> `MetricsRegistry` and the runner refactor, and pointed at a
+> `runners/orchestrator.ts` that no longer exists. The accounting half is now
+> **done** — `TurnCounterMiddleware` folds own spend (`orchestrator-message`)
+> and delegated subtree spend (`tool-result`) into `MetricsRegistry`, whose
+> tally is seeded from the store and therefore already spans restarts
+> ([metrics-registry.ts:22](src/agent/src/agent/runtime/metrics/metrics-registry.ts#L22)).
+> What is missing is only the **ceiling and the stop**.
+
+The tally is read by nobody. A runaway turn (or a dispatch subtree that fans
+out) burns budget until `maxIterations` trips, which is an *iteration* bound,
+not a *cost* bound — a single turn with huge context can cost 50× another turn
+with the same iteration count.
+
+**Mechanism: a breach is a cancel, not a race** (per the cancellation rule in
+[AGENTS.MD](AGENTS.MD) — never race promises for a deadline; cancel the scope
+and let it collapse downward). The turn already has exactly the right seam:
+one signal minted per dispatch and threaded down.
+
+- [x] `orchestration` config: `maxTokensPerTurn`, `maxTokensPerSession`
+      (0 = unlimited, the default, so existing configs are unaffected).
+- [x] `AgentRuntime.beginTurn` ([agent-runtime.ts:160](src/agent/src/agent/runtime/agent-runtime.ts#L160))
+      wraps the incoming dispatch signal in a `CancellationToken`
+      (`@agent-local/common/lifetime`) and puts `token.signal` on the
+      `RunnerContext`. **Wrap, never replace** — cancelling cuts this turn and
+      everything below it (tool calls, child runtimes), never the parent.
+- [x] Enforce in `TurnCounterMiddleware`
+      ([turn-counter-middleware.ts](src/agent/src/agent/runners/middleware/turn-counter-middleware.ts))
+      — it is already the one subscriber that sees every usage fold, so the
+      check is three lines in the existing handler and needs **no new hook**:
+      after each `recordOwnUsage`/`recordDelegatedUsage`, compare
+      `metrics.totals()` against the two ceilings; on breach
+      `token.cancel(BUDGET_EXCEEDED)`.
+- [x] Distinguish the cancel from a user stop. `CancellationToken.cancel(reason)`
+      forwards to `AbortController.abort(reason)`, so the reason survives on
+      `signal.reason` even through the `AbortSignal.any` chain. `TurnLoop.iterate`
+      ([turn-loop.ts:101](src/agent/src/agent/runners/turn-loop.ts#L101)) and
+      `ToolCaller.run` currently throw a flat `"turn aborted: user requested stop"`
+      — branch on the reason and return a `budget-capped` result instead of
+      throwing, mirroring the `capped()` path
+      ([turn-loop.ts:181](src/agent/src/agent/runners/turn-loop.ts#L181)).
+- [x] Add `"budget-capped"` to the `RunResult.outcome` union
+      ([turn-loop.ts:29](src/agent/src/agent/runners/turn-loop.ts#L29)); it is an
+      *error* outcome like `capped` (session status `error`, not `awaiting-input`)
+      so a headless job cannot bank a half-finished turn as success. Extend the
+      `cli/index.ts` exit codes.
+- [x] Per-session ceiling must be checked against the **seeded** tally, not the
+      turn delta — that is what makes it survive a restart. Per-turn ceiling
+      needs a turn-start baseline (`totals()` snapshot in the middleware's
+      pre-hook), since the registry is cumulative.
+- [x] Surface the breach: a `WARNING`-class event carrying which ceiling tripped
+      and the totals, so the CLI can say *why* the turn stopped rather than
+      showing a bare cancel.
+- [x] Tests: (a) tiny `maxTokensPerTurn` + fake provider → outcome
+      `budget-capped`, transcript persisted, no throw; (b) a breach mid-tool-call
+      aborts the in-flight tool via the same signal; (c) a **user** cancel still
+      reports `cancelled`, not `budget-capped` (the reason-branch is not
+      swallowing user stops); (d) session ceiling trips on a resumed session
+      whose spend was seeded from the store.
+
+**Done when:** ~~…~~ — **met 2026-07-31**: a breach cancels the turn's cutoff with
+a `{ kind: "budget-exceeded" }` reason, the loop settles `budget-capped` instead of
+throwing, and a user stop in the same code path still reports `cancelled`. Covered by
+[budget.test.ts](src/agent/tests/runners/budget.test.ts) (9) plus 3 loop-level tests in
+[turn-loop.test.ts](src/agent/tests/runners/turn-loop.test.ts). Agent suite green
+(292 tests).
+
+> **Implementation notes.** The decision lives in a pure
+> [budget.ts](src/agent/src/agent/runners/policies/budget.ts) (`ceilingBreach` /
+> `totalSpend` / `budgetCancelDetail`); the *enforcement* is ~6 lines inside the
+> existing `TurnCounterMiddleware` subscription, so there is still exactly one
+> subscriber folding usage. `RunnerContext` gained `cutoff?: CancellationToken`,
+> minted in `beginTurn` — the seam any future unit uses to stop a turn without
+> throwing. The loop reads the cancel reason in TWO places: the between-iteration
+> abort check, and a `catch` around `iterate()` (a breach mid-`provider.chat` or
+> mid-tool-call surfaces as a throw, not as the check). The epilogue is skipped on a
+> budget stop — the evaluator pass is another model call, which is what the ceiling
+> forbids.
 
 ### M1-4 · Prompt-cache strategy — `~1.5d` · P1
 Today: Anthropic caches system+tools only (one breakpoint); Gemini caches
@@ -158,6 +230,9 @@ size from iteration 2 onward in a live smoke test.
       judge is observable instead of silent leniency.
 
 ### M1-6 · MCP client resilience — `~1d` · P2
+> **Folded into M1-14** (2026-07-30): the reconnect below becomes the breaker's
+> half-open probe. Keep the sub-steps as the implementation detail; do not build
+> a second retry path beside the port policy.
 - [ ] Detect transport death in `McpClient` (closed/error event from the
       SDK client); mark disconnected.
 - [ ] One lazy reconnect attempt on next `callTool` for stdio servers
@@ -166,6 +241,9 @@ size from iteration 2 onward in a live smoke test.
 - [ ] Test with a server process that exits mid-session.
 
 ### M1-7 · Tool-call execution isolation in the loop — `~0.5d` · P1
+> **Folded into M1-14** (2026-07-30): "never throw out of the tool port" is the
+> policy's degrade rule. The file refs below are stale — the call site moved to
+> [tool-caller.ts:21](src/agent/src/agent/runners/tool-caller.ts#L21).
 The per-server `McpClient.callTool` already catches and returns `isError`
 (`mcp/mcp-client.ts` ~L107), but the orchestrator's `scopedClient.callTool`
 call (`runners/orchestrator.ts` ~L339) runs bare. A throw from the routing /
@@ -301,6 +379,168 @@ message as-is. (Input-side overflow is M1-8; this is the output side.)
       it as final — never let a cut-off response satisfy completion.
 - [ ] Test: a fake provider returning a `max_tokens` stop then a clean finish
       yields one coherent assistant message, not a truncated turn.
+
+### M1-14 · Resilience at the ports, not in the implementations — `~1.5d` · P1
+Both outbound edges are already abstracted — `LLMProvider.chat` for models,
+`ScopedToolClient.callTool` → `Mcp.callTool` for tools — but resilience is
+**not** at either abstraction. It is scattered into the concrete
+implementations, so every new provider or client re-earns it:
+
+- M1-1 shipped `retryTransient` but wired it **inside each provider's `chat`**
+  (its own divergence note in [BACKLOG.DONE.md](BACKLOG.DONE.md) records the
+  decision). Anthropic and Gemini each remember to call it; Ollama and the next
+  provider must remember too, and nothing enforces that.
+- The tool edge has **nothing**. `McpClient.callTool` catches and returns
+  `isError` per server, but a throw from the routing/scoping layer (server
+  unmounted, transport died mid-turn) escapes and kills the whole turn (M1-7),
+  and a dead stdio server is retried on every single iteration with no breaker
+  (M1-6).
+
+The point of abstracting the implementation is that the *policy* lives at the
+port. This story makes resilience a property of the two ports and reduces
+M1-6 / M1-7 to wiring under it.
+
+- [x] One `ResiliencePolicy` — **landed in
+      [resilience.ts](src/agent/src/agent/resilience.ts), not `@agent-local/common`**:
+      both ports it serves live in `src/agent`, and promoting it to the sibling repo
+      would have forced a cross-repo rebuild for zero present consumer. Move it when
+      `src/mcp` actually needs it. `classify(error) → transient | terminal`,
+      jittered backoff, attempt cap, and a per-key **circuit breaker** (open
+      after N consecutive failures, half-open probe after a cooldown). Reuse
+      `retryTransient`/`isTransientError`
+      ([retry.ts](src/agent/src/agent/providers/retry.ts)) as its retry core —
+      **extend it, do not write a second one**.
+- [x] **Do not own the deadline.** Per-model tool timeouts already belong to the
+      MCP servers via the chainable `Mcp.setTimeout`; the policy retries and
+      breaks, it never starts a competing timer. A timeout arrives as a cancel
+      on the turn signal and is therefore *terminal*, never retried.
+- [x] **Model port.** Apply the policy once at the provider boundary
+      (`providers/index.ts` composition) instead of inside each `chat`. The
+      streaming carve-out is why M1-1 went in-provider — so the port passes a
+      `shouldRetry` veto the implementation supplies (`hasStreamed` → never
+      retry, tokens are already on screen). Policy at the port, one veto hook
+      from the implementation; no provider re-implements backoff.
+- [x] **Tool port.** `ScopedToolClient.callTool` becomes the resilience seam:
+      never throws (a throw degrades to a `[tool-error]` result the model can
+      react to — absorbs **M1-7**), retries transient transport failures, and
+      trips a breaker keyed by **server name** so one dead server does not burn
+      every iteration of the turn.
+- [ ] **M1-6's respawn is NOT built** — the breaker's half-open slot exists and a
+      recovered server closes it, but nothing yet detects stdio transport death or
+      relaunches the process, so a dead server degrades to fast tool-errors rather
+      than reconnecting. M1-6 stays open for exactly that sub-step.
+- [x] **Breaker state is per runtime, not per turn**, so it survives across
+      turns of a session — a server that died stays open until its cooldown
+      rather than being re-probed by every new turn.
+- [x] Honour the turn signal everywhere: no retry may start once
+      `signal.aborted` (this is also what keeps M1-3's budget cancel from being
+      absorbed by a backoff sleep).
+- [x] Observability: a `WARNING`-class event per retry and per breaker
+      transition, carrying the port, the key (provider/server), and the attempt
+      — a silent retry loop looks identical to a slow model otherwise.
+- [x] Tests: (a) a provider added with **no** retry code of its own still
+      retries a 503 through the port; (b) a scoping-layer throw becomes a
+      tool-error message and the turn reaches a final answer; (c) N consecutive
+      failures open the breaker and the next call fails fast without a spawn
+      attempt; (d) a half-open probe that succeeds closes it; (e) abort during
+      backoff stops immediately and does not consume the remaining attempts.
+
+**Done when:** ~~…~~ — **met 2026-07-31 except the respawn sub-step above**: a
+`BareProvider` with zero resilience code retries a 503 through the port, a
+scoping-layer throw becomes a tool-error the turn survives, and a dead key fails
+fast on an open breaker. Covered by
+[resilience.test.ts](src/agent/tests/resilience.test.ts) (13).
+
+> **Implementation notes.** `retryTransient` from M1-1 is the policy's retry core
+> (extended, not duplicated) and now walks the error's `cause` chain, because a port
+> policy sees the provider's *wrapped* error and the SDK's numeric `.status` lives on
+> the cause — both cloud providers pass `{ cause: err }` now. The streaming carve-out
+> that kept M1-1 inside the providers is solved AT the port: `ResilientProvider` wraps
+> the caller's `onDelta`, so it can see that tokens were emitted and veto the retry —
+> which let the in-provider `retryTransient` calls be **removed** (they would otherwise
+> have nested, giving 9 attempts). The breaker lives on `McpClientRegistry` /
+> `ProvidersRegistry` so its state is per runtime, not per turn. Only *transient*
+> failures count toward it: a 400 schema error is the caller's fault and must not open
+> a breaker on a healthy dependency.
+
+### M1-15 · Turn idempotency — has this request already run? — `~1d` · P2
+Nothing in the system can tell whether a prompt it is about to run has already
+been run. Today that is survivable because the inbox is in-memory and a crash
+loses everything; it stops being survivable the moment either of the two paths
+already on the roadmap lands:
+
+- **Durable inbox** ([TURN_ROUND.md §11](TURN_ROUND.md)) — a claim that is
+  written before the turn settles and then replayed after a failover runs the
+  same request twice. Every mutation the turn performed (file writes, dispatched
+  executor work) happens twice.
+- **Session leases** (M3-3) — lease theft after a stale heartbeat is exactly the
+  replay case: the old owner may still be mid-turn.
+
+There is also a live, non-hypothetical case: the coalescing that used to fold N
+child reports into one turn was removed with the round model, so N sub-sessions
+settling now push N near-identical wake prompts, each of which becomes its own
+turn.
+
+- [x] **Request fingerprint.** `hash(sessionId + source + normalized content)`,
+      computed in `InputInbox.push`
+      ([input-inbox.ts:16](src/agent/src/agent/runners/input-inbox.ts#L16)) and
+      carried alongside the prompt (the queue becomes
+      `{ fingerprint, content, source }`, not a bare string).
+- [x] **Enqueue-time dedup (cheap, immediate value).** Drop a push whose
+      fingerprint is already *pending* in the same session's queue. This alone
+      restores the coalescing the round model used to provide, for
+      `source: "subsession"` reports.
+- [x] **Executed-ledger (the real idempotency).** A small per-session ledger of
+      `fingerprint → { turnId, outcome, finishedAt }`, written when the turn
+      settles. `TurnLoop.run` consults it **after** `drainRequest`
+      ([turn-loop.ts:169](src/agent/src/agent/runners/turn-loop.ts#L169)) — the
+      first point where the request is actually known — and on a hit short-circuits
+      to the recorded result instead of assembling a turn, exactly as
+      `Turn.idle()` already short-circuits a cold wake
+      ([turn-loop.ts:78](src/agent/src/agent/runners/turn-loop.ts#L78)).
+- [x] **Scope it narrowly, or it is a bug factory.** A human legitimately types
+      `yes`, `continue`, `again` repeatedly and MUST get a fresh turn each time.
+      Default: dedup applies to `subsession` and `api` sources only, plus a short
+      TTL window; `user` input is exempt unless an explicit idempotency key is
+      supplied. Make the rule config, not a hardcoded branch.
+- [x] **`api` source gets a real key** — the plumbing:
+      `injectInput(content, source, idempotencyKey)` → `InputInbox.push` uses the key
+      as the fingerprint material instead of the content hash, so a client can retry
+      a POST with reworded content and still resolve to the same request.
+- [ ] **No HTTP route supplies the key yet.** The one live producer
+      ([runner.ts:85](src/agent/src/server/comms/runner.ts#L85)) still injects as
+      `source: "user"` — deliberately unchanged, since retagging it `"api"` would
+      switch on pending-duplicate dropping for a path with no coverage. Wiring an
+      `Idempotency-Key` header (and the retag) is the remaining sub-step.
+- [x] **Ledger lives with the inbox, not in the runner.** The runner stays
+      contentless; when the inbox goes durable the ledger is the same swap (a
+      row + a unique index on `(session_id, fingerprint)` — the DB enforces
+      once-only rather than the application remembering to check).
+- [x] Tests: (a) three identical subsession reports pushed while a turn runs
+      produce ONE follow-up turn; (b) the same fingerprint replayed after its
+      turn settled returns the recorded outcome and makes **no** model call;
+      (c) a user typing `continue` twice gets two turns; (d) two different
+      contents never collide; (e) an `api` push with the same idempotency key
+      and different content is rejected as a conflict rather than silently
+      running.
+
+**Done when:** ~~…~~ — **met 2026-07-31 except the HTTP header wiring above**: a
+replay returns the recorded outcome with zero model and zero tool calls, three
+identical child reports collapse to one turn (and one wake), and a human retyping
+`continue` still gets a fresh turn every time. Covered by
+[input-inbox.test.ts](src/agent/tests/runners/input-inbox.test.ts) (13) plus 4
+loop-level tests.
+
+> **Implementation notes.** `InputInbox.dequeue` now returns an `InboxItem`
+> (`{ content, fingerprint, source }`) rather than a bare string, which is what lets
+> the settling turn record *what* it executed. The ledger check moved the pull to the
+> TOP of `TurnLoop.run`, before `Turn.open` — a replay must not pay for tool mounting
+> and server binding. The request is still *appended* inside the prologue, so the
+> load-bearing context → compaction → append order is untouched. Two gates keep this
+> from becoming a bug factory: pending-duplicate dropping applies only to
+> `subsession`/`api`, and the executed ledger is **off by default**
+> (`idempotencyTtlMs: 0`) — turning it on for `user` input would break a human
+> retyping the same thing.
 
 ---
 

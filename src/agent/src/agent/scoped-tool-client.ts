@@ -4,6 +4,7 @@ import type { Mcp, ToolExecutionResult, ToolInvoker } from "@agent-local/mcp";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { McpClientRegistry } from "./registries/mcp-registry.js";
 import type { ModelRegistry } from "./registries/model-registry.js";
+import type { ResiliencePolicy } from "./resilience.js";
 
 // routes <server>__<tool> calls to the right MCP server and emits TOOL_CALL/TOOL_RESULT events
 // path confinement is NOT here: each fs server is rooted at its workspace segment and guards itself
@@ -11,22 +12,30 @@ import type { ModelRegistry } from "./registries/model-registry.js";
 export class ScopedToolClient implements ToolInvoker {
   private readonly clientsByServer: Map<string, Mcp>;
 
-  constructor(clients: Mcp[]) {
+  // the TOOL port's resilience seam; absent (tests, ad-hoc construction) the call goes straight through
+  constructor(clients: Mcp[], private readonly resilience?: ResiliencePolicy) {
     this.clientsByServer = new Map(clients.map((c) => [c.name, c]));
   }
 
   // composes a role's visible tool surface from the registry's clients — only servers in the role's
   // whitelist are fronted, so a registered-but-unmapped server (e.g. memomcp recall) can never be called
+  // the role's `agents` grant is a second source of visible names, so a granted role-agent is callable while
+  // a registered-but-ungranted one (the evaluator, which the loop's epilogue calls directly) stays hidden
   public static forRole(
     registry: McpClientRegistry,
     models: ModelRegistry,
     role: string
   ): ScopedToolClient {
-    const clients = models
-      .getValidMcpServersForRole(role)
+    const visible = new Set([
+      ...models.getValidMcpServersForRole(role),
+      ...models.getAgentsForRole(role),
+    ]);
+    const clients = [...visible]
       .map((name) => registry.getClient(name))
       .filter((client): client is Mcp => client !== undefined);
-    return new ScopedToolClient(clients);
+    // the registry owns the policy so breaker state is per RUNTIME: a server that died stays open
+    // across turns instead of being re-probed by every new turn's fresh client
+    return new ScopedToolClient(clients, registry.resilience);
   }
 
   public listTools(): ToolDescriptor[] {
@@ -66,8 +75,7 @@ export class ScopedToolClient implements ToolInvoker {
     }
 
     events?.publish(OrchestratorEventTypes.TOOL_CALL, { id: "", name, arguments: args });
-    // timeout policy lives in the server; the client only routes and forwards the turn's signal
-    const result = await client.callTool(toolTail, args, signal);
+    const result = await this.invoke(client, toolTail, name, args, events, signal);
     events?.publish(OrchestratorEventTypes.TOOL_RESULT, {
       id: "",
       name,
@@ -80,6 +88,33 @@ export class ScopedToolClient implements ToolInvoker {
   }
 
   // ---------------------------------------------------------------------------
+
+  // the port NEVER throws: a dead transport or an unmounted server degrades to a tool-error result the
+  // model can react to, instead of escaping the loop and killing a turn that was otherwise recoverable
+  // timeout policy stays in the server (Mcp.setTimeout); this only routes, retries, and forwards the signal
+  private async invoke(
+    client: Mcp,
+    toolTail: string,
+    name: string,
+    args: Record<string, unknown>,
+    events: Eventing | undefined,
+    signal: AbortSignal | undefined
+  ): Promise<ToolExecutionResult> {
+    const call = () => client.callTool(toolTail, args, signal);
+    try {
+      return this.resilience
+        ? await this.resilience.run(client.name, call, { signal })
+        : await call();
+    } catch (err) {
+      // a user stop is not a tool failure: let it unwind so the turn reports cancelled, not a bad tool
+      if (signal?.aborted) throw err;
+      const detail = err instanceof Error ? err.message : String(err);
+      events?.publish(OrchestratorEventTypes.WARNING, {
+        message: `tool "${name}" failed at the transport: ${detail}`,
+      });
+      return { isError: true, content: `[tool-error] ${detail}` };
+    }
+  }
 
   private resolve(name: string): { client: Mcp; toolTail: string } | { error: string } {
     const sep = name.indexOf("__");

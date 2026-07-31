@@ -78,26 +78,19 @@ export class GeminiProvider implements LLMProvider {
 
     const params = { model: this.modelId, contents, config };
     let response: GenerateContentResponse;
-    // an overloaded endpoint answers 429/5xx ("try again later") — a blip, not a failure — so retry with backoff.
-    // streaming carve-out: once a delta has been forwarded, a re-run would double-emit, so a mid-stream failure is
-    // not retried; only a clean pre-token failure (the common 503 at request time) is.
-    let hasStreamed = false;
+    // retry/backoff/breaker for transient 429/5xx live at the PORT (ResilientProvider), not here —
+    // including the streaming carve-out, which the port sees by wrapping the delta sink
     try {
-      response = await retryTransient(
-        () =>
-          options.onDelta
-            ? this.generateStreamed(params, (delta) => {
-                hasStreamed = true;
-                options.onDelta!(delta);
-              })
-            : this.client.models.generateContent(params),
-        { signal: options.signal, shouldRetry: (err) => isTransientError(err) && !hasStreamed },
-      );
+      response = options.onDelta
+        ? await this.generateStreamed(params, options.onDelta)
+        : await this.client.models.generateContent(params);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : String(err);
+      // cause preserved so the port can read the SDK's numeric status through this wrapper
       throw new Error(
         `Provider(gemini:${this.modelId}) failed: ${errorMsg}. ` +
-        `Check that the API key is valid and the model "${this.modelId}" is available.`
+        `Check that the API key is valid and the model "${this.modelId}" is available.`,
+        { cause: err }
       );
     }
 

@@ -4,17 +4,14 @@ import type { AgentServerSettings } from "../../server/appsettings.js";
 import type { ToolOutputSchema } from "@agent-local/mcp/tooldescriptor";
 import type { McpServerDef } from "../runtime/middleware/external-mcp.js";
 
+// pure model configuration: how to reach a model and what it natively supports. How a role USES a model
+// (tools, timeouts, caps) lives on the role, so one real model is one entry no matter how many roles share it
 export interface ModelDefinition {
   provider: string;
   model: string;
   supportsTools: boolean;
   reasoning?: boolean;
   description?: string;
-  mcp?: string[];
-  // omitted → DEFAULT_TOOL_TIMEOUT_MS; <= 0 disables the bound
-  toolTimeoutMs?: number;
-  // omitted → the role default (maxExecutorIterationsPerAsk / maxOrchestratorIterations)
-  iterationCap?: number;
 }
 
 export const DEFAULT_TOOL_TIMEOUT_MS = 60000;
@@ -38,17 +35,20 @@ export interface RoleDispatch {
 export interface RoleDefinition {
   // an addressable model id from `models`
   model: string;
+  // what this role is for; surfaced by /models, since the model entry no longer carries role wording
+  description?: string;
   // prompt id resolved to a system prompt (see ModelRegistry.getPromptTemplate)
   prompt: string;
   // completion contract name → policy (self-terminate | tool-evidence | structured-verdict)
   completion: string;
-  // fallback iteration cap; a model's own iterationCap still wins
   maxIterations?: number;
   temperature?: number;
+  // omitted → DEFAULT_TOOL_TIMEOUT_MS; <= 0 disables the bound
+  toolTimeoutMs?: number;
   // exposed as a sub-agent tool other roles can dispatch
   dispatchable?: boolean;
-  // per-role tool whitelist; falls back to the model's own `mcp` list when omitted
-  tools?: string[];
+  // the MCP servers this role may mount; absent/empty advertises zero tools
+  mcp?: string[];
   // OTHER roles this one may spawn as sub-agents, each mounted as `<role>__ask`. Separate axis from `tools`:
   // that grants MCP servers, this grants agents. An empty/absent list makes the role a leaf — the recursion bound
   agents?: string[];
@@ -57,13 +57,9 @@ export interface RoleDefinition {
 }
 
 
+// turn-wide knobs only; anything per-role (iteration caps, temperatures) belongs to the role record
 export interface OrchestrationConfig {
-  maxOrchestratorIterations: number;
   maxExecutorDispatchesPerTurn: number;
-  maxExecutorIterationsPerAsk: number;
-  orchestratorTemperature: number;
-  executorTemperature: number;
-  evaluatorTemperature: number;
   // per-turn completion judge; a guard rail for weaker models that self-verify poorly. Capable models can run
   // without it — set false to skip the gate so a tool-free turn settles as satisfied on the model's own word.
   evaluatorEnabled: boolean;
@@ -73,19 +69,26 @@ export interface OrchestrationConfig {
   summarizeAtMessages: number;
   // recent messages kept verbatim after summarizing; a few more may stay to avoid splitting a tool pairing
   summarizerKeepLastN: number;
+  // token ceilings counting own + delegated spend; 0 = unlimited. A breach cancels the turn's scope,
+  // so it stops the live model call, its tools, and any child runtime through the one signal
+  maxTokensPerTurn: number;
+  maxTokensPerSession: number;
+  // how long a settled request stays replay-able, so a re-delivered subsession/api request answers from
+  // the record instead of re-running its side effects; 0 disables the executed ledger (pending-duplicate
+  // dropping is always on — it is what collapses N identical child reports into one turn)
+  idempotencyTtlMs: number;
 }
 
 const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
-  maxOrchestratorIterations: 16,
   maxExecutorDispatchesPerTurn: 8,
-  maxExecutorIterationsPerAsk: 6,
-  orchestratorTemperature: 0.2,
-  executorTemperature: 0.1,
-  evaluatorTemperature: 0.1,
   evaluatorEnabled: true,
   validatorCheckIntervalDispatches: 3,
   summarizeAtMessages: 30,
   summarizerKeepLastN: 8,
+  // off by default: an existing models.json must not start capping turns on upgrade
+  maxTokensPerTurn: 0,
+  maxTokensPerSession: 0,
+  idempotencyTtlMs: 0,
 };
 
 

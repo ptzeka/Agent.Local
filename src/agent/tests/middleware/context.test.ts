@@ -31,6 +31,7 @@ function fakeModelsRegistry(): ModelRegistry {
       role === "executor" ? "# Executor Prompt\nExecute the task." : "# System Prompt\nYou are a helpful assistant.",
     // the role's model is allowed one server; the fake mcpRegistry serves it regardless of name
     getValidMcpServersForRole: (_role: string) => ["fsmcp"],
+    getAgentsForRole: () => [],
   } as unknown as ModelRegistry;
 }
 

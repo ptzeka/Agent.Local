@@ -14,9 +14,19 @@ import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionManagerToken,
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
 import { mountExternalMcp, type McpServerDef } from "./external-mcp.js";
+import { ResiliencePolicy } from "../../resilience.js";
+import { OrchestratorEventTypes } from "../../runners/runner-events.js";
 
 // memomcp is segregated per session: each spawned instance reads/writes only this session's collection
 const MEMOMCP_SERVER_NAME = "memomcp";
+
+// notices go to the runtime bus, not a turn bus: a breaker outlives the turn that tripped it
+function toolResilience(ctx: RuntimeContext): ResiliencePolicy {
+  return new ResiliencePolicy("tool", {
+    onNotice: (notice) =>
+      ctx.eventing?.publish(OrchestratorEventTypes.WARNING, { message: notice.message }),
+  });
+}
 
 // builds the MCP registry and registers the in-process synthetic servers (fsmcp, Excel, subsessions)
 // runs after SessionMiddleware so workspace and session are available for the Excel server's tool context
@@ -39,11 +49,13 @@ export class McpRegistryMiddleware implements IMiddleware {
     ctx.logger?.debug("mcp start", { role: this.params.role });
 
     const sandboxRoot = ctx.sandboxRoot;
-    const mcpRegistry = new McpClientRegistry(sandboxRoot);
+    // one policy per runtime for the tool port; the executor's own registry below shares it, so a server
+    // mounted on both sides is one breaker, not two disagreeing about whether it is alive
+    const resilience = toolResilience(ctx);
+    const mcpRegistry = new McpClientRegistry(sandboxRoot, resilience);
     ctx.registry.set(McpRegistryToken, mcpRegistry);
 
-    const modelName = modelsRegistry.getValidModelForRole(this.params.role);
-    const serverTimeout = modelsRegistry.getTimeoutForModel(modelName);
+    const serverTimeout = modelsRegistry.getTimeoutForRole(this.params.role);
     const validMcpClients = modelsRegistry.getValidMcpServersForRole(this.params.role);
     await this.mountServers(
       mcpRegistry,
@@ -73,9 +85,8 @@ export class McpRegistryMiddleware implements IMiddleware {
     whitelist: string[]
   ): Promise<void> {
     if (!whitelist.includes(EXECUTOR_SERVER_NAME)) return;
-    const executorServers = new McpClientRegistry(ctx.sandboxRoot);
-    const executorModel = modelsRegistry.getValidModelForRole(EXECUTOR_ROLE);
-    const executorTimeout = modelsRegistry.getTimeoutForModel(executorModel);
+    const executorServers = new McpClientRegistry(ctx.sandboxRoot, registry.resilience);
+    const executorTimeout = modelsRegistry.getTimeoutForRole(EXECUTOR_ROLE);
     const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
     // no coordinator: an executor must never spawn subsessions, so its seam keeps the "not available" error
     await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined);
@@ -90,7 +101,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     if (!modelsRegistry.getRoles().includes(EVALUATOR_ROLE)) return;
     const dispatch = modelsRegistry.getRoleDefinition(EVALUATOR_ROLE).dispatch;
     if (!dispatch) return;
-    const timeout = modelsRegistry.getTimeoutForModel(modelsRegistry.getValidModelForRole(EVALUATOR_ROLE));
+    const timeout = modelsRegistry.getTimeoutForRole(EVALUATOR_ROLE);
     registry.registerClient(
       new RoleDispatchLocalMcp(ctx, EVALUATOR_ROLE, dispatch, EVALUATOR_SERVER_NAME, EVALUATE_TOOL).setTimeout(timeout)
     );
@@ -186,7 +197,7 @@ export class McpRegistryMiddleware implements IMiddleware {
         ctx.logger?.warn("mcp role-agent skip — not a dispatchable role with a dispatch record", { role: name });
         continue;
       }
-      const timeout = modelsRegistry.getTimeoutForModel(modelsRegistry.getValidModelForRole(name));
+      const timeout = modelsRegistry.getTimeoutForRole(name);
       registry.registerClient(
         new RoleDispatchLocalMcp(ctx, name, role.dispatch, name, DISPATCH_TOOL).setTimeout(timeout)
       );

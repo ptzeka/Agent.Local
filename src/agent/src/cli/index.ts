@@ -39,6 +39,8 @@ const EXIT_CAPPED = 2;
 const EXIT_FAILED = 3;
 // the run ended on a clarification question with no work done — non-zero so headless callers don't read it as success
 const EXIT_AWAITING_INPUT = 4;
+// stopped on a token ceiling: distinct from EXIT_CAPPED so a caller can raise budget rather than retry
+const EXIT_BUDGET_CAPPED = 5;
 
 // shared infrastructure from bootstrap(); session setup is per run mode, not here
 interface Bootstrap {
@@ -313,7 +315,9 @@ async function runHeadless(
           ? EXIT_AWAITING_INPUT
           : result.outcome === "failed"
             ? EXIT_FAILED
-            : EXIT_CAPPED;
+            : result.outcome === "budget-capped"
+              ? EXIT_BUDGET_CAPPED
+              : EXIT_CAPPED;
     } finally {
       unsubEvents();
       unsubscribe();

@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import { McpRegistryMiddleware } from "../../src/agent/runtime/middleware/mcp-registry.js";
 import { McpRegistryToken } from "../../src/agent/runtime/tokens.js";
+import { ScopedToolClient } from "../../src/agent/scoped-tool-client.js";
 import type { Workspace } from "../../src/agent/registries/workspace-registry.js";
 import type { ModelRegistry } from "../../src/agent/registries/model-registry.js";
 import type { ConfigurationRegistry } from "../../src/agent/registries/configuration-registry.js";
@@ -13,7 +14,7 @@ import { createSession } from "../../src/agent/session/session.js";
 const stubModelsRegistry = {
   getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
   getValidMcpServersForRole: () => ["fsmcp", "excel"],
-  getTimeoutForModel: () => 60000,
+  getTimeoutForRole: () => 60000,
   getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
   // no evaluator role → the evaluator seam is skipped, keeping these tests focused on the mount split
   getRoles: () => [],
@@ -79,7 +80,7 @@ describe("McpRegistryMiddleware", () => {
       // the orchestrator whitelists "executor" — the tool grant that mounts the dispatch seam
       getValidMcpServersForRole: (role: string) =>
         role === "executor" ? ["fsmcp"] : ["fsreadonly", "executor"],
-      getTimeoutForModel: () => 60000,
+      getTimeoutForRole: () => 60000,
       getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
       getRoles: () => [],
       // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
@@ -121,7 +122,7 @@ describe("McpRegistryMiddleware", () => {
     const executorModelsRegistry = {
       getValidModelForRole: () => "m-exec",
       getValidMcpServersForRole: () => ["fsmcp"],
-      getTimeoutForModel: () => 60000,
+      getTimeoutForRole: () => 60000,
       getRoleDefinition: () => ({ dispatchable: true }),
       getRoles: () => [],
       // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
@@ -152,7 +153,7 @@ describe("McpRegistryMiddleware", () => {
     const evaluatorAwareRegistry = {
       getValidModelForRole: () => "m-eval",
       getValidMcpServersForRole: () => ["fsreadonly"],
-      getTimeoutForModel: () => 60000,
+      getTimeoutForRole: () => 60000,
       getRoles: () => ["orchestrator", "evaluator"],
       // the evaluator seam is NOT an `agents` grant — the epilogue reaches it directly, so no role lists it
       getAgentsForRole: () => [],
@@ -190,7 +191,7 @@ describe("McpRegistryMiddleware", () => {
     const agentAwareRegistry = {
       getValidModelForRole: () => "m-orch",
       getValidMcpServersForRole: () => ["fsreadonly"],
-      getTimeoutForModel: () => 60000,
+      getTimeoutForRole: () => 60000,
       getRoles: () => ["orchestrator", "filesagent", "notdispatchable"],
       getAgentsForRole: (role: string) =>
         role === "orchestrator" ? ["filesagent", "notdispatchable", "missingrole"] : [],
@@ -218,6 +219,12 @@ describe("McpRegistryMiddleware", () => {
     const granted = granterCtx.registry.get(McpRegistryToken);
     expect(granted.getClient("filesagent")).toBeDefined();
     expect(granted.listTools().map((t) => t.name)).toContain("filesagent__ask");
+    // mounted is not the same as VISIBLE: the grant must also reach the model's scoped surface,
+    // which composes from the server whitelist — where a role-agent deliberately does not appear
+    const surface = ScopedToolClient.forRole(granted, agentAwareRegistry, "orchestrator")
+      .listTools()
+      .map((t) => t.name);
+    expect(surface).toContain("filesagent__ask");
     // granted-but-ungrantable names drop out rather than throwing: not dispatchable, and not a role at all
     expect(granted.getClient("notdispatchable")).toBeUndefined();
     expect(granted.getClient("missingrole")).toBeUndefined();

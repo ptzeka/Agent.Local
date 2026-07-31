@@ -1,8 +1,10 @@
 import type { Container } from "@agent-local/common/container";
 import type { Eventing } from "@agent-local/common/eventing";
+import type { CancellationToken } from "@agent-local/common/lifetime";
 import type { ILogger } from "@agent-local/common/ilogger";
 import type { Session } from "../../session/session.js";
 import type { AgentRuntimeQueryable } from "../../runtime/types.js";
+import type { ExecutedTurn, InboxItem } from "../input-inbox.js";
 import type { RunResult } from "../turn-loop.js";
 
 // shared mutable state for one turn, threaded through every onion link so units read/write
@@ -12,6 +14,9 @@ export interface RunnerContext {
   readonly session: Session;
   readonly events: Eventing;
   readonly signal: AbortSignal;
+  // this turn's own cutoff, wrapping the dispatch signal; a unit that must STOP the turn cancels it
+  // rather than throwing, so the whole downward chain (model call, tools, children) collapses with it
+  readonly cutoff?: CancellationToken;
   readonly logger: ILogger;
   readonly registry: Container;
   // DI handle: runners resolve runtime singletons through this rather than a wired-in reference
@@ -19,7 +24,11 @@ export interface RunnerContext {
   // pull seam: hasPending gates the pull, pullInjectedPrompt pops one queued prompt per iteration,
   // so an outside producer steers the loop without racing it
   readonly hasPending?: () => boolean;
-  readonly pullInjectedPrompt?: () => string;
+  readonly pullInjectedPrompt?: () => InboxItem | null;
+  // idempotency seam, same pull shape: the ledger lives with the inbox (the one place a request exists
+  // before it is a turn), so going durable is one swap there and none in the loop
+  readonly executedRecord?: (item: InboxItem) => ExecutedTurn | null;
+  readonly recordExecuted?: (item: InboxItem, record: ExecutedTurn) => void;
 }
 
 // one onion link wrapping a turn: call next() to descend to the core run, or return early to short-circuit

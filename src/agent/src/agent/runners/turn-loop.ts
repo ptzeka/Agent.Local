@@ -1,10 +1,12 @@
 import type { ChatMessage } from "../providers/provider.js";
 import type { ReportedTurnResult } from "../synthetic-mcp/types.js";
+import type { InboxItem } from "./input-inbox.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { Turn } from "./turn.js";
 import { ModelCaller } from "./model-caller.js";
 import { ToolCaller } from "./tool-caller.js";
 import { runEvaluatorPass, type EvaluationState, EVALUATOR_SERVER_NAME } from "./evaluator-pass.js";
+import { budgetCancelDetail } from "./policies/budget.js";
 import { selectCompletionPolicy } from "./policies/completion.js";
 import { MemoryContributor } from "./policies/memory-contributor.js";
 import { SnapshotContextProvider } from "./policies/snapshot-context-provider.js";
@@ -25,8 +27,8 @@ export interface RunResult {
   iterations: number;
   dispatches: number;
   // "satisfied" accepted, "awaiting-input" ended on a clarification question (no work done — distinct so headless can't read it as success),
-  // "capped" hit the iteration bound, "failed" judged unrecoverable; drives the headless exit code
-  outcome: "satisfied" | "awaiting-input" | "capped" | "failed";
+  // "capped" hit the iteration bound, "budget-capped" hit a token ceiling, "failed" judged unrecoverable; drives the headless exit code
+  outcome: "satisfied" | "awaiting-input" | "capped" | "budget-capped" | "failed";
   // the agent's structured verdict from report_result on a dispatched turn; absent when the tool wasn't mounted
   // or wasn't called (interactive, capped, or system-failed turns) — the dispatch boundary fills a fallback then
   reported?: ReportedTurnResult;
@@ -82,10 +84,54 @@ export class TurnLoop implements SessionRunner {
       return Turn.idle();
     }
 
+    // popped BEFORE assembly so a replay costs no tool mount and no model call; the request is only
+    // APPENDED later, inside the prologue, where the context/compaction order still governs
+    const request = ctx.pullInjectedPrompt?.() ?? null;
+    if (!request) return Turn.idle();
+
+    const executed = ctx.executedRecord?.(request) ?? null;
+    if (executed) {
+      ctx.logger.debug("duplicate request — answering from the executed ledger", {
+        sessionId: ctx.session.sessionId,
+        turnId: executed.turnId,
+      });
+      return Turn.replayOf(executed);
+    }
+
     const turn = await Turn.open(ctx, this.role);
-    await this.runPrologue(turn, ctx);
-    const result = await this.iterate(turn, ctx);
+    await this.runPrologue(turn, ctx, request);
+
+    // a ceiling breach cancels the turn's cutoff, so it can surface as the abort check below OR as a
+    // throw from whatever await was in flight (model call, tool call) — one catch covers every source
+    let result: RunResult;
+    try {
+      result = await this.iterate(turn, ctx);
+    } catch (err) {
+      const detail = budgetCancelDetail(ctx.signal);
+      if (detail === null) throw err;
+      return this.remember(ctx, request, turn, await turn.budgetCapped(detail));
+    }
+
+    // out of budget: the epilogue is another model call, which is exactly what the ceiling forbids
+    if (result.outcome === "budget-capped") return this.remember(ctx, request, turn, result);
+
     await this.runEpilogue(turn, ctx, result);
+    return this.remember(ctx, request, turn, result);
+  }
+
+  // one exit point for the ledger write, so no settle path can forget it
+  private remember(
+    ctx: RunnerContext,
+    request: InboxItem,
+    turn: Turn,
+    result: RunResult
+  ): RunResult {
+    ctx.recordExecuted?.(request, {
+      turnId: turn.id,
+      outcome: result.outcome,
+      finalContent: result.finalMessage.content,
+      finishedAt: Date.now(),
+    });
     return result;
   }
 
@@ -99,6 +145,9 @@ export class TurnLoop implements SessionRunner {
 
     for (let iteration = 1; iteration <= maxIterations; iteration += 1) {
       if (ctx.signal.aborted) {
+        // a budget stop is a deterministic END, not an abandoned turn: settle it rather than throwing
+        const detail = budgetCancelDetail(ctx.signal);
+        if (detail !== null) return turn.budgetCapped(detail);
         throw new Error("turn aborted: user requested stop");
       }
       turn.iteration = iteration;
@@ -155,10 +204,10 @@ export class TurnLoop implements SessionRunner {
 
   // order is load-bearing: context and compaction must both land before the request is appended,
   // and contributors run last because they key off the drained request
-  private async runPrologue(turn: Turn, ctx: RunnerContext): Promise<void> {
+  private async runPrologue(turn: Turn, ctx: RunnerContext, request: InboxItem): Promise<void> {
     turn.setContextMessages(await this.contextProvider.build(turn, ctx));
     await this.compaction.applyIfNeeded(turn, ctx);
-    this.drainRequest(turn, ctx);
+    this.anchorRequest(turn, ctx, request);
     for (const contributor of this.contributors) {
       await contributor.contribute(turn, ctx);
     }
@@ -166,12 +215,17 @@ export class TurnLoop implements SessionRunner {
 
   // ONE prompt per turn: the request carries across every iteration, so a prompt queued mid-turn
   // is left for the pump to replay as the next turn
-  private drainRequest(turn: Turn, ctx: RunnerContext): void {
-    const request = ctx.pullInjectedPrompt?.() ?? "";
-    turn.append({ role: "user", content: request });
-    turn.turnRequest = request;
-    ctx.events.publish(OrchestratorEventTypes.INJECTED_INPUT, { turnId: turn.id, content: request });
-    ctx.logger.debug("turn input drained", { turnId: turn.id, hasRequest: request.length > 0 });
+  private anchorRequest(turn: Turn, ctx: RunnerContext, request: InboxItem): void {
+    turn.append({ role: "user", content: request.content });
+    turn.turnRequest = request.content;
+    ctx.events.publish(OrchestratorEventTypes.INJECTED_INPUT, {
+      turnId: turn.id,
+      content: request.content,
+    });
+    ctx.logger.debug("turn input anchored", {
+      turnId: turn.id,
+      hasRequest: request.content.length > 0,
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -183,7 +237,7 @@ export class TurnLoop implements SessionRunner {
       role: "assistant",
       content:
         `ORCHESTRATOR: hit iteration cap of ${maxIterations} without a final answer. ` +
-        "Try a narrower request or raise maxOrchestratorIterations in models.json.",
+        `Try a narrower request or raise the "${turn.profile.role}" role's maxIterations in models.json.`,
     };
     turn.append(truncationNotice);
     ctx.events.publish(OrchestratorEventTypes.WARNING, {

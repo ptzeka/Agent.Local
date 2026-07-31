@@ -115,6 +115,11 @@ export function formatEvent(event: RunnerEvent): string {
       return chalk.yellowBright(`[warning] ${message}\n`);
     }
 
+    case "budget-exceeded": {
+      // must say WHY the turn stopped: a bare cancel is indistinguishable from a user stop on screen
+      return chalk.yellowBright(`\n[budget] ${String(event.data.detail ?? "token ceiling reached")}\n`);
+    }
+
     case "system-failure": {
       // the reason is dropped here on purpose: failTurn always follows an [EVALUATOR] FAILED line that
       // already printed the identical reason, so this stays the terse terminal marker, not a second copy

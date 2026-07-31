@@ -25,12 +25,10 @@ export interface ResolveProfileParams {
 export function resolveTurnProfile(params: ResolveProfileParams): TurnProfile {
   const { role, config, modelsRegistry } = params;
   const def = modelsRegistry.getRoleDefinition(role);
-  // a model's own iterationCap wins; absent it, the role's declared cap; absent that, a floor
-  const modelCap = modelsRegistry.getIterationCapForModel(def.model);
 
   return {
     role,
-    maxIterations: modelCap ?? def.maxIterations ?? 16,
+    maxIterations: def.maxIterations ?? 16,
     temperature: def.temperature ?? 0.2,
     // a dispatchable role is a leaf sub-agent; a non-dispatchable role coordinates and binds
     needsTurnBinding: !def.dispatchable,

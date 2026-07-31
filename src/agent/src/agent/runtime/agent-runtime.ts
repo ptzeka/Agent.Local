@@ -160,15 +160,21 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private beginTurn(options: { signal: AbortSignal }): RunnerContext {
     const events = new Eventing();
     this.events.add(events);
+    // wrap, never replace: a unit cancelling this cuts the turn and everything below it, never the caller's signal
+    const cutoff = new CancellationToken(options.signal);
     return {
       session: this.session,
       events,
-      signal: options.signal,
+      signal: cutoff.signal,
+      cutoff,
       logger: this.logger,
       registry: this.container,
       runtime: this,
       hasPending: () => this.inbox.hasPending(this.session.sessionId),
       pullInjectedPrompt: () => this.inbox.dequeue(this.session.sessionId),
+      executedRecord: (item) => this.inbox.executedRecord(this.session.sessionId, item),
+      recordExecuted: (item, record) =>
+        this.inbox.recordExecuted(this.session.sessionId, item, record),
     };
   }
 
@@ -217,8 +223,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   }
 
   // queued and drained as the next turn, so safe whether or not a turn is in flight
-  injectInput(content: string, source?: string): void {
-    this.inbox.push(this.session.sessionId, content, source);
+  // idempotencyKey lets a producer that can retry (an HTTP caller) name the request itself instead of
+  // relying on a content hash; false means the push was absorbed as a duplicate
+  injectInput(content: string, source?: string, idempotencyKey?: string): boolean {
+    return this.inbox.push(this.session.sessionId, content, source, idempotencyKey);
   }
 
   // --------------------------------------------------------------------------

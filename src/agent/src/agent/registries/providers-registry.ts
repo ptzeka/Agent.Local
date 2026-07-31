@@ -1,4 +1,5 @@
 import { createProvider, type LLMProvider } from "../providers/index.js";
+import type { ResiliencePolicy } from "../resilience.js";
 import { ModelsFile, ModelDefinition } from "./configuration-registry.js";
 
 // providers the agent itself can build a chat client for; other roles (e.g. "reranker") name models
@@ -10,7 +11,8 @@ export class ProvidersRegistry
     private definitions = {} as Record<string, ModelDefinition>;
     private providers = {} as Record<string, LLMProvider>;
 
-    constructor(readonly modelsFile: ModelsFile) {}
+    // one policy for every model this runtime builds, so the breaker is keyed per provider:model
+    constructor(readonly modelsFile: ModelsFile, private readonly resilience?: ResiliencePolicy) {}
     
     public loadModels()
     {
@@ -36,6 +38,7 @@ export class ProvidersRegistry
                 host: ollamaHost,
                 apiKey: anthropicApiKey,
                 geminiApiKey,
+                resilience: this.resilience,
             });
         }
     }
