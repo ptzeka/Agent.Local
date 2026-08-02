@@ -22,10 +22,18 @@ const MEMOMCP_SERVER_NAME = "memomcp";
 // so the bulkhead is what bounds how many children one server can have in flight at once
 const MAX_CONCURRENT_CALLS_PER_SERVER = 4;
 
+// past this many parked calls the model asked one server for more than a round can plausibly need, so refusing
+// hands it back a tool-error it can act on instead of a queue it cannot see
+const MAX_QUEUED_CALLS_PER_SERVER = 16;
+
 // notices go to the runtime bus, not a turn bus: a breaker outlives the turn that tripped it
 function toolResilience(ctx: RuntimeContext): ResiliencePolicy {
   return new ResiliencePolicy("tool", {
     maxConcurrent: MAX_CONCURRENT_CALLS_PER_SERVER,
+    maxQueued: MAX_QUEUED_CALLS_PER_SERVER,
+    // no wait cap: the server's own toolTimeoutMs already bounds the permit holder, and a second deadline here
+    // would only misfire on a legitimately slow agent that is queued behind healthy work
+
     onNotice: (notice) =>
       ctx.eventing?.publish(OrchestratorEventTypes.WARNING, { message: notice.message }),
   });

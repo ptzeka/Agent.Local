@@ -28,6 +28,10 @@ export interface ResilienceOptions {
   breakerCooldownMs?: number;
   // bulkhead: in-flight calls allowed per key before the rest queue; 0 disables the limit entirely
   maxConcurrent?: number;
+  // callers allowed to wait for a permit before the ceiling starts refusing instead of queueing; 0 is unbounded
+  maxQueued?: number;
+  // how long a caller may wait for a permit before it gives up; 0 waits indefinitely
+  maxWaitMs?: number;
   onNotice?: (notice: ResilienceNotice) => void;
 }
 
@@ -42,6 +46,8 @@ const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_BREAKER_THRESHOLD = 4;
 const DEFAULT_BREAKER_COOLDOWN_MS = 30_000;
 const DEFAULT_MAX_CONCURRENT = 0;
+const DEFAULT_MAX_QUEUED = 0;
+const DEFAULT_MAX_WAIT_MS = 0;
 
 // thrown INSTEAD of calling through while a key's breaker is open, so a dead dependency fails fast
 // rather than burning an attempt (and a timeout) on every iteration of a turn
@@ -51,6 +57,14 @@ export class BreakerOpenError extends Error {
       `"${key}" is unavailable: ${Math.ceil(retryInMs / 1000)}s left on the circuit breaker ` +
         `after repeated failures.`
     );
+  }
+}
+
+// thrown INSTEAD of waiting when the bulkhead cannot seat a caller: the queue is full, the wait ran out, or
+// the caller was cancelled while parked. Typed like BreakerOpenError so a port can tell "refused" from "failed"
+export class BulkheadRejectedError extends Error {
+  constructor(readonly key: string, readonly reason: "queue-full" | "timeout" | "cancelled", detail: string) {
+    super(`"${key}" call refused by the concurrency limit: ${detail}`);
   }
 }
 
@@ -71,6 +85,8 @@ export class ResiliencePolicy {
   private readonly breakerThreshold: number;
   private readonly breakerCooldownMs: number;
   private readonly maxConcurrent: number;
+  private readonly maxQueued: number;
+  private readonly maxWaitMs: number;
   private readonly onNotice?: (notice: ResilienceNotice) => void;
 
   constructor(private readonly port: string, options: ResilienceOptions = {}) {
@@ -79,6 +95,8 @@ export class ResiliencePolicy {
     this.breakerThreshold = options.breakerThreshold ?? DEFAULT_BREAKER_THRESHOLD;
     this.breakerCooldownMs = options.breakerCooldownMs ?? DEFAULT_BREAKER_COOLDOWN_MS;
     this.maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
+    this.maxQueued = options.maxQueued ?? DEFAULT_MAX_QUEUED;
+    this.maxWaitMs = options.maxWaitMs ?? DEFAULT_MAX_WAIT_MS;
     this.onNotice = options.onNotice;
   }
 
@@ -172,8 +190,9 @@ export class ResiliencePolicy {
   // Bulkhead
   // ---------------------------------------------------------------------------
 
-  // a permit for `key`, immediately or parked FIFO behind the ceiling. Abortable while queued, so a user
-  // stop never waits on calls ahead of it that are themselves being cancelled
+  // a permit for `key`, immediately or parked FIFO behind the ceiling. Both waiting bounds refuse rather than
+  // queue forever: an unbounded queue converts an overloaded dependency into unbounded latency, which reads to
+  // the caller as a hang. Abortable while queued, so a user stop never waits on calls ahead of it
   private acquire(key: string, signal?: AbortSignal): Promise<void> {
     const state = this.stateFor(key);
     if (this.maxConcurrent <= 0 || state.active < this.maxConcurrent) {
@@ -181,7 +200,14 @@ export class ResiliencePolicy {
       return Promise.resolve();
     }
 
+    if (this.maxQueued > 0 && state.waiters.length >= this.maxQueued) {
+      return Promise.reject(
+        new BulkheadRejectedError(key, "queue-full", `${this.maxQueued} call(s) already waiting`)
+      );
+    }
+
     return new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const waiter = {
         admit: () => {
           detach();
@@ -190,10 +216,11 @@ export class ResiliencePolicy {
         },
         abort: () => {
           detach();
-          reject(new Error(`"${key}" call cancelled while queued behind the concurrency limit`));
+          reject(new BulkheadRejectedError(key, "cancelled", "cancelled while queued"));
         },
       };
       const detach = (): void => {
+        if (timer) clearTimeout(timer);
         signal?.removeEventListener("abort", waiter.abort);
         const index = state.waiters.indexOf(waiter);
         if (index !== -1) state.waiters.splice(index, 1);
@@ -201,6 +228,12 @@ export class ResiliencePolicy {
 
       if (signal?.aborted) return waiter.abort();
       signal?.addEventListener("abort", waiter.abort, { once: true });
+      if (this.maxWaitMs > 0) {
+        timer = setTimeout(() => {
+          detach();
+          reject(new BulkheadRejectedError(key, "timeout", `waited ${this.maxWaitMs}ms for a permit`));
+        }, this.maxWaitMs);
+      }
       state.waiters.push(waiter);
     });
   }

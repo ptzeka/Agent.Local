@@ -1,6 +1,6 @@
 import { describe, expect, jest, test } from "@jest/globals";
 
-import { BreakerOpenError, ResiliencePolicy, type ResilienceNotice } from "../src/agent/resilience.js";
+import { BreakerOpenError, BulkheadRejectedError, ResiliencePolicy, type ResilienceNotice } from "../src/agent/resilience.js";
 import { ResilientProvider } from "../src/agent/providers/resilient-provider.js";
 import { ScopedToolClient } from "../src/agent/scoped-tool-client.js";
 import type { ChatOptions, ChatResponse, LLMProvider } from "../src/agent/providers/provider.js";
@@ -309,9 +309,53 @@ describe("ResiliencePolicy bulkhead", () => {
 
     controller.abort();
     await expect(queued).rejects.toThrow("queued");
+    // typed like the breaker's refusal so a port can tell "never ran" from "ran and failed"
+    await expect(queued).rejects.toMatchObject({ reason: "cancelled", key: "filesagent" });
 
     g.releaseAll();
     await expect(running).resolves.toBe("ok");
+  });
+
+  test("a full queue refuses instead of parking behind it", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1, maxQueued: 1 });
+    const g = gated();
+
+    const running = policy.run("filesagent", g.work);
+    const queued = policy.run("filesagent", g.work);
+    const refused = policy.run("filesagent", g.work);
+
+    await expect(refused).rejects.toBeInstanceOf(BulkheadRejectedError);
+    await expect(refused).rejects.toMatchObject({ reason: "queue-full" });
+
+    g.releaseAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    g.releaseAll();
+    await expect(Promise.all([running, queued])).resolves.toEqual(["ok", "ok"]);
+  });
+
+  test("a permit wait that runs out refuses rather than queueing forever", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1, maxWaitMs: 5 });
+    const g = gated();
+
+    const running = policy.run("fsmcp", g.work);
+    const queued = policy.run("fsmcp", g.work);
+
+    await expect(queued).rejects.toMatchObject({ reason: "timeout" });
+
+    g.releaseAll();
+    await expect(running).resolves.toBe("ok");
+  });
+
+  test("a refused call never took a permit, so the ceiling still admits the next arrival", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1, maxQueued: 0, maxWaitMs: 5 });
+    const g = gated();
+
+    const running = policy.run("fsmcp", g.work);
+    await expect(policy.run("fsmcp", g.work)).rejects.toMatchObject({ reason: "timeout" });
+
+    g.releaseAll();
+    await expect(running).resolves.toBe("ok");
+    await expect(policy.run("fsmcp", async () => "ok")).resolves.toBe("ok");
   });
 
   test("no ceiling configured means no limit", async () => {
