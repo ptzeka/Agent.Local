@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 // ---------------------------------------------------------------------------
 
 // the runner treats the source purely as a tag; extend freely
-export type TurnSource = "user" | "subsession" | "api";
+export type TurnSource = "user" | "api";
 
 export type TurnStatus = "running" | "done" | "error" | "cancelled";
 

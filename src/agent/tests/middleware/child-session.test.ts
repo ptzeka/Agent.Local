@@ -14,7 +14,7 @@ import type { Principal } from "../../src/agent/identity/types.js";
 import type { DatabaseHandle } from "@agent-local/common/db";
 import { makeContext, makeTestDb } from "./context.js";
 
-// a sub-session is created fresh with a pre-minted id, inherits the parent's workspace, optionally seeds
+// a child session is created fresh with a pre-minted id, inherits the parent's workspace, optionally seeds
 // standing context, stamps the inherited identity, and persists itself for the store/picker
 describe("ChildSessionMiddleware", () => {
   let tempDir: string;

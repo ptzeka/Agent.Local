@@ -19,7 +19,6 @@ import { TurnResultCapture } from "../../src/agent/synthetic-mcp/turn-result-too
 import { TURN_RESULT_SERVER_NAME } from "../../src/agent/synthetic-mcp/turn-result-server.js";
 import { TurnLoop } from "../../src/agent/runners/turn-loop.js";
 import { ModelCaller } from "../../src/agent/runners/model-caller.js";
-import { ToolCaller } from "../../src/agent/runners/tool-caller.js";
 import { Turn } from "../../src/agent/runners/turn.js";
 import { runEvaluatorPass, EVALUATOR_SERVER_NAME } from "../../src/agent/runners/evaluator-pass.js";
 import { validateOutput } from "@agent-local/mcp/output-contract";
@@ -574,10 +573,10 @@ describe("ModelCaller", () => {
 });
 
 // ---------------------------------------------------------------------------
-// ToolCaller
+// Turn.runToolCalls — the fanned-out tool round
 // ---------------------------------------------------------------------------
 
-describe("ToolCaller", () => {
+describe("Turn.runToolCalls", () => {
   const calls = [
     { id: "c1", name: "fs_read", arguments: { path: "a" } },
     { id: "c2", name: "fs_write", arguments: { path: "b" } },
@@ -587,7 +586,7 @@ describe("ToolCaller", () => {
     const h = makeHarness();
     const turn = h.makeTurn({ turnRequest: "the ask" });
 
-    const reported = await new ToolCaller().run(turn, h.ctx, calls);
+    const reported = await turn.runToolCalls(calls);
 
     expect(reported).toBeNull();
     expect(h.callTool).toHaveBeenCalledTimes(2);
@@ -602,7 +601,7 @@ describe("ToolCaller", () => {
     h.callTool.mockResolvedValueOnce({ content: "boom", isError: true } as never);
     const turn = h.makeTurn({ turnRequest: "the ask" });
 
-    await new ToolCaller().run(turn, h.ctx, [calls[0]!]);
+    await turn.runToolCalls([calls[0]!]);
 
     expect(h.conversation.messages[0]!.content).toBe("[tool-error] boom");
   });
@@ -612,7 +611,7 @@ describe("ToolCaller", () => {
     const turn = h.makeTurn({ turnRequest: "the ask" });
     turn.resultSink.set({ status: "fail", result: { reason: "could not" } } as never);
 
-    const reported = await new ToolCaller().run(turn, h.ctx, [calls[0]!]);
+    const reported = await turn.runToolCalls([calls[0]!]);
 
     expect(reported).toMatchObject({ status: "fail" });
     // the reporting path flushes with its envelope instead, so this one must not double-flush
@@ -625,8 +624,42 @@ describe("ToolCaller", () => {
     const h = makeHarness({ signal: controller.signal });
     const turn = h.makeTurn({ turnRequest: "the ask" });
 
-    await expect(new ToolCaller().run(turn, h.ctx, calls)).rejects.toThrow("turn aborted");
+    await expect(turn.runToolCalls(calls)).rejects.toThrow("turn aborted");
     expect(h.callTool).not.toHaveBeenCalled();
+  });
+
+  test("the round's calls run concurrently, not one after another", async () => {
+    const h = makeHarness();
+    let inFlight = 0;
+    let peak = 0;
+    h.callTool.mockImplementation(async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setImmediate(resolve));
+      inFlight -= 1;
+      return { content: "tool-ok", isError: false };
+    });
+    const turn = h.makeTurn({ turnRequest: "the ask" });
+
+    await turn.runToolCalls(calls);
+
+    expect(peak).toBe(2);
+  });
+
+  test("tool messages keep the model's call order however the calls settled", async () => {
+    const h = makeHarness();
+    // c1 resolves LAST, so settle order is the reverse of call order
+    h.callTool.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return { content: "slow", isError: false };
+    });
+    h.callTool.mockImplementationOnce(async () => ({ content: "fast", isError: false }));
+    const turn = h.makeTurn({ turnRequest: "the ask" });
+
+    await turn.runToolCalls(calls);
+
+    expect(h.conversation.messages.map((message) => message.toolCallId)).toEqual(["c1", "c2"]);
+    expect(h.conversation.messages.map((message) => message.content)).toEqual(["slow", "fast"]);
   });
 });
 

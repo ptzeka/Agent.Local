@@ -1,7 +1,7 @@
 import type { ToolDescriptor } from "@agent-local/mcp";
 import { Eventing } from "@agent-local/common/eventing";
 import type { Conversation } from "../conversation/conversation.js";
-import type { ChatMessage, LLMProvider } from "../providers/provider.js";
+import type { ChatMessage, LLMProvider, ToolCall } from "../providers/provider.js";
 import type { ModelsFile } from "../registries/configuration-registry.js";
 import { ScopedToolClient } from "../scoped-tool-client.js";
 import { DispatchTracker } from "../synthetic-mcp/dispatch-tracker.js";
@@ -200,6 +200,54 @@ export class Turn {
   }
 
   // ---------------------------------------------------------------------------
+  // Tool round
+  // ---------------------------------------------------------------------------
+
+  // one iteration's tool calls, run CONCURRENTLY: a model emitting several calls in one reply asserts they
+  // are independent, and the round itself is the join — every result is paired before the next model call,
+  // so no call outlives the turn that issued it
+  // returns the landed report_result when the mandated terminal call fired; the loop decides what that means
+  async runToolCalls(calls: ToolCall[]): Promise<ReportedTurnResult | null> {
+    if (this.ctx.signal.aborted) {
+      throw new Error("turn aborted: user requested stop");
+    }
+    this.toolCallsMade += calls.length;
+
+    // the scoped client degrades every failure to an isError result, so only a user abort escapes this gather
+    const executions = await Promise.all(
+      calls.map(async (call) => {
+        this.ctx.logger.debug("tool call start", { name: call.name });
+        const execution = await this.scopedClients.callTool(
+          call.name,
+          call.arguments,
+          this.ctx.events,
+          this.ctx.signal
+        );
+        this.ctx.logger.debug("tool call end", { name: call.name, isError: execution.isError });
+        return execution;
+      })
+    );
+
+    // index-aligned with `calls`, so the transcript keeps the model's own ordering whatever order they settled in
+    this.append(
+      ...executions.map((execution, index) =>
+        toolResultMessage(
+          calls[index],
+          execution.isError ? `[tool-error] ${execution.content}` : execution.content
+        )
+      )
+    );
+
+    // the reporting path flushes with its own envelope, so only the continuing path persists here
+    const reported = this.resultSink.value;
+    if (reported) return reported;
+
+    // persist this round so a crash mid-turn loses at most the round in flight
+    await this.flush();
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Results
   // ---------------------------------------------------------------------------
 
@@ -267,6 +315,16 @@ export class Turn {
       reported,
     };
   }
+}
+
+// pure mapper: a tool execution into the transcript's tool message shape
+function toolResultMessage(call: ToolCall, content: string): ChatMessage {
+  return {
+    role: "tool",
+    content,
+    toolCallId: call.id,
+    toolName: call.name,
+  };
 }
 
 // ---------------------------------------------------------------------------

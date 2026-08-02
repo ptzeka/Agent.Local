@@ -7,7 +7,7 @@ import type { McpClientRegistry } from "../registries/index.js";
 import type { RuntimeContext } from "../runtime/types.js";
 import { SessionToken } from "../runtime/tokens.js";
 import { OrchestratorEventTypes } from "../runners/runner-events.js";
-import { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
+import { DispatchTracker, dispatchSignature } from "./dispatch-tracker.js";
 import type { TurnBindable, TurnBinding } from "./types.js";
 import { buildSubRuntime } from "../runtime/build-sub-runtime.js";
 import { CancellationToken } from "@agent-local/common/lifetime";
@@ -97,17 +97,16 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
       };
     }
 
-    // cap and duplicate guard run BEFORE the mutex so we fail fast without queuing behind a running dispatch
+    // admission runs BEFORE the mutex so we fail fast without queuing behind a running dispatch
     const tracker = this.turnTracker;
+    const signature = dispatchSignature({ tool, args: toolArgs, intent });
     if (tracker) {
-      const reservation = tracker.reserve();
-      if (!reservation.ok) {
+      const reservation = tracker.reserve(signature);
+      if (!reservation.ok && reservation.kind === "capped") {
         this.turnEvents.publish(OrchestratorEventTypes.WARNING, { message: reservation.reason });
         return { isError: true, content: `[dispatch-blocked] ${reservation.reason}` };
       }
-
-      const ask: DispatchAsk = { tool, args: toolArgs, intent };
-      if (tracker.isDuplicate(dispatchSignature(ask))) {
+      if (!reservation.ok) {
         return {
           isError: true,
           content:
@@ -125,7 +124,7 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     this.runLock = new Promise((r) => (resolve = r));
     try {
       await prev;
-      return await this.runDispatch(tool, toolArgs, intent, tracker);
+      return await this.runDispatch(tool, toolArgs, intent, tracker, signature);
     } finally {
       resolve();
     }
@@ -148,7 +147,8 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     tool: string,
     toolArgs: Record<string, unknown>,
     intent: string,
-    tracker: DispatchTracker | undefined
+    tracker: DispatchTracker | undefined,
+    signature: string
   ): Promise<ToolExecutionResult> {
     const signal = this.dispatchSignal();
     const askMessage =
@@ -214,9 +214,8 @@ export class ExecutorLocalMcp extends LocalMcp implements TurnBindable {
     // sourced from the child's MetricsRegistry (own + tallied subtree) now that token spend lives there, not on the session
     if (runtime) usage = { ...runtime.metricsTotals(), sessionId: runtime.getSession().sessionId };
 
-    if (tracker && ok) {
-      tracker.recordSuccess(dispatchSignature({ tool, args: toolArgs, intent }));
-    }
+    // releases the admission either way: a failed dispatch frees its signature so a corrected retry is allowed
+    tracker?.settle(signature, ok);
 
     this.turnEvents.publish(OrchestratorEventTypes.DISPATCH_FEEDBACK, {
       // `ok` reflects only whether the executor sub-run completed, not whether the mutation

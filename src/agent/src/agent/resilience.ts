@@ -26,6 +26,8 @@ export interface ResilienceOptions {
   // consecutive transient failures that open the breaker; 0 disables breaking entirely
   breakerThreshold?: number;
   breakerCooldownMs?: number;
+  // bulkhead: in-flight calls allowed per key before the rest queue; 0 disables the limit entirely
+  maxConcurrent?: number;
   onNotice?: (notice: ResilienceNotice) => void;
 }
 
@@ -39,6 +41,7 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 const DEFAULT_BASE_DELAY_MS = 500;
 const DEFAULT_BREAKER_THRESHOLD = 4;
 const DEFAULT_BREAKER_COOLDOWN_MS = 30_000;
+const DEFAULT_MAX_CONCURRENT = 0;
 
 // thrown INSTEAD of calling through while a key's breaker is open, so a dead dependency fails fast
 // rather than burning an attempt (and a timeout) on every iteration of a turn
@@ -51,18 +54,23 @@ export class BreakerOpenError extends Error {
   }
 }
 
-interface BreakerState {
+// one key's health AND its capacity: the breaker decides whether a call may run, the bulkhead how many may
+// run at once. Both are per-dependency facts about the same key, so they share one entry rather than two maps
+interface KeyState {
   consecutiveFailures: number;
   openedAt: number | null;
+  active: number;
+  waiters: Array<{ admit: () => void; abort: () => void }>;
 }
 
 export class ResiliencePolicy {
-  private readonly breakers = new Map<string, BreakerState>();
+  private readonly keys = new Map<string, KeyState>();
 
   private readonly maxAttempts: number;
   private readonly baseDelayMs: number;
   private readonly breakerThreshold: number;
   private readonly breakerCooldownMs: number;
+  private readonly maxConcurrent: number;
   private readonly onNotice?: (notice: ResilienceNotice) => void;
 
   constructor(private readonly port: string, options: ResilienceOptions = {}) {
@@ -70,10 +78,26 @@ export class ResiliencePolicy {
     this.baseDelayMs = options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS;
     this.breakerThreshold = options.breakerThreshold ?? DEFAULT_BREAKER_THRESHOLD;
     this.breakerCooldownMs = options.breakerCooldownMs ?? DEFAULT_BREAKER_COOLDOWN_MS;
+    this.maxConcurrent = options.maxConcurrent ?? DEFAULT_MAX_CONCURRENT;
     this.onNotice = options.onNotice;
   }
 
+  // the permit is taken FIRST so the breaker verdict reflects the moment the call actually runs, not the
+  // moment it queued — a call parked behind a ceiling must not act on a reading that has since gone stale
   async run<T>(key: string, work: () => Promise<T>, options: RunOptions = {}): Promise<T> {
+    await this.acquire(key, options.signal);
+    try {
+      return await this.runAdmitted(key, work, options);
+    } finally {
+      this.release(key);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Retry + breaker
+  // ---------------------------------------------------------------------------
+
+  private async runAdmitted<T>(key: string, work: () => Promise<T>, options: RunOptions): Promise<T> {
     const blocked = this.blockedFor(key);
     if (blocked > 0) throw new BreakerOpenError(key, blocked);
 
@@ -109,30 +133,29 @@ export class ResiliencePolicy {
     }
   }
 
-  // ---------------------------------------------------------------------------
-
   // ms remaining on an open breaker; 0 when the key may be called (closed, or the cooldown has elapsed
   // and this call is the half-open probe)
   private blockedFor(key: string): number {
-    const state = this.breakers.get(key);
+    const state = this.keys.get(key);
     if (!state?.openedAt) return 0;
     const remaining = this.breakerCooldownMs - (Date.now() - state.openedAt);
     return remaining > 0 ? remaining : 0;
   }
 
   private recordSuccess(key: string): void {
-    const state = this.breakers.get(key);
+    const state = this.keys.get(key);
     if (!state) return;
     // a successful half-open probe closes the breaker
     if (state.openedAt) {
       this.notify({ port: this.port, key, kind: "breaker-closed", message: `"${key}" recovered` });
     }
-    this.breakers.delete(key);
+    state.consecutiveFailures = 0;
+    state.openedAt = null;
   }
 
   private recordFailure(key: string): void {
     if (this.breakerThreshold <= 0) return;
-    const state = this.breakers.get(key) ?? { consecutiveFailures: 0, openedAt: null };
+    const state = this.stateFor(key);
     state.consecutiveFailures += 1;
     if (state.consecutiveFailures >= this.breakerThreshold) {
       state.openedAt = Date.now();
@@ -143,7 +166,76 @@ export class ResiliencePolicy {
         message: `"${key}" failed ${state.consecutiveFailures}× — pausing calls for ${Math.round(this.breakerCooldownMs / 1000)}s`,
       });
     }
-    this.breakers.set(key, state);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Bulkhead
+  // ---------------------------------------------------------------------------
+
+  // a permit for `key`, immediately or parked FIFO behind the ceiling. Abortable while queued, so a user
+  // stop never waits on calls ahead of it that are themselves being cancelled
+  private acquire(key: string, signal?: AbortSignal): Promise<void> {
+    const state = this.stateFor(key);
+    if (this.maxConcurrent <= 0 || state.active < this.maxConcurrent) {
+      state.active += 1;
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        admit: () => {
+          detach();
+          state.active += 1;
+          resolve();
+        },
+        abort: () => {
+          detach();
+          reject(new Error(`"${key}" call cancelled while queued behind the concurrency limit`));
+        },
+      };
+      const detach = (): void => {
+        signal?.removeEventListener("abort", waiter.abort);
+        const index = state.waiters.indexOf(waiter);
+        if (index !== -1) state.waiters.splice(index, 1);
+      };
+
+      if (signal?.aborted) return waiter.abort();
+      signal?.addEventListener("abort", waiter.abort, { once: true });
+      state.waiters.push(waiter);
+    });
+  }
+
+  // the freed permit is handed straight to the next waiter, so a later arrival can never jump the queue
+  private release(key: string): void {
+    const state = this.keys.get(key);
+    if (!state) return;
+    state.active -= 1;
+
+    const next = state.waiters.shift();
+    if (next) return next.admit();
+    this.pruneIfIdle(key, state);
+  }
+
+  // ---------------------------------------------------------------------------
+
+  private stateFor(key: string): KeyState {
+    const existing = this.keys.get(key);
+    if (existing) return existing;
+    const state: KeyState = { consecutiveFailures: 0, openedAt: null, active: 0, waiters: [] };
+    this.keys.set(key, state);
+    return state;
+  }
+
+  // entries are transient: one survives only while a call is in flight or the breaker still remembers something
+  private pruneIfIdle(key: string, state: KeyState): void {
+    if (
+      state.active === 0 &&
+      state.waiters.length === 0 &&
+      state.consecutiveFailures === 0 &&
+      state.openedAt === null
+    ) {
+      this.keys.delete(key);
+    }
   }
 
   private notify(notice: ResilienceNotice): void {

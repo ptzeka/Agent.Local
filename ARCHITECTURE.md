@@ -57,7 +57,7 @@ user, per workflow.
 
 There is **one** `AgentRuntime`. It serves every shape the system runs in — an
 interactive CLI chat, a headless workflow step, an executor child spawned to
-perform a mutation, a detached sub-session — and the only thing that differs
+perform a mutation, a role-agent child answering one ask — and the only thing that differs
 between them is which steps are stacked in its build pipeline and which **role**
 it runs.
 
@@ -373,14 +373,15 @@ a second.
 | `connect-mcp-servers` | external stdio servers from `mcp.json`, mounted behind the same neutral registry |
 | `orchestrator` | the one stateless Orchestrator runner |
 | `context` | the hashed, per-role context snapshot |
-| `input-inbox` / `session-manager` | InputInbox / SessionManager (sub-sessions) |
+| `input-inbox` | InputInbox — the pull seam out-of-band producers queue prompts through |
 
 **Child variant** ([build-sub-runtime.ts](src/agent/src/agent/runtime/build-sub-runtime.ts)) —
-the executor and detached sub-sessions run this. Three steps change:
+the executor and the role-agents run this. Two steps change:
 `identity`+`anonymous` become `inherited-user` (the child adopts the parent's
-verified `user` rather than re-authenticating), `session` becomes `child-session`
-(a fresh, parent-linked session), and the SessionManager is capped at zero —
-the structural guard that keeps nesting one level deep.
+verified `user` rather than re-authenticating), and `session` becomes
+`child-session` (a fresh, parent-linked session). Nesting is bounded upstream
+instead: a dispatchable role mounts no agents of its own, so a chain is at most
+coordinator → agent.
 
 ---
 
@@ -419,7 +420,7 @@ The [`Mcp`](src/agent/src/agent/mcp/mcp.ts) contract (`listTools` / `callTool`)
 makes every tool source interchangeable to the runtime:
 
 - **LocalMcp** — in-process toolsets dispatched as plain function calls (fsmcp,
-  excel, subsessions, executor, bucket). A toolset + a server name + a whitelist
+  excel, delaymcp, executor, turnresult). A toolset + a server name + a whitelist
   entry is a complete new capability — no new runtime code.
 - **McpClient** — external stdio servers (e.g. codemcp), mounted from `mcp.json`
   behind the same registry as the local ones.
@@ -463,8 +464,10 @@ Runners are stateless logic over runtime-provided state
   multi-producer input race-free **by construction**.
 - **InputInbox** — steering *inside* a live round; drained at the start of each
   orchestrator iteration. One level below a round.
-- **subsession** — detached children with caps, intent dedupe, and settle
-  notifications that auto-wake the parent's turn loop.
+- **Role-agent** — a dispatchable role mounted as `<role>__ask`: one call runs
+  it as a fresh child and returns an answer gated by the role's declared
+  `returns`. Blocking, so the round that asked is the join; a reply's calls fan
+  out with `Promise.all`, so N agents run at once and all land together.
 
 ---
 
@@ -472,15 +475,15 @@ Runners are stateless logic over runtime-provided state
 
 `dispatchAsync` is single-flight — it refuses to run while the session is already
 running. That guard is correct but fragile the moment several producers can start
-work: the user typing, a sub-session settling, a future API call. The
+work: the user typing, an out-of-band producer, a future API call. The
 **TurnRunner** removes that race structurally rather than defensively — every
 producer *enqueues*, and exactly one pump loop is ever the caller of
 `dispatchAsync`. Full detail in [TURN_ROUND.md](TURN_ROUND.md).
 
 Four nested levels, coarse to fine:
 
-- **Turn** — one engagement with the session (a user request, a sub-session
-  report, a future API call). FIFO queue; one pump consumes it.
+- **Turn** — one engagement with the session (a user request, an injected
+  prompt, a future API call). FIFO queue; one pump consumes it.
 - **Round** — one `dispatchAsync` within a turn. Bounded by `maxRoundsPerTurn`
   (default 8), which caps any settle → react → spawn feedback loop by spilling
   excess into a fresh queued turn.
@@ -489,12 +492,12 @@ Four nested levels, coarse to fine:
 
 Input lands by deterministic, synchronous placement: a mid-turn round (input that
 belongs to the work in flight) → a coalesced round (don't grow the queue with
-duplicates of a settling child) → a new turn. The caller always receives a
-`settled` promise that resolves with the turn's final snapshot and **never
-rejects** — errors live inside the snapshot. A sub-session report therefore either
-joins the live engagement as a round, or wakes an idle session into a fresh turn
-that answers unprompted. The data model is plain serializable records throughout —
-the seam that lets the scheduler become durable (see Scaling).
+duplicates) → a new turn. The caller always receives a `settled` promise that
+resolves with the turn's final snapshot and **never rejects** — errors live inside
+the snapshot. An injected prompt therefore either joins the live engagement as a
+round, or wakes an idle session into a fresh turn that answers unprompted. The
+data model is plain serializable records throughout — the seam that lets the
+scheduler become durable (see Scaling).
 
 ---
 
@@ -537,7 +540,7 @@ reachable** — never by the model and never inside a prompt.
   artifact and cannot drift.
 - **One check, every level** — `session.user` is inherited by every child runtime
   (`inherited-user`), so the same deterministic intersection applies at the
-  orchestrator, at the executor it dispatches, and at any sub-session — written
+  orchestrator, at the executor it dispatches, and at any role-agent — written
   once, uniform at every nesting depth.
 - **Mutation audit** — every state change runs through the executor gateway with
   its own session trail, recording who, which session, which tool, and with what

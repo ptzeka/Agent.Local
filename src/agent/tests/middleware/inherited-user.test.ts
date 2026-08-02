@@ -5,7 +5,7 @@ import type { Principal } from "../../src/agent/identity/types.js";
 import { UserToken } from "../../src/agent/runtime/tokens.js";
 import { makeContext } from "./context.js";
 
-// a sub-session inherits its parent's resolved identity (principal); this stamps it onto the context for
+// a child inherits its parent's resolved identity (principal); this stamps it onto the context for
 // ChildSessionMiddleware to pick up
 describe("InheritedUserMiddleware", () => {
   test("seeds ctx.user with the provided principal and continues", async () => {

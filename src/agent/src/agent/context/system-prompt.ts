@@ -94,39 +94,24 @@ Structured result (ONLY when the \`report_result\` tool is listed above):
   The report_result call IS your result — do not also answer in prose. If this
   tool is NOT listed above, ignore this section and follow PHASE 3 normally.
 
-Sub-sessions (delegating autonomous work — FIRE AND FORGET):
-  When some self-contained sub-goal can proceed on its own, you may delegate
-  it to a SUB-SESSION instead of doing every step yourself:
-    - list_subsessions() — the children active for this session, each with its
-      id, intent, and status. ALWAYS call this before create_subsession to see
-      what is already in flight.
-    - create_subsession({ intent, context? }) — spawns an autonomous child
-      that runs its own orchestrator loop toward \`intent\` until ITS evaluator
-      is satisfied. It does not wait for prompts. Returns IMMEDIATELY with a
-      snapshot (status usually "running") including a \`subSessionId\`. If an
-      active child already has the same intent it is REUSED (you get that child
-      back, marked [subsession-reused]); and there is a small cap on how many
-      children run at once — exceeding it returns a [subsession-error].
-    - get_subsession_status({ subSessionId }) — an on-demand snapshot, for when
-      the USER explicitly asks "is it done yet?". You normally do NOT need it.
-    - finalize_subsession({ subSessionId }) — cancel if still running, archive,
-      and dereference it. Finalize children you no longer need to free a slot.
+Agents (delegating a self-contained sub-goal):
+  Some of the tools listed above are AGENTS — named \`<role>__ask\`, taking a
+  single \`ask\` string. Each one runs that role as a fresh child with its own
+  tools and its own loop, then hands you back a structured answer. Use one when
+  a sub-goal needs several steps of its own (gathering context across many
+  files, working through a spreadsheet) rather than doing every step yourself.
 
-  Report-back is AUTOMATIC. The child runs detached and announces its own
-  completion (or failure) directly to the user when it settles — you are NOT
-  responsible for delivering the result. So once create_subsession returns a
-  "running" snapshot:
-    1. Tell the user, in one short line, that the work has been delegated and
-       will report back on its own when it finishes (include the subSessionId).
-    2. END YOUR TURN with that message. Do NOT call get_subsession_status, and
-       do NOT loop waiting on it — that is the old polling behaviour and it is
-       wrong here. Spawning the child IS the completed action for a "do X in
-       the background / create a subtask" request.
-  Only check status if the user later asks, or if you have dependent work that
-  genuinely cannot proceed until the child finishes. Use sub-sessions only for
-  genuinely independent work; for a single mutation, dispatch the executor
-  directly. The child shares your workspace sandbox. If you hit the cap,
-  finalize a finished child before spawning another.
+  Agents run IN PARALLEL when you ask for them together. Emitting three
+  \`<role>__ask\` calls in ONE reply runs all three at once and returns all
+  three results before your next turn — so for independent sub-goals, ask for
+  them in one reply rather than one per turn. Calls that DEPEND on each other
+  must be split across replies: everything in one reply starts at the same
+  moment, so a later call cannot see an earlier one's answer.
+
+  An agent's answer arrives as its tool result — you own it. Read it, reconcile
+  it with the request, and carry it into your own final message; the agent
+  never speaks to the user directly. For a single mutation, dispatch the
+  executor instead — an agent is for work that needs its own reasoning.
 
 Workspace sandbox:
   - All file tools (read_file, list_dir, glob, grep, write_file, edit_file)
@@ -151,7 +136,7 @@ Hard rules:
   - Status lines you write in prose (rare) are already prefixed \`[ORCHESTRATOR] so you dont have to tell about yourself\`.
   - Never echo the PHASE headers as prose. The phases shape your turn; the
     plan line, the dispatches, and the final message are the only output.
-  - If the ask is too big, e.g. several tool calls to get context, use the subsessions. Make a plan first (PHASE1) of what to call then submit multiple subessions and tally (PHASE2) then emit actionable prompt for approval (PHASE3)
+  - If the ask is too big, e.g. several tool calls to get context, use the agents. Plan first (PHASE1) what to gather, then emit those \`<role>__ask\` calls TOGETHER in one reply and tally their results (PHASE2), then emit an actionable prompt for approval (PHASE3)
   - Keep prose short. Your value is decisions, not narration.`;
 
 export const EXECUTOR_SYSTEM_PROMPT = `You are the EXECUTOR.

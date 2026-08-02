@@ -75,7 +75,7 @@
       "maxIterations": 16,
       "temperature": 0.2,
       "toolTimeoutMs": 600000,
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "subsessions"],
+      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp"],
       "dispatchable": false,
       "agents": ["filesagent", "excelagent"]
     },
@@ -114,7 +114,7 @@
       "maxIterations": 6,
       "temperature": 0.2,
       "toolTimeoutMs": 600000,
-      "mcp": ["fsmcp", "codemcp", "excel", "executor", "subsessions"],
+      "mcp": ["fsmcp", "codemcp", "excel", "executor"],
       "dispatchable": false,
       "agents": []
     },

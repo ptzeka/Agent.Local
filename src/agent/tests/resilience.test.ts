@@ -231,3 +231,98 @@ describe("ScopedToolClient degradation", () => {
     expect(calls).toBe(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bulkhead
+// ---------------------------------------------------------------------------
+
+// a round's tool calls run concurrently and a role-agent call spawns a whole child runtime, so the per-key
+// ceiling is what stops one server from being handed more work than it can carry
+describe("ResiliencePolicy bulkhead", () => {
+  // a work function that parks until released, reporting how many ran at once
+  function gated() {
+    const releases: Array<() => void> = [];
+    let inFlight = 0;
+    let peak = 0;
+    const work = async () => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise<void>((resolve) => releases.push(resolve));
+      inFlight -= 1;
+      return "ok";
+    };
+    return {
+      work,
+      releaseAll: () => {
+        while (releases.length > 0) releases.shift()!();
+      },
+      started: () => releases.length,
+      peak: () => peak,
+    };
+  }
+
+  test("admits up to the ceiling and queues the rest", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 2 });
+    const g = gated();
+
+    const all = Promise.all([1, 2, 3, 4].map(() => policy.run("filesagent", g.work)));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(g.started()).toBe(2);
+
+    g.releaseAll();
+    await new Promise((resolve) => setImmediate(resolve));
+    g.releaseAll();
+    await expect(all).resolves.toEqual(["ok", "ok", "ok", "ok"]);
+    expect(g.peak()).toBe(2);
+  });
+
+  test("the ceiling is per key, so a slow server never blocks a different one", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1 });
+    const g = gated();
+
+    const all = Promise.all([
+      policy.run("filesagent", g.work),
+      policy.run("excelagent", g.work),
+    ]);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(g.started()).toBe(2);
+
+    g.releaseAll();
+    await expect(all).resolves.toEqual(["ok", "ok"]);
+  });
+
+  test("a thrown call still releases its permit", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1, breakerThreshold: 0 });
+    // not transient, so it fails without burning retries
+    await expect(policy.run("fsmcp", async () => { throw new Error("bad input"); })).rejects.toThrow("bad input");
+    await expect(policy.run("fsmcp", async () => "ok")).resolves.toBe("ok");
+  });
+
+  test("a queued call is cancellable, so a stop never waits on the work ahead of it", async () => {
+    const policy = new ResiliencePolicy("tool", { ...FAST, maxConcurrent: 1 });
+    const g = gated();
+    const controller = new AbortController();
+
+    const running = policy.run("filesagent", g.work);
+    const queued = policy.run("filesagent", g.work, { signal: controller.signal });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    controller.abort();
+    await expect(queued).rejects.toThrow("queued");
+
+    g.releaseAll();
+    await expect(running).resolves.toBe("ok");
+  });
+
+  test("no ceiling configured means no limit", async () => {
+    const policy = new ResiliencePolicy("tool", FAST);
+    const g = gated();
+
+    const all = Promise.all([1, 2, 3, 4, 5].map(() => policy.run("fsmcp", g.work)));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(g.started()).toBe(5);
+
+    g.releaseAll();
+    await expect(all).resolves.toHaveLength(5);
+  });
+});

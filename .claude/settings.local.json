@@ -19,7 +19,8 @@
       "Bash(npm test *)",
       "mcp__codemcp__locate_code",
       "mcp__codemcp__get_symbol",
-      "mcp__codemcp__locate_file"
+      "mcp__codemcp__locate_file",
+      "Bash(npx tsc *)"
     ]
   }
 }

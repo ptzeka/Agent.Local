@@ -17,7 +17,7 @@ describe("TurnLoopMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  // Negative on ordering: unlike SessionManagerMiddleware, this step reads only
+  // Negative on ordering: unlike the MCP step, this step reads only
   // infra (registry/tools), so it must build even when identity/session steps
   // have not run — i.e. it can sit anywhere in the pipeline.
   test("builds from a bare context with no identity/session populated", async () => {

@@ -458,6 +458,28 @@ _created 2026-06-21 · updated 2026-06-21 · by ptzeka_
 Completed slices of the M1 milestone (see [BACKLOG.md](BACKLOG.md) for the open
 M1 sequence and the M1-4 prompt-cache slices below).
 
+### M1-10 · Parallel independent tool execution — `~1d` · P2
+Tool calls in one assistant reply ran serially, so N agent asks cost N× the wall
+clock and the loop had no way to fan out at all.
+- [x] `Turn.runToolCalls` runs a reply's calls with `Promise.all` and pairs each
+      result back by array index, so the transcript keeps the model's own call
+      order however the calls settled. The turn signal threads into every call;
+      `ScopedToolClient` already degrades a transport failure to an `isError`
+      result, so only a user abort escapes the gather and no `tool_use` is ever
+      left without its `tool_result`.
+- [x] Writes stay serialized without extra machinery: `ExecutorLocalMcp.runLock`
+      already chains dispatches whatever order they arrive in.
+- [x] Concurrency is bounded by the `maxConcurrent` bulkhead added to
+      `ResiliencePolicy` (per server key), not by the loop — the round stays
+      unbounded and the scarce dependency enforces its own ceiling.
+- [x] The round is also where `ToolCaller` died: every dependency it had was
+      already a `Turn` field, so it was a stateless single-method class wrapping
+      a `Turn` method.
+- [x] Tests: calls overlap in time (peak in-flight = 2); results map back to the
+      right ids when the first call settles last; an aborted signal runs nothing.
+
+_created 2026-06-20 · updated 2026-07-31 · by ptzeka_
+
 ### M1-1 · Provider retry/backoff — `~1.5d` · P0
 A transient model error (overloaded `503 UNAVAILABLE`, `429` too-many-requests, 5xx) threw
 straight through `provider.chat` → orchestrator → caller with NO retry, so a "try again

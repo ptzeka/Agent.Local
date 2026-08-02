@@ -1,7 +1,6 @@
 import chalk from "chalk";
 
 import type { RunnerEvent } from "../agent/runners/runner-events.js";
-import type { SubSessionNotification } from "../agent/runners/subsession.js";
 import type { TurnRunnerEvent } from "../agent/runners/turn-runner.js";
 
 // all colour/formatting lives here so the orchestrator stays UI-agnostic and just emits structured events
@@ -151,28 +150,6 @@ export function formatTurnEvent(event: TurnRunnerEvent): string {
   }
 }
 
-// leading newline so an out-of-band child report doesn't smear the live prompt; tagged as an async report
-export function formatSubSessionNotification(notification: SubSessionNotification): string {
-  const shortId = notification.subSessionId.split("-")[0] ?? notification.subSessionId.slice(0, 8);
-  const intent = notification.intent.replace(/\s+/g, " ").trim();
-
-  if (notification.status === "done") {
-    const result = (notification.result ?? "").replace(/\s+/g, " ").trim();
-    const preview = result.length > 200 ? `${result.slice(0, 199)}…` : result;
-    return (
-      "\n" +
-      chalk.greenBright(`✓ [sub-session ${shortId} done] `) +
-      chalk.gray(intent) +
-      (preview.length > 0 ? `\n  ${preview}` : "") +
-      "\n"
-    );
-  }
-
-  const reason = (notification.error ?? "unknown error").replace(/\s+/g, " ").trim();
-  return (
-    "\n" + chalk.redBright(`✗ [sub-session ${shortId} error] `) + chalk.gray(intent) + `\n  ${reason}\n`
-  );
-}
 
 // gray because executor lines persist in the CHILD's transcript, not this one (saved-keeps-color); errors stay red
 function formatExecutorEvent(data: Record<string, unknown>): string {
@@ -290,7 +267,7 @@ export function renderHelp(write: (text: string) => void = (text) => void proces
     chalk.bold("Commands:"),
     "  /help                       show this help",
     "  /exit                       quit the REPL",
-    "  /stop                       stop everything: current turn, queued turns, sub-sessions (typing \"stop\" works too)",
+    "  /stop                       stop everything: current turn and queued turns (typing \"stop\" works too)",
     "  /reset                      stop everything, then clear conversation history",
     "  /compact                    stop everything, then fold the conversation into a summary checkpoint",
     "  /session                    print current session info (id, ctx hash, workspace, turns)",

@@ -4,7 +4,6 @@ import type { InboxItem } from "./input-inbox.js";
 import type { RunnerContext } from "./middleware/runner-middleware.js";
 import { Turn } from "./turn.js";
 import { ModelCaller } from "./model-caller.js";
-import { ToolCaller } from "./tool-caller.js";
 import { runEvaluatorPass, type EvaluationState, EVALUATOR_SERVER_NAME } from "./evaluator-pass.js";
 import { budgetCancelDetail } from "./policies/budget.js";
 import { selectCompletionPolicy } from "./policies/completion.js";
@@ -60,9 +59,8 @@ export class TurnLoop implements SessionRunner {
   private readonly contributors: readonly ContextContributor[];
   private readonly completionOverride?: CompletionPolicy;
 
-  // the loop's own steps, not extension points: they gather data, they never end a turn
+  // the loop's own step, not an extension point: it gathers data, it never ends a turn
   private readonly model = new ModelCaller();
-  private readonly tools = new ToolCaller();
 
   constructor(private readonly role: string, policies: TurnPolicies = {}) {
     this.contextProvider = policies.contextProvider ?? new SnapshotContextProvider();
@@ -159,7 +157,7 @@ export class TurnLoop implements SessionRunner {
         // report_result is the mandated terminal action on a dispatched turn: once it lands, end with the
         // structured verdict — its status drives the outcome, so a "fail" verdict fails the step even though
         // the agent answered honestly (a true-but-negative answer must not bank as satisfied)
-        const reported = await this.tools.run(turn, ctx, reply.toolCalls);
+        const reported = await turn.runToolCalls(reply.toolCalls);
         if (reported) return turn.finalizeReported(reported);
         continue;
       }

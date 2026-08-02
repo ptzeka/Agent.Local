@@ -59,7 +59,7 @@ export interface RuntimeContext {
   readonly sandboxRoot: string;
   readonly credentials: IdentityContext;
   logger: ILogger;
-  // steps hand this to resources that must die with the runtime (MCP clients, sub-session children)
+  // steps hand this to resources that must die with the runtime (MCP clients, agent children)
   readonly runtimeSignal: AbortSignal;
   // chained under the host's by EventingMiddleware; steps and the orchestrator publish here
   eventing: Eventing | undefined;

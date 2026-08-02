@@ -14,8 +14,6 @@ import type { IMiddleware, RuntimeContext } from "../types.js";
 
 export interface ContextMiddlewareParams {
   roleName: string;
-  // false for a coordinator-less sub-session, so its snapshot (and hash) faithfully omits sub-session tools
-  includeSubSessions?: boolean;
 }
 
 // captures the non-conversation context the orchestrator sends and stamps its content-addressed hash on the session
@@ -36,11 +34,7 @@ export class ContextMiddleware implements IMiddleware {
 
     // declared-but-unconnected servers resolve to undefined and are skipped, so the snapshot reflects what is mounted
     const mcpRegistry = ctx.registry.get(McpRegistryToken);
-    const serverNames = ctx.registry
-      .get(ModelsToken)
-      .getValidMcpServersForRole(role)
-      // drop sub-session tools for a coordinator-less run so its hash stays faithful
-      .filter((serverName) => this.params.includeSubSessions !== false || serverName !== "subsessions");
+    const serverNames = ctx.registry.get(ModelsToken).getValidMcpServersForRole(role);
     const tools = serverNames.flatMap((serverName) => mcpRegistry.getClient(serverName)?.listTools() ?? []);
 
     await this.stampRoleSnapshot(ctx, role, tools);

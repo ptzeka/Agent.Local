@@ -16,7 +16,9 @@ export const REPORT_RESULT_TOOL = "report_result";
 export class TurnResultCapture implements TurnResultSink {
   private reported?: ReportedTurnResult;
 
+  // first-wins: a round's tool calls run concurrently, so two report_result calls could both land here
   set(reported: ReportedTurnResult): void {
+    if (this.reported) return;
     this.reported = reported;
   }
 

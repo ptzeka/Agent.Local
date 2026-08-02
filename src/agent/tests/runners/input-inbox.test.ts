@@ -41,9 +41,9 @@ describe("InputInbox pending-duplicate dropping", () => {
     const wake = jest.fn();
     inbox.setOnPush(wake);
 
-    expect(inbox.push("s1", "child A finished", "subsession")).toBe(true);
-    expect(inbox.push("s1", "child A finished", "subsession")).toBe(false);
-    expect(inbox.push("s1", "child A finished", "subsession")).toBe(false);
+    expect(inbox.push("s1", "child A finished", "api")).toBe(true);
+    expect(inbox.push("s1", "child A finished", "api")).toBe(false);
+    expect(inbox.push("s1", "child A finished", "api")).toBe(false);
 
     expect(inbox.dequeue("s1")?.content).toBe("child A finished");
     expect(inbox.dequeue("s1")).toBeNull();
@@ -53,8 +53,8 @@ describe("InputInbox pending-duplicate dropping", () => {
 
   test("whitespace-only differences are the same request", () => {
     const inbox = new InputInbox();
-    inbox.push("s1", "child   A\nfinished", "subsession");
-    expect(inbox.push("s1", "child A finished", "subsession")).toBe(false);
+    inbox.push("s1", "child   A\nfinished", "api");
+    expect(inbox.push("s1", "child A finished", "api")).toBe(false);
   });
 
   test("a human retyping the same thing always gets a fresh turn", () => {
@@ -70,8 +70,8 @@ describe("InputInbox pending-duplicate dropping", () => {
 
   test("different content is never collapsed", () => {
     const inbox = new InputInbox();
-    inbox.push("s1", "child A finished", "subsession");
-    expect(inbox.push("s1", "child B finished", "subsession")).toBe(true);
+    inbox.push("s1", "child A finished", "api");
+    expect(inbox.push("s1", "child B finished", "api")).toBe(true);
   });
 });
 
@@ -100,7 +100,7 @@ describe("InputInbox executed ledger", () => {
 
   test("ttl 0 disables the ledger — duplicate DROPPING still works", () => {
     const inbox = new InputInbox({ ttlMs: 0 });
-    inbox.push("s1", "report", "subsession");
+    inbox.push("s1", "report", "api");
     const item = inbox.dequeue("s1")!;
     inbox.recordExecuted("s1", item, SETTLED);
 
@@ -109,7 +109,7 @@ describe("InputInbox executed ledger", () => {
 
   test("a record past its ttl is forgotten", () => {
     const inbox = new InputInbox({ ttlMs: 10 });
-    inbox.push("s1", "report", "subsession");
+    inbox.push("s1", "report", "api");
     const item = inbox.dequeue("s1")!;
     inbox.recordExecuted("s1", item, { ...SETTLED, finishedAt: Date.now() - 1000 });
 

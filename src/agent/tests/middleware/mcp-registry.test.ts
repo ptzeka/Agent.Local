@@ -27,8 +27,6 @@ const stubConfigurationRegistry = {
   getMcpServerDefs: () => ({}),
 } as unknown as ConfigurationRegistry;
 
-// the middleware resolves the coordinator to wire subsession tools at mount time; none of these tests spawn
-const stubSessionManager = {} as unknown as import("../../src/agent/runners/subsession.js").SubSessionCoordinator;
 
 // constructs the MCP client registry (bound to the sandbox root), registers the in-process servers
 // (filesystem and Excel) as LocalMcp instances on it, then continues the chain
@@ -57,7 +55,6 @@ describe("McpRegistryMiddleware", () => {
       mcpRegistry: undefined,
       modelsRegistry: stubModelsRegistry,
       configurationRegistry: stubConfigurationRegistry,
-      sessionManager: stubSessionManager,
     });
     const next = jest.fn(async () => {});
 
@@ -96,7 +93,6 @@ describe("McpRegistryMiddleware", () => {
       mcpRegistry: undefined,
       modelsRegistry: splitModelsRegistry,
       configurationRegistry: stubConfigurationRegistry,
-      sessionManager: stubSessionManager,
     });
 
     await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, jest.fn(async () => {}));
@@ -138,7 +134,6 @@ describe("McpRegistryMiddleware", () => {
       mcpRegistry: undefined,
       modelsRegistry: executorModelsRegistry,
       configurationRegistry: stubConfigurationRegistry,
-      sessionManager: stubSessionManager,
     });
 
     await new McpRegistryMiddleware({ role: "executor" }).initialize(ctx, jest.fn(async () => {}));
@@ -173,7 +168,6 @@ describe("McpRegistryMiddleware", () => {
         mcpRegistry: undefined,
         modelsRegistry: evaluatorAwareRegistry,
         configurationRegistry: stubConfigurationRegistry,
-        sessionManager: stubSessionManager,
       });
 
     const coordinatorCtx = mount("orchestrator");
@@ -211,7 +205,6 @@ describe("McpRegistryMiddleware", () => {
         mcpRegistry: undefined,
         modelsRegistry: agentAwareRegistry,
         configurationRegistry: stubConfigurationRegistry,
-        sessionManager: stubSessionManager,
       });
 
     const granterCtx = mount();

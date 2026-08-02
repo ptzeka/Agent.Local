@@ -12,6 +12,8 @@ export class DispatchTracker {
   private dispatchesSinceCheck = 0;
   // signatures of mutations that SUCCEEDED this turn; an identical re-dispatch is a no-progress loop and is refused
   private readonly succeededSignatures = new Set<string>();
+  // signatures admitted but not yet settled; without it two concurrent identical asks both pass the duplicate check
+  private readonly inFlightSignatures = new Set<string>();
 
   constructor(
     private readonly maxDispatches: number,
@@ -22,21 +24,32 @@ export class DispatchTracker {
     return this.dispatches;
   }
 
+  // the single admission gate: cap and duplicate are decided together, under one synchronous check, because a
+  // round's tool calls are concurrent — a two-step check would let identical asks interleave between the steps.
   // counts against the cap even on failure, so a hard loop still burns toward the cap as a backstop
-  public reserve(): { ok: true } | { ok: false; reason: string } {
+  public reserve(
+    signature: string
+  ): { ok: true } | { ok: false; kind: "capped" | "duplicate"; reason: string } {
     if (this.dispatches >= this.maxDispatches) {
-      return { ok: false, reason: `dispatch cap of ${this.maxDispatches} per turn reached` };
+      return {
+        ok: false,
+        kind: "capped",
+        reason: `dispatch cap of ${this.maxDispatches} per turn reached`,
+      };
     }
+    if (this.succeededSignatures.has(signature) || this.inFlightSignatures.has(signature)) {
+      return { ok: false, kind: "duplicate", reason: "identical mutation already run this turn" };
+    }
+    this.inFlightSignatures.add(signature);
     this.dispatches += 1;
     return { ok: true };
   }
 
-  public isDuplicate(signature: string): boolean {
-    return this.succeededSignatures.has(signature);
-  }
-
-  // remembers the signature (to catch a later identical re-dispatch) and advances the periodic-check counter
-  public recordSuccess(signature: string): void {
+  // releases the admission. A success is remembered (to catch a later identical re-dispatch) and advances the
+  // periodic-check counter; a failure frees the signature so a corrected retry of the same ask is allowed
+  public settle(signature: string, ok: boolean): void {
+    this.inFlightSignatures.delete(signature);
+    if (!ok) return;
     this.succeededSignatures.add(signature);
     this.dispatchesSinceCheck += 1;
   }

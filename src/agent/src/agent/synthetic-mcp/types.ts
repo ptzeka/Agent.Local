@@ -3,7 +3,6 @@ import type { Eventing } from "@agent-local/common/eventing";
 import type { LocalTool, ToolExecutionResult } from "@agent-local/mcp";
 import type { ToolDescriptor } from "@agent-local/mcp/tooldescriptor";
 import type { Session } from "../session/session.js";
-import type { SubSessionCoordinator } from "../runners/subsession.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import type { DispatchTracker } from "./dispatch-tracker.js";
 
@@ -24,7 +23,6 @@ export interface ToolContext {
   readonly session: Session;
   readonly workspace: Workspace;
   readonly sandboxRoot: string;
-  readonly coordinator?: SubSessionCoordinator;
   readonly signal?: AbortSignal;
   // present only on dispatched (non-interactive) turns: where report_result hands its structured verdict back
   readonly resultSink?: TurnResultSink;

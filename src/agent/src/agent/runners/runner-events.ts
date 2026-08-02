@@ -21,9 +21,6 @@ export const OrchestratorEventTypes = {
   // a token ceiling stopped the turn; distinct from WARNING so a host can act on cost, not parse prose
   BUDGET_EXCEEDED: "budget-exceeded",
   INJECTED_INPUT: "injected-input",
-  SUBSESSION_START: "subsession-start",
-  SUBSESSION_STATUS: "subsession-status",
-  SUBSESSION_FINALIZE: "subsession-finalize",
   RECALL_START: "recall-start",
   RECALL_FINALIZE: "recall-finalize",
   WARNING: "warning",

@@ -278,13 +278,6 @@ to the cap.
       semantic backstop.
 - [ ] Test: a fake model emitting one repeated call stops before `maxIterations`.
 
-### M1-10 · Parallel independent tool execution — `~1d` · P2
-Tool calls in one assistant turn run serially (`runners/orchestrator.ts` ~L334).
-- [ ] Run independent calls concurrently (`Promise.all`), preserving result
-      order and honoring the turn signal; keep writes serialized if any
-      ordering hazard exists (start read-only-only).
-- [ ] Test: two read calls overlap in time; results map back to the right ids.
-
 ### M1-11a · Event-routed assistant message (atomic baseline) — `~0.25d` · P2
 Groundwork for streaming: confirm the assistant message reaches the UI **only**
 through the event bus, atomically (collect-then-emit one event), with persistence
@@ -2976,17 +2969,21 @@ relies on landed with M9-5 (see [BACKLOG.DONE.md](BACKLOG.DONE.md)).
       `ToolExecutionResult.usage` from `metricsTotals()`, and `shutdown({ mode:
       "drain" })` in a `finally`. The `returns` gate is M9-5's, not this body's.
 - [ ] Mount one `new LocalMcp(role, [agentTool], ctx)` per dispatchable role in
-      the whitelist. Recursion guard collapses to one rule — a dispatchable role
-      mounts no agent tools — retiring the cap-0 coordinator in
-      [build-sub-runtime.ts:59](src/agent/src/agent/runtime/build-sub-runtime.ts#L59).
+      the whitelist.
+- [x] Recursion guard collapses to one rule — a dispatchable role mounts no
+      agent tools (`mountRoleAgents` early-returns), retiring the cap-0
+      coordinator that used to live in `build-sub-runtime.ts`.
 - [ ] Delete `RoleDispatchLocalMcp` and `ExecutorLocalMcp` (its two decorations
       — live tool enum, dispatch tracker — become the descriptor thunk and a
       registry-resolved guard).
-- [ ] Delete `SessionManager`, `subsessions-server` + its tools,
-      `SubSessionCoordinator`, `ChildRuntime`, `SubRuntimeFactory`, the
+- [x] Delete `SessionManager`, `subsessions-server` + its tools,
+      `SubSessionCoordinator`, `SubRuntimeFactory`, the
       `SubSessionNotification` seam, `SessionManagerMiddleware` (both
       pipelines), `awaitSubSessions`/`awaitAllSubSessions`,
       `rewireTurnWake`'s notification arm, and `includeSubSessions`.
+      `ChildRuntime` and `SubRuntimeRefs` were KEPT — both spawn seams still
+      need the contract — and moved into `build-sub-runtime.ts`, where the
+      builder that mints them lives.
 - [ ] Fix while collapsing: `mountExternal`'s `switch`
       ([mcp-registry.ts:183](src/agent/src/agent/runtime/middleware/mcp-registry.ts#L183))
       handles only `memomcp`, so `codemcp` — whitelisted for the executor role —
@@ -2998,13 +2995,19 @@ relies on landed with M9-5 (see [BACKLOG.DONE.md](BACKLOG.DONE.md)).
 **Done when:** one code path builds a child runtime, `grep buildSubRuntime`
 shows a single call site, and no child is finalized without being shut down.
 
-**Blocked on one decision:** sub-sessions today can outlive their parent turn
-and report back through the inbox. This collapse makes every agent call
-blocking. Confirm nothing depends on detached children before deleting
-`SessionManager` — if something does, the fallback is a `detach: true`
-descriptor flag on the same tool rather than the separate seam. Note that
-[tool-caller.ts:14](src/agent/src/agent/runners/tool-caller.ts#L14) runs calls
-sequentially, so parallel fan-out needs M1-10 to survive this change.
+**Decision RESOLVED (2026-07-31): detached children retired, every agent call is
+blocking.** Concurrency comes from the round instead — `Turn.runToolCalls` fans a
+reply's calls out with `Promise.all`, so N agents run at once and all join before
+the next model call (the industry-standard shape: Claude Code's parallel
+`tool_use`, LangGraph's superstep join). The `detach: true` fallback was NOT
+taken; if turn-spanning work is ever needed it must come back with a durable
+handle and an evaluator gate that refuses `satisfied` while children are
+outstanding, not an in-memory map. Two guards moved with the deletion: the
+per-parent spawn cap became a per-key **bulkhead** in `ResiliencePolicy` (the
+third member of retry/breaker, keyed by server name, so every tool call is
+bounded at the seam that already wraps them), and the duplicate-dispatch check
+moved into `DispatchTracker.reserve()` — a fanned-out round admits both identical
+asks before either completes, so admission, not completion, has to decide.
 
 **Deliberately not doing:** moving sub-agents out-of-process. The registry holds
 `Mcp`, and both `LocalMcp` and `McpClient` implement it, so the orchestrator

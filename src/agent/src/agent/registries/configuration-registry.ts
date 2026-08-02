@@ -73,7 +73,7 @@ export interface OrchestrationConfig {
   // so it stops the live model call, its tools, and any child runtime through the one signal
   maxTokensPerTurn: number;
   maxTokensPerSession: number;
-  // how long a settled request stays replay-able, so a re-delivered subsession/api request answers from
+  // how long a settled request stays replay-able, so a re-delivered api request answers from
   // the record instead of re-running its side effects; 0 disables the executed ledger (pending-duplicate
   // dropping is always on — it is what collapses N identical child reports into one turn)
   idempotencyTtlMs: number;

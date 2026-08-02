@@ -329,12 +329,12 @@ describe("TurnRunner events", () => {
     const h = makeHarness();
     h.runner.start();
 
-    h.push("x", "subsession");
+    h.push("x", "api");
     await h.runner.awaitIdle();
 
     expect(h.events.map((event) => event.type)).toEqual(["turn-start", "turn-done"]);
-    expect(h.events[0]).toMatchObject({ source: "subsession" });
-    expect(h.events[1]).toMatchObject({ source: "subsession", status: "done" });
+    expect(h.events[0]).toMatchObject({ source: "api" });
+    expect(h.events[1]).toMatchObject({ source: "api", status: "done" });
     await h.runner.stop();
   });
 

@@ -2,7 +2,7 @@ import type { Principal } from "../../identity/types.js";
 import { UserToken } from "../tokens.js";
 import type { IMiddleware, RuntimeContext } from "../types.js";
 
-// sub-runtime's replacement for Identity+Anonymous: a sub-session adopts the parent's resolved principal wholesale
+// sub-runtime's replacement for Identity+Anonymous: a child adopts the parent's resolved principal wholesale
 export class InheritedUserMiddleware implements IMiddleware {
   constructor(private readonly user: Principal | undefined) {}
 

@@ -10,10 +10,8 @@ import {
 import type { ContextLoader } from "../context/context-loader.js";
 import type { ChatMessage } from "../providers/provider.js";
 import type { Session, UsageTotals } from "../session/session.js";
-import { SessionManager } from "../session/session-manager.js";
 import { SessionStore, type SessionSummary } from "../session/session-store.js";
 import { Summarizer, buildSummaryMessage, isSummaryMessage } from "../runners/summarizer.js";
-import type { SubSessionNotification, SubSessionNotificationListener, SubRuntimeRefs } from "../runners/subsession.js";
 import { TurnRunner, type TurnRunnerListener, type TurnSource } from "../runners/turn-runner.js";
 import type { Workspace } from "../registries/workspace-registry.js";
 import { WorkspaceRegistry } from "../registries/workspace-registry.js";
@@ -36,7 +34,6 @@ import {
   TurnLoopToken,
   ProvidersToken,
   RunnerMiddlewareToken,
-  SessionManagerToken,
   SessionToken,
   StoreToken,
   WorkspaceToken,
@@ -73,7 +70,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   private contextLoader!: ContextLoader;
   private turnLoop!: TurnLoop;
   private inbox!: InputInbox;
-  private sessionManager!: SessionManager;
   private store!: SessionStore;
   private workspaces!: WorkspaceRegistry;
   // held so the per-turn RunnerContext can resolve runtime services on demand
@@ -83,9 +79,8 @@ export class AgentRuntime implements AgentRuntimeQueryable {
 
   // optional: hosts opt in via startTurnLoop; headless single runs call dispatchAsync directly
   private turnRunner: TurnRunner | null = null;
-  private unsubscribeTurnWake: (() => void) | null = null;
 
-  // parent cutoff for every turn, sub-session, and MCP client this runtime owns
+  // parent cutoff for every turn, agent child, and MCP client this runtime owns
   private readonly scope: CancellationToken;
   // created ONCE for the runtime's lifetime: a rebuild must not re-mint it or it strands host subscriptions
   private readonly events: Eventing = new Eventing();
@@ -140,12 +135,11 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     this.workspace = ctx.registry.get(WorkspaceToken);
     this.turnLoop = ctx.registry.get(TurnLoopToken);
     this.inbox = ctx.registry.get(InboxToken);
-    this.sessionManager = ctx.registry.get(SessionManagerToken);
     this.container = ctx.registry;
     this.runnerMiddlewares = ctx.registry.getAll(RunnerMiddlewareToken);
 
-    // reset() rebuilds the SessionManager, so re-bind the wake or it points at the dead one
-    this.rewireTurnWake();
+    // reset() rebuilds the inbox, so re-bind the wake or it points at the dead one
+    this.rewireInboxWake();
 
     this.logger.debug("runtime initialized", { sessionId: this.session.sessionId });
     return this;
@@ -252,24 +246,22 @@ export class AgentRuntime implements AgentRuntimeQueryable {
       }
     );
 
-    this.rewireTurnWake();
+    this.rewireInboxWake();
     this.turnRunner.start();
     return this.turnRunner;
   }
 
-  // stop all work and sub work, trigger signal cascade abort
-  stopAllWork(): { cancelledTurns: number; cancelledSubSessions: number } {
-    const cancelledSubSessions = this.sessionManager.cancelActive(this.session.sessionId);
+  // stop all work, trigger signal cascade abort. A cancelled turn takes its in-flight agent children with
+  // it: they run inside its tool calls and share its signal
+  stopAllWork(): { cancelledTurns: number } {
     const cancelledTurns = this.turnRunner?.cancelAll() ?? 0;
     // one prompt per turn leaves later prompts queued mid-run: drop them so stop truly stops
     this.inbox.clear(this.session.sessionId);
-    return { cancelledTurns, cancelledSubSessions };
+    return { cancelledTurns };
   }
 
   // complete current work and stop
   async stopTurnLoop(): Promise<void> {
-    this.unsubscribeTurnWake?.();
-    this.unsubscribeTurnWake = null;
     if (this.turnRunner) {
       await this.turnRunner.stop();
       this.turnRunner = null;
@@ -285,20 +277,12 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   }
 
   private async runShutdown(options: { mode: "drain" | "abort"; timeoutMs?: number }): Promise<void> {
-    // unhook first: a child settling mid-teardown must not enqueue a wake turn
-    this.unsubscribeTurnWake?.();
-    this.unsubscribeTurnWake = null;
-
     const timeoutMs = options.timeoutMs ?? (options.mode === "abort" ? 5_000 : 30_000);
 
     const quiescence = (): Promise<void> =>
-      Promise.all([
-        this.turnRunner?.awaitIdle() ?? Promise.resolve(),
-        this.sessionManager.awaitAllActive(),
-      ]).then(() => undefined);
+      this.turnRunner?.awaitIdle() ?? Promise.resolve();
 
     if (options.mode === "abort") {
-      // sweep before scope cancel: finalize() suppresses children's report-backs
       this.stopAllWork();
       this.scope.cancel("shutdown");
       await settledWithin(quiescence(), timeoutMs);
@@ -321,19 +305,10 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     await this.finalize();
   }
 
-  // called from startTurnLoop and build() so a reset() (which rebuilds the manager) can't leave the wake stale
-  private rewireTurnWake(): void {
-    this.unsubscribeTurnWake?.();
-    this.unsubscribeTurnWake = null;
-    if (!this.turnRunner || !this.sessionManager) return;
-
-    // re-pointed here because reset() rebuilds the inbox, so the fresh one must drive the live runner
+  // called from startTurnLoop and build() so a reset() (which rebuilds the inbox) can't leave the wake stale
+  private rewireInboxWake(): void {
+    if (!this.turnRunner) return;
     this.inbox.setOnPush((source) => this.turnRunner?.wake(source as TurnSource | undefined));
-
-    // route a settled child's report through the one inbox interface, tagged so the wake carries the right source
-    this.unsubscribeTurnWake = this.sessionManager.onNotification((notification) => {
-      this.injectInput(formatSubSessionReport(notification), "subsession");
-    });
   }
 
   // public so callers can flush ad-hoc changes; dispatchAsync/reset/compact call it automatically
@@ -391,25 +366,6 @@ export class AgentRuntime implements AgentRuntimeQueryable {
     await this.finalize();
 
     return { summarizedCount, skipped: false, summary: summaryText };
-  }
-
-  // --------------------------------------------------------------------------
-  // Sub-session coordination
-  // --------------------------------------------------------------------------
-
-  // the REPL listens here so finished background tasks surface out-of-band
-  onSubSessionEvent(listener: SubSessionNotificationListener): () => void {
-    return this.sessionManager.onNotification(listener);
-  }
-
-  // headless single-run path drains this session's background tasks before exit
-  awaitSubSessions(): Promise<void> {
-    return this.sessionManager.awaitActive(this.session.sessionId);
-  }
-
-  // called on normal process exit so no detached task is abandoned
-  awaitAllSubSessions(): Promise<void> {
-    return this.sessionManager.awaitAllActive();
   }
 
   // --------------------------------------------------------------------------
@@ -496,25 +452,3 @@ export class AgentRuntime implements AgentRuntimeQueryable {
   }
 }
 
-// self-describing: the system prompt knows nothing about sub-session reports, so the message carries the facts AND what to do
-function formatSubSessionReport(notification: SubSessionNotification): string {
-  const header =
-    notification.status === "done"
-      ? `[sub-session report] Sub-session ${notification.subSessionId} COMPLETED.`
-      : `[sub-session report] Sub-session ${notification.subSessionId} FAILED.`;
-
-  const body =
-    notification.status === "done"
-      ? `Result:\n${notification.result ?? "(no result text)"}`
-      : `Error:\n${notification.error ?? "(no error detail)"}`;
-
-  return [
-    header,
-    `Intent: ${notification.intent}`,
-    body,
-    "",
-    "This report arrived asynchronously from a sub-session you previously spawned. " +
-      "Reconcile it with the original request it served: if follow-up work is needed, do it now; " +
-      "otherwise reply with a brief confirmation of the outcome for the user.",
-  ].join("\n");
-}

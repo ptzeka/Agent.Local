@@ -17,7 +17,6 @@ import {
   WorkspaceToken,
   TurnLoopToken,
   InboxToken,
-  SessionManagerToken,
 } from "../../src/agent/runtime/tokens.js";
 
 // an in-memory agent.sqlite with the real schema ensured: the DB-backed stores (session/conversation/metrics)
@@ -45,7 +44,6 @@ const SERVICE_TOKENS: Record<string, Token<unknown>> = {
   workspace: WorkspaceToken,
   turnLoop: TurnLoopToken,
   inbox: InboxToken,
-  sessionManager: SessionManagerToken,
 };
 
 // RuntimeContext seeded with only the infrastructure fields plus a fresh container — the shape

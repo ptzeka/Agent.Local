@@ -16,7 +16,6 @@ const fakeToolContext = {
   session: {},
   workspace: {},
   sandboxRoot: "/tmp/sandbox",
-  coordinator: undefined,
   signal: undefined,
 } as unknown as ToolContext;
 

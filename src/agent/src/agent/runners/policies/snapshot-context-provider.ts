@@ -46,7 +46,7 @@ export class SnapshotContextProvider implements ContextProvider {
       });
     }
 
-    // built per-turn because the live tool set can differ from the snapshot's (subsessions rebound each turn)
+    // built per-turn because the live tool set can differ from the snapshot's (turn-bound servers rebind each turn)
     const promptedInstructions = provider.supportsNativeTools
       ? ""
       : buildPromptedToolInstructions(visibleTools);

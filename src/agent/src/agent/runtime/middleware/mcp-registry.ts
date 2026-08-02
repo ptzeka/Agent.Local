@@ -3,14 +3,12 @@ import { McpClientRegistry } from "../../registries/index.js";
 import type { ModelRegistry } from "../../registries/index.js";
 import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY_SERVER_NAME } from "../../synthetic-mcp/fs-server.js";
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
-import { createSubsessionsLocalMcp, SUBSESSIONS_SERVER_NAME } from "../../synthetic-mcp/subsessions-server.js";
 import { TurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
 import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
 import { RoleDispatchLocalMcp, DISPATCH_TOOL } from "../../synthetic-mcp/role-dispatch-server.js";
 import { EVALUATOR_ROLE, EVALUATOR_SERVER_NAME, EVALUATE_TOOL } from "../../runners/evaluator-pass.js";
-import type { SubSessionCoordinator } from "../../runners/subsession.js";
-import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionManagerToken, SessionToken, WorkspaceToken } from "../tokens.js";
+import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
 import type { RuntimeContext, IMiddleware } from "../types.js";
 import { memoryCollectionFor, type Session } from "../../session/session.js";
 import { mountExternalMcp, type McpServerDef } from "./external-mcp.js";
@@ -20,15 +18,20 @@ import { OrchestratorEventTypes } from "../../runners/runner-events.js";
 // memomcp is segregated per session: each spawned instance reads/writes only this session's collection
 const MEMOMCP_SERVER_NAME = "memomcp";
 
+// a round's tool calls run concurrently, and a role-agent server spawns a whole child runtime per call,
+// so the bulkhead is what bounds how many children one server can have in flight at once
+const MAX_CONCURRENT_CALLS_PER_SERVER = 4;
+
 // notices go to the runtime bus, not a turn bus: a breaker outlives the turn that tripped it
 function toolResilience(ctx: RuntimeContext): ResiliencePolicy {
   return new ResiliencePolicy("tool", {
+    maxConcurrent: MAX_CONCURRENT_CALLS_PER_SERVER,
     onNotice: (notice) =>
       ctx.eventing?.publish(OrchestratorEventTypes.WARNING, { message: notice.message }),
   });
 }
 
-// builds the MCP registry and registers the in-process synthetic servers (fsmcp, Excel, subsessions)
+// builds the MCP registry and registers the in-process synthetic servers (fsmcp, Excel, turnresult)
 // runs after SessionMiddleware so workspace and session are available for the Excel server's tool context
 // stdio servers declared in mcp.json (codemcp, memomcp) are spawned here and receive ctx.runtimeSignal
 // to self-dispose; there is no registry-side teardown
@@ -61,9 +64,7 @@ export class McpRegistryMiddleware implements IMiddleware {
       mcpRegistry,
       validMcpClients,
       ctx,
-      serverTimeout,
-      // runs after SessionManagerMiddleware so subsession tools route to the live coordinator
-      ctx.registry.get(SessionManagerToken)
+      serverTimeout
     );
 
     this.mountRoleAgents(mcpRegistry, modelsRegistry, ctx);
@@ -88,8 +89,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     const executorServers = new McpClientRegistry(ctx.sandboxRoot, registry.resilience);
     const executorTimeout = modelsRegistry.getTimeoutForRole(EXECUTOR_ROLE);
     const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
-    // no coordinator: an executor must never spawn subsessions, so its seam keeps the "not available" error
-    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout, undefined);
+    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout);
     registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
   }
 
@@ -114,8 +114,7 @@ export class McpRegistryMiddleware implements IMiddleware {
     registry: McpClientRegistry,
     serverNames: string[] | undefined,
     ctx: RuntimeContext,
-    serverTimeout: number,
-    coordinator: SubSessionCoordinator | undefined
+    serverTimeout: number
   ): Promise<void> {
     const session = ctx.registry.get(SessionToken);
     const workspace = ctx.registry.get(WorkspaceToken);
@@ -145,14 +144,6 @@ export class McpRegistryMiddleware implements IMiddleware {
             sandboxRoot,
           }).setTimeout(serverTimeout));
           break;
-        case SUBSESSIONS_SERVER_NAME:
-          registry.registerClient(createSubsessionsLocalMcp({
-            session,
-            workspace,
-            sandboxRoot,
-            coordinator,
-          }).setTimeout(serverTimeout));
-          break;
         case TURN_RESULT_SERVER_NAME:
           // whitelisting it IS the opt-in: only the workflow-orchestrator role lists turnresult, so interactive
           // roles never mount it. its presence is what the runner reads to enter structured mode; the live sink
@@ -176,13 +167,16 @@ export class McpRegistryMiddleware implements IMiddleware {
   }
 
   // mounts each role named in this role's `agents` list as `<role>__ask`: one call runs that role as a fresh
-  // child and gates its answer on the role's `returns`. Depth is bounded by CONFIG, not code — a role whose
-  // own `agents` list is empty is a leaf, so a chain ends wherever the records stop granting agents.
+  // child and gates its answer on the role's `returns`.
   private mountRoleAgents(
     registry: McpClientRegistry,
     modelsRegistry: ModelRegistry,
     ctx: RuntimeContext
   ): void {
+    // an agent is a LEAF: a dispatchable role gets no agents of its own, so a chain is at most
+    // coordinator → agent and can never recurse, whatever the records happen to grant
+    if (modelsRegistry.getRoleDefinition(this.params.role).dispatchable) return;
+
     for (const name of modelsRegistry.getAgentsForRole(this.params.role)) {
       // self-reference would nest without bound, since every child would mount the same agent again
       if (name === this.params.role) {

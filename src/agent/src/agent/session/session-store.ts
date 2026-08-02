@@ -83,7 +83,7 @@ export class SessionStore {
   }
 
   // always owner-scoped: sessions are tied to a user, so no caller may list across users ("anonymous" is
-  // the owner bucket for logged-out sessions). Corrupt rows are dropped, not fatal; sub-sessions are omitted
+  // the owner bucket for logged-out sessions). Corrupt rows are dropped, not fatal; child sessions are omitted
   // since they aren't standalone-resumable.
   public async summaries(userId: string): Promise<SessionSummary[]> {
     const sessions = await this.getSessionsByUserId(userId);

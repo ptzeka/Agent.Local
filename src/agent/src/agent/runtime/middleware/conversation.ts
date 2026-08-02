@@ -32,7 +32,7 @@ export class ConversationMiddleware implements IMiddleware {
     if (standing && standing.length > 0 && conversation.length === 0) {
       conversation.append({
         role: "system",
-        content: `Sub-session standing context:\n\n${standing}`,
+        content: `Standing context:\n\n${standing}`,
       });
       await conversation.flush();
     }

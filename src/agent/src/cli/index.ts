@@ -29,7 +29,7 @@ import { parseArgs } from "./args.js";
 import { login, loadCachedToken } from "./cli-auth.js";
 import { trustLocalDevCa } from "./tls-trust.js";
 import { bannerSessionOf, runRepl } from "./repl.js";
-import { formatEvent, formatSubSessionNotification, renderSession } from "./render.js";
+import { formatEvent, renderSession } from "./render.js";
 import { pickSession } from "./session-picker.js";
 
 // exit codes for the headless single-run path
@@ -257,8 +257,6 @@ async function runInteractive(boot: Bootstrap): Promise<void> {
   const runtime = await buildRuntime(boot, eventing, choice.kind === "resume" ? choice.sessionId : undefined, true).build();
   boot.registerRuntime(runtime);
 
-  // sub-session reports are the REPL's to render: it subscribes through ScreenLayout, the sole TTY writer.
-  // a second raw write here would desync readline's row count and the next repaint's erase would eat the line
   try {
     await runRepl({
       workspaceRoot: projectRoot,
@@ -288,11 +286,6 @@ async function runHeadless(
     const runtime = await buildRuntime(boot, eventing, sessionId).build();
     boot.registerRuntime(runtime);
 
-    // to stderr with the rest of the progress output, so stdout stays reserved for the final answer
-    const unsubscribe = runtime.onSubSessionEvent((notification) =>
-      process.stderr.write(formatSubSessionNotification(notification))
-    );
-
     process.stderr.write(chalk.gray(`[session ${runtime.getSession().sessionId}]\n`));
 
     // map the bus's {type,payload} to the renderer's {type,data} at this boundary
@@ -303,7 +296,6 @@ async function runHeadless(
     try {
       // the process root is the turn's cutoff, so SIGINT/SIGTERM cut the in-flight model/tool/sub-run awaits
       const result = await runtime.dispatchAsync(input, { signal: boot.rootSignal });
-      await runtime.awaitSubSessions();
       process.stdout.write(result.finalMessage.content + "\n");
       // to stderr so stdout stays reserved for the final answer
       renderSession(bannerSessionOf(runtime, sessionId !== undefined), (text) =>
@@ -320,7 +312,6 @@ async function runHeadless(
               : EXIT_CAPPED;
     } finally {
       unsubEvents();
-      unsubscribe();
       // Cancels the runtime scope so token-holding resources release before exit.
       await runtime.shutdown({ mode: "drain", timeoutMs: 30_000 });
     }

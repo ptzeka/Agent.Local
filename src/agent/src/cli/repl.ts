@@ -7,7 +7,7 @@ import type { RunnerEvent } from "../agent/runners/runner-events.js";
 import { OrchestratorEventTypes } from "../agent/runners/runner-events.js";
 import type { TurnRunner } from "../agent/runners/turn-runner.js";
 import type { AgentRuntime } from "../agent/runtime/agent-runtime.js";
-import { formatChatStart, formatEvent, formatSubSessionNotification, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
+import { formatChatStart, formatEvent, formatTurnEvent, renderBanner, renderHelp, renderSession, type BannerSession } from "./render.js";
 
 // wraps one session's runtime with a readline prompt and slash commands; all logic lives in the runtime,
 // so the REPL only routes input in and events out
@@ -35,11 +35,6 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
   // first thing into the region, so it sits just above the pinned prompt at startup
   renderBanner(workspaceRoot, sandboxRoot, bannerSessionOf(runtime, resumed), null, (text) => ui.write(text));
-
-  // surface out-of-band sub-session completions as they arrive, above the prompt
-  const unsubscribe = runtime.onSubSessionEvent((notification) => {
-    ui.write(formatSubSessionNotification(notification));
-  });
 
   // map the bus shape {type,payload} to the renderer's {type,data} at this single boundary;
   // the three streaming events take the incremental path, everything else the atomic write-above-prompt path
@@ -124,7 +119,6 @@ export async function runRepl(options: ReplOptions): Promise<void> {
 
   await runtime.stopTurnLoop();
   unsubEvents();
-  unsubscribe();
   ui.close();
   rl.close();
 
@@ -186,7 +180,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
     case "reset": {
       // the runtime stops and drains itself; this pre-pass only tells the user WHAT got cancelled
       const stoppedForReset = ctx.runtime.stopAllWork();
-      if (stoppedForReset.cancelledTurns + stoppedForReset.cancelledSubSessions > 0) {
+      if (stoppedForReset.cancelledTurns > 0) {
         ctx.write(stopResultText(stoppedForReset));
       }
       await ctx.runtime.reset();
@@ -196,7 +190,7 @@ async function handleSlashCommand(command: string, ctx: SlashContext): Promise<b
 
     case "compact": {
       const stoppedForCompact = ctx.runtime.stopAllWork();
-      if (stoppedForCompact.cancelledTurns + stoppedForCompact.cancelledSubSessions > 0) {
+      if (stoppedForCompact.cancelledTurns > 0) {
         ctx.write(stopResultText(stoppedForCompact));
       }
       ctx.write(chalk.gray("(summarizing…)\n"));
@@ -439,12 +433,9 @@ function squeezeBlankLines(text: string): string {
   return kept.join("\n");
 }
 
-function stopResultText(result: { cancelledTurns: number; cancelledSubSessions: number }): string {
-  const total = result.cancelledTurns + result.cancelledSubSessions;
-  return total > 0
-    ? chalk.gray(
-        `(stopping everything: ${result.cancelledTurns} turn(s), ${result.cancelledSubSessions} sub-session(s))\n`
-      )
+function stopResultText(result: { cancelledTurns: number }): string {
+  return result.cancelledTurns > 0
+    ? chalk.gray(`(stopping everything: ${result.cancelledTurns} turn(s))\n`)
     : chalk.gray("(nothing is running)\n");
 }
 
