@@ -1,6 +1,8 @@
 # Turns — the session's scheduling core
 
-*Rewritten 2026-07-30, verified against the working tree at commit `3c820fe`.
+*Rewritten 2026-07-30; every symbol and line anchor re-verified against the
+working tree on 2026-08-02 (after `ToolCaller`, the sub-session layer, and the
+executor seam were removed).
 Source of truth: [turn-runner.ts](src/agent/src/agent/runners/turn-runner.ts),
 [turn-loop.ts](src/agent/src/agent/runners/turn-loop.ts),
 [turn.ts](src/agent/src/agent/runners/turn.ts), and the wiring in
@@ -30,15 +32,15 @@ InputInbox                FIFO of PROMPTS per sessionId; producers push, nobody 
      └─ TURN              one drained prompt, end to end                     turn-loop.ts + turn.ts
         │                 prologue → iterations → epilogue
         └─ iteration      one model request + its tool calls                 model-caller.ts
-                                                                             tool-caller.ts
+                                                                             Turn.runToolCalls
 ```
 
 | Level | Owner | One unit means | Bounded by |
 |---|---|---|---|
 | Prompt | `InputInbox` | one queued piece of input | nothing — unbounded queue |
 | Turn | `TurnRunner` | one `dispatchAsync`, one drained prompt | one at a time, serial |
-| Iteration | `TurnLoop` | one model call + its tool calls | `TurnProfile.maxIterations` |
-| Tool call | `ToolCaller` | one `ScopedToolClient.callTool` | the turn's `AbortSignal` |
+| Iteration | `TurnLoop.iterate` | one `ModelCaller.call` + its tool calls | `TurnProfile.maxIterations` |
+| Tool call | `Turn.runToolCalls` | one `ScopedToolClient.callTool`, all calls in `Promise.all` | the turn's `AbortSignal` |
 
 The layering is strict and each seam is a plain function/interface:
 
@@ -61,17 +63,16 @@ grouped by the job it does.
 | File | Role |
 |---|---|
 | [turn-runner.ts](src/agent/src/agent/runners/turn-runner.ts) | The pump. `wake()` / `cancel*()` / `start()` / `stop()` / `awaitIdle()`. Contentless: holds a `CurrentTurn` (id, source, status, `AbortController`) and nothing else. |
-| [input-inbox.ts](src/agent/src/agent/runners/input-inbox.ts) | The prompt queue, keyed by `sessionId` so one inbox serves the top session and every sub-session. `push` also **wakes** the runner, and owns idempotency (§4). |
+| [input-inbox.ts](src/agent/src/agent/runners/input-inbox.ts) | `InputInbox` — the prompt queue, keyed by `sessionId`. One instance per runtime, minted by `InputInboxMiddleware` ([runtime/middleware/input-inbox.ts:11](src/agent/src/agent/runtime/middleware/input-inbox.ts#L11)), so an agent's child runtime gets its own. `push` also **wakes** the runner, and owns idempotency (§4). |
 
 ### The loop — what happens inside a turn
 
 | File | Role |
 |---|---|
 | [turn-loop.ts](src/agent/src/agent/runners/turn-loop.ts) | `SessionRunner` implementation: prologue → `iterate` → epilogue, plus `capped`. Stateless — holds only its role and its four policy slots. |
-| [turn.ts](src/agent/src/agent/runners/turn.ts) | Per-turn state: profile, provider, scoped clients, visible tools, tracker, transcript writes (`append` persists, `injectTransient` doesn't), and the three terminal shapes (`settle` / `fail` / `finalizeReported`). `Turn.open()` is the assembly step; `Turn.idle()` is the empty-wake short circuit. |
-| [turn-profile.ts](src/agent/src/agent/runners/turn-profile.ts) | The per-role knobs as **data**: `maxIterations`, `temperature`, `needsTurnBinding`, `completion` contract, `evaluatorPass`. The one place a role record is read — a new kind of turn is a role record, never a branch. |
-| [model-caller.ts](src/agent/src/agent/runners/model-caller.ts) | One model call: request anchor, streaming deltas, native-vs-prompted tool-call normalisation, usage stamping, append. Decides nothing. |
-| [tool-caller.ts](src/agent/src/agent/runners/tool-caller.ts) | Executes an iteration's tool calls, pairs results into the transcript, flushes. Returns the landed `report_result` (if any) — the loop decides what that means. |
+| [turn.ts](src/agent/src/agent/runners/turn.ts) | `Turn` — per-turn state: profile, provider, scoped clients, visible tools, `DispatchTracker`, transcript writes (`append` persists, `injectTransient` doesn't), and the four terminal shapes (`settle` / `fail` / `budgetCapped` / `finalizeReported`). `Turn.open()` (L80) is the assembly step; `Turn.idle()` (L136) is the empty-wake short circuit; `Turn.replayOf()` (L126) is the idempotent replay. `runToolCalls()` (L210) runs one iteration's calls concurrently, pairs results into the transcript, flushes, and returns the landed `report_result` if any — the loop decides what that means. |
+| [turn-profile.ts](src/agent/src/agent/runners/turn-profile.ts) | `resolveTurnProfile` — the per-role knobs as **data**: `maxIterations`, `temperature`, `needsTurnBinding`, `completion` contract, `evaluatorPass`. The one place a role record is read — a new kind of turn is a role record, never a branch. |
+| [model-caller.ts](src/agent/src/agent/runners/model-caller.ts) | `ModelCaller` — one model call: request anchor, streaming deltas, native-vs-prompted tool-call normalisation, usage stamping, append. Decides nothing. |
 
 ### Policies — the four extension slots
 
@@ -104,8 +105,10 @@ therefore unbounded; the other three are singular because they decide.
 | [middleware/turn-counter-middleware.ts](src/agent/src/agent/runners/middleware/turn-counter-middleware.ts) | Folds usage into the `MetricsRegistry` off the event bus: own spend rides `orchestrator-message`, delegated subtree spend rides `tool-result`. The same subscription enforces the token ceilings (§8). |
 | [policies/budget.ts](src/agent/src/agent/runners/policies/budget.ts) | Pure ceiling arithmetic + the cancel-reason narrowing that separates a budget stop from a user stop. |
 | [runner-events.ts](src/agent/src/agent/runners/runner-events.ts) | `OrchestratorEventTypes` — the event vocabulary every unit above publishes on. |
-| [subsession.ts](src/agent/src/agent/runners/subsession.ts) | The child-runtime contracts (`SubSession`, `SubSessionCoordinator`, notifications) whose settle drives the auto-wake in §10. |
-| [summarizer.ts](src/agent/src/agent/runners/summarizer.ts) | The summarizer role itself — see §7. |
+| [summarizer.ts](src/agent/src/agent/runners/summarizer.ts) | `Summarizer`, `SUMMARY_TAG`, `buildSummaryMessage`, `isSummaryMessage` — see §7. |
+
+That table is the whole directory: `ls src/agent/src/agent/runners/**/*.ts` returns
+these 18 files and nothing else.
 
 ---
 
@@ -117,22 +120,20 @@ therefore unbounded; the other three are singular because they decide.
 That guard is correct but fragile the moment more than one producer can start
 work:
 
-- the **user** types in the REPL,
-- a **sub-session** settles and wants its report processed,
-- later, an **HTTP API** posts a message.
+- the **user** types in the REPL (`source: "user"`),
+- an **HTTP API** posts a message (`source: "api"`).
+
+Those are the two members of `TurnSource`
+([turn-runner.ts:12](src/agent/src/agent/runners/turn-runner.ts#L12)); a third,
+`"subsession"`, existed while detached child sessions did and went with them —
+an agent's answer now returns as an ordinary tool result inside the calling
+turn, so there is nothing to wake anyone up about.
 
 With direct dispatch, two producers collide on the guard and one throws — a
 race decided by timing. The runner removes the race **structurally**: every
 producer pushes to the inbox and wakes the runner, and exactly one pump loop is
 ever the caller of `dispatchAsync`. The running-guard degrades to a backstop
 that should never fire.
-
-The second problem it solves is **lost reports**. A sub-session finishing while
-nothing was running used to just emit a notification — visible in the CLI,
-invisible to the model. Now the report is pushed as inbox input and becomes a
-real turn, so the orchestrator actually *reasons over* the child's result
-(`formatSubSessionReport`, wired at
-[agent-runtime.ts:326](src/agent/src/agent/runtime/agent-runtime.ts#L326)).
 
 ---
 
@@ -142,14 +143,15 @@ There is **no pending-turn queue**. Unconsumed work lives as text in the inbox,
 and the runner carries a single boolean:
 
 ```ts
-InputInbox                            TurnRunner
-  queues: Map<sessionId, InboxItem[]>     pending: boolean     // "a wake is owed"
-  push(sessionId, content, source, key?) ──▶ wake(source)      // kicks the pump
-  dequeue(sessionId): InboxItem | null    current: CurrentTurn|null
-  hasPending(sessionId): boolean       ◀── shouldRun()         // the work predicate
-  clear(sessionId)
-  executedRecord(sessionId, item)         // the idempotency half — see below
-  recordExecuted(sessionId, item, record)
+InputInbox (input-inbox.ts)                     TurnRunner (turn-runner.ts)
+  queues: Map<sessionId, InboxItem[]>             pending: boolean   // "a wake is owed"
+  setOnPush(listener)              L61   ──────▶  wake(source)       // kicks the pump
+  push(sessionId, content, source?, key?) L71     current: CurrentTurn | null
+  dequeue(sessionId): InboxItem | null    L102
+  hasPending(sessionId): boolean          L110 ◀─ shouldRun()        // the work predicate
+  clear(sessionId)                        L116
+  executedRecord(sessionId, item)         L126   // the idempotency half — see below
+  recordExecuted(sessionId, item, record) L138
 ```
 
 An `InboxItem` is `{ content, fingerprint, source }`. The fingerprint —
@@ -160,10 +162,10 @@ that runs it is what records that it ran.
 Consequences of that shape, all deliberate:
 
 - **One prompt per turn.** `dequeue` pops exactly one entry in FIFO order
-  ([input-inbox.ts:29](src/agent/src/agent/runners/input-inbox.ts#L29)); the
+  ([input-inbox.ts:102](src/agent/src/agent/runners/input-inbox.ts#L102)); the
   drained request then carries across every iteration of that turn. A prompt
   queued *mid-turn* is left for the pump to replay as the **next** turn
-  ([turn-loop.ts:169](src/agent/src/agent/runners/turn-loop.ts#L169)).
+  ([turn-loop.ts:140](src/agent/src/agent/runners/turn-loop.ts#L140)).
 - **The wake is idempotent.** `wake()` just sets `pending = true` and kicks;
   three producers waking during one turn produce one follow-up turn per queued
   prompt, not per wake.
@@ -178,7 +180,8 @@ Consequences of that shape, all deliberate:
   `Conversation`; an outside mutation would race it. Producers enqueue, the
   loop drains at a safe boundary — the `hasPending` / `pullInjectedPrompt` pair
   on `RunnerContext`
-  ([runner-middleware.ts:21](src/agent/src/agent/runners/middleware/runner-middleware.ts#L21)).
+  ([runner-middleware.ts:26-27](src/agent/src/agent/runners/middleware/runner-middleware.ts#L26-L27)),
+  consumed at [turn-loop.ts:87](src/agent/src/agent/runners/turn-loop.ts#L87).
 - **Even a direct dispatch goes through the inbox.** `dispatchAsync(input)`
   pushes `input` first, so there is no separate first-message path
   ([agent-runtime.ts:182](src/agent/src/agent/runtime/agent-runtime.ts#L182)).
@@ -190,12 +193,11 @@ keeps the runner contentless:
 
 | Half | What it does | Default |
 |---|---|---|
-| Pending-duplicate drop | a push whose fingerprint is already queued is absorbed — and does **not** wake the pump | on, for `subsession` / `api` |
+| Pending-duplicate drop | a push whose fingerprint is already queued is absorbed — and does **not** wake the pump | on, for `api` (`DEFAULT_DEDUPED_SOURCES`, [input-inbox.ts:32](src/agent/src/agent/runners/input-inbox.ts#L32)) |
 | Executed ledger | a settled turn records `fingerprint → { turnId, outcome, finalContent }`; a later match short-circuits to that record | **off** (`idempotencyTtlMs: 0`) |
 
-The drop half restores what the round model used to give for free: N children
-settling while the parent is busy push N near-identical reports, which must
-become **one** follow-up turn.
+The drop half exists for retrying machine producers: an API caller that resends
+the same message while the first is still queued must get **one** turn, not two.
 
 Both halves are scoped to non-human sources on purpose. A person legitimately
 types `yes`, `continue`, `again` and must get a fresh turn every time, so `user`
@@ -250,40 +252,40 @@ Two properties the implementation leans on:
 is the whole turn:
 
 ```
-run(ctx):
-  hasPending()? ──no──▶ Turn.idle()          // cold wake, nothing to assemble
+TurnLoop.run(ctx):                                              turn-loop.ts L75
+  ctx.hasPending()? ──no──▶ Turn.idle()      // cold wake, nothing to assemble   L78
 
-  request = inbox.dequeue()                  // popped BEFORE assembly (see §8)
-  executedRecord(request)? ──hit──▶ Turn.replayOf(record)   // zero model/tool calls
+  request = ctx.pullInjectedPrompt()         // popped BEFORE assembly (see §8)  L87
+  ctx.executedRecord(request)? ──hit──▶ Turn.replayOf(record)  // no model/tool calls
 
   Turn.open(ctx, role)                       // profile, provider, ScopedToolClient.forRole,
                                              // visible tools, DispatchTracker, TurnResultCapture,
-                                             // bindTurnScopedServers (coordinator roles only)
-  ── prologue (ONCE, order is load-bearing) ──────────────────────────
-     1  contextProvider.build()   → setContextMessages()   // standing prefix
+                                             // bindTurnScopedServers (needsTurnBinding roles only)
+  ── runPrologue (ONCE, order is load-bearing) ───────────────────────  L205
+     1  contextProvider.build()   → turn.setContextMessages()  // standing prefix
      2  compaction.applyIfNeeded()                         // may rewrite history (§7)
-     3  anchorRequest()           → append the popped prompt
+     3  anchorRequest()           → append the popped prompt          L216
      4  contributors.contribute() ×N                       // key off the anchored request
 
-  ── iterate (1..profile.maxIterations) ──────────────────────────────
+  ── iterate (1..profile.maxIterations) ──────────────────────────────  L140
      aborted? → throw
-     reply = model.call(turn, ctx)
-     reply has tool calls? → tools.run(...)
+     reply = ModelCaller.call(turn, ctx)
+     reply has tool calls? → turn.runToolCalls(reply.toolCalls)   // turn.ts L210
                                ├─ report_result landed → turn.finalizeReported()  ⇒ END
                                └─ otherwise            → next iteration
      else → completion.judge(turn, reply, ctx)
               ├─ settle   → turn.settle(msg, outcome)      ⇒ END
               ├─ fail     → turn.fail(reason)              ⇒ END
               └─ continue → turn.nudge(text), next iteration
-     loop exhausted → capped()                             ⇒ END
+     loop exhausted → capped()                             ⇒ END      L233
 
-  ── epilogue (ONCE, after settling) ─────────────────────────────────
+  ── runEpilogue (ONCE, after settling) ──────────────────────────────  L180
      profile.evaluatorPass && evaluator client mounted?
        → runEvaluatorPass() → result.evaluation = { status, reason }
 ```
 
 Why the prologue order is fixed
-([turn-loop.ts:158](src/agent/src/agent/runners/turn-loop.ts#L158)) — steps 1 and
+([turn-loop.ts:205](src/agent/src/agent/runners/turn-loop.ts#L205)) — steps 1 and
 2 both call `seedOpeningSet()`, which rebuilds the working set and **resets
 `turnStartIndex` to the current end**:
 
@@ -308,7 +310,7 @@ Why the prologue order is fixed
 
 The epilogue's `evaluation` is deliberately **separate from** `outcome`: the
 judge annotates and reports, it never overrides what the loop already decided
-([turn-loop.ts:133](src/agent/src/agent/runners/turn-loop.ts#L133)).
+([turn-loop.ts:180](src/agent/src/agent/runners/turn-loop.ts#L180)).
 
 ---
 
@@ -356,7 +358,7 @@ is a pure text-in / text-out **role**, not a special case:
 - `SUMMARY_TAG` = `[CONVERSATION SUMMARY]` is a **stable machine-detectable
   prefix**, and `isSummaryMessage()` is its one consumer: `AgentRuntime.compact()`
   skips when the transcript is already a single summary
-  ([agent-runtime.ts:374](src/agent/src/agent/runtime/agent-runtime.ts#L374)).
+  ([agent-runtime.ts:357](src/agent/src/agent/runtime/agent-runtime.ts#L357)).
   Do not reword the tag. *(The comment above `isSummaryMessage` says "session
   reset uses this to preserve the latest summary" — that is stale; `reset()`
   does not call it.)*
@@ -376,7 +378,7 @@ Why the last K messages stay verbatim: recent tool results must stay precise
 `compact()` is not a policy and does not go through the loop: it calls
 `stopAllWork()` + `awaitIdle()` first so the summarizer reads a quiescent
 transcript, then `conversation.replaceAll([summary])`
-([agent-runtime.ts:365](src/agent/src/agent/runtime/agent-runtime.ts#L365)).
+([agent-runtime.ts:348](src/agent/src/agent/runtime/agent-runtime.ts#L348)).
 Both paths share the same `Summarizer` and the same `buildSummaryMessage`
 envelope.
 
@@ -393,7 +395,7 @@ Three granularities on the runner:
 | `cancelAll()` | Drops the queued wake (`pending = false`) **and** aborts the running turn. |
 
 `AgentRuntime.stopAllWork()` is the composite the hosts actually call
-([agent-runtime.ts:253](src/agent/src/agent/runtime/agent-runtime.ts#L253)):
+([agent-runtime.ts:256](src/agent/src/agent/runtime/agent-runtime.ts#L256)):
 sweep child sessions → `cancelAll()` → **`inbox.clear()`**. That last step
 matters under one-prompt-per-turn: later prompts sit in the inbox and would
 auto-run after the user cancelled, so a stop must truly stop.
@@ -415,7 +417,7 @@ await this.turnRunner?.awaitIdle();
 Children are swept first because a dying child would otherwise push a report
 into the very inbox being flushed. `shutdown()` unhooks the wake subscription
 **before** anything else for the same reason
-([agent-runtime.ts:281](src/agent/src/agent/runtime/agent-runtime.ts#L281)).
+([agent-runtime.ts:279](src/agent/src/agent/runtime/agent-runtime.ts#L279)).
 
 `stop()` (graceful) is different from cancellation: the in-flight turn finishes,
 and **queued prompts stay in the inbox** so they survive for a resume.
@@ -449,14 +451,14 @@ breach that lands mid-`provider.chat` or mid-tool-call.
 ## 9. How the runtime wires it
 
 The loop is **opt-in per host**
-([agent-runtime.ts:229](src/agent/src/agent/runtime/agent-runtime.ts#L229)):
+([agent-runtime.ts:231](src/agent/src/agent/runtime/agent-runtime.ts#L231)):
 
 - **REPL** calls `startTurnLoop()` once; user input goes through
   `runtime.injectInput(input, "user")`
-  ([repl.ts:112](src/agent/src/cli/repl.ts#L112)) — i.e. straight into the
+  ([repl.ts:107](src/agent/src/cli/repl.ts#L107)) — i.e. straight into the
   inbox. The prompt stays live during a turn, so a follow-up typed mid-run is
   queued and runs as the next turn.
-- **Headless single runs** (and executor child runtimes) never start the loop —
+- **Headless single runs** (and sub-agent child runtimes) never start the loop —
   they keep the direct `dispatchAsync(input, …)` path. That is why the
   running-status backstop still exists.
 
@@ -465,21 +467,23 @@ because the dispatch drains the inbox itself — plus `parentSignal` (the
 runtime's cancellation scope, so a runtime cancel reaches turns without
 enumeration) and `shouldRun` (the inbox predicate).
 
-`rewireTurnWake()` then does two bindings, and is called from **both**
-`startTurnLoop` and `build()`
-([agent-runtime.ts:317](src/agent/src/agent/runtime/agent-runtime.ts#L317)):
+`rewireInboxWake()` then makes the one binding it still needs, and is called from
+**both** `startTurnLoop` and `build()`
+([agent-runtime.ts:309](src/agent/src/agent/runtime/agent-runtime.ts#L309)):
 
-1. `inbox.setOnPush(source => turnRunner.wake(source))` — any push un-parks the pump;
-2. `sessionManager.onNotification(n => injectInput(formatSubSessionReport(n), "subsession"))`
-   — a settled child's report is routed through the *same* inbox interface,
-   tagged so the wake carries the right source.
+```ts
+this.inbox.setOnPush((source) => this.turnRunner?.wake(source as TurnSource | undefined));
+```
 
-The double call site is load-bearing: `reset()` re-runs `build()`, constructing
-a **new** SessionManager *and* a new inbox — an active loop's subscription would
-otherwise point at the dead pair.
+Any push un-parks the pump. The double call site is load-bearing: `reset()`
+re-runs `build()`, constructing a **new** inbox — an active loop's subscription
+would otherwise point at the dead one.
 
-So a child's report lands as a normal turn whose `source` is `"subsession"`:
-the session wakes itself, processes the report, and answers unprompted.
+*(This method had a second binding —
+`sessionManager.onNotification(… "subsession")` — routing a detached child's
+report back in as a fresh turn. Detached sub-sessions are gone; an agent's answer
+is now a tool result inside the turn that asked for it, so no self-wake path
+remains.)*
 
 ---
 
@@ -489,13 +493,14 @@ the session wakes itself, processes the report, and answers unprompted.
 `turn-start` and `turn-done` only — each carrying `turnId`, `source`, and (on
 done) `status`. A throwing listener is swallowed so it cannot break the pump.
 
-The CLI's rendering policy
-([render.ts:131](src/agent/src/cli/render.ts#L131)) is deliberately quiet for
+The CLI's rendering policy — `formatTurnEvent`
+([render.ts:137](src/agent/src/cli/render.ts#L137)) — is deliberately quiet for
 plain user turns (the prompt/spinner flow already narrates those); only
 out-of-band activity gets a line:
 
 - `turn-start` with `source !== "user"` → `(auto-wake: processing … report)`,
-  answering "why is the agent talking unprompted?";
+  answering "why is the agent talking unprompted?". With `"subsession"` gone,
+  `"api"` is the only source that can reach this branch today;
 - `turn-done` with `status === "error"` — which must surface here or nowhere,
   because the REPL no longer awaits a turn's settle (the prompt stays live);
 - `turn-done` with `status === "cancelled"` → `(turn cancelled)`.
@@ -505,12 +510,14 @@ bus (`OrchestratorEventTypes`: `START`, `ITERATION`, `MESSAGE_DELTA`, `MESSAGE`,
 `TOOL_RESULT`, `SUMMARIZATION_START/SUMMARIZATION`, `RECALL_START/RECALL_FINALIZE`,
 `EVALUATION_START/EVALUATION_VERDICT`, `WARNING`, `SYSTEM_FAILURE`). The turn bus
 is chained under the runtime's, so everything bubbles to the host without an
-`onEvent` callback ([agent-runtime.ts:160](src/agent/src/agent/runtime/agent-runtime.ts#L160)).
+`onEvent` callback ([agent-runtime.ts:86](src/agent/src/agent/runtime/agent-runtime.ts#L86)).
 
 **Persistence today** is at the *conversation* level, not the scheduler level:
-`ToolCaller` flushes after each iteration's tool results so a crash mid-turn
-loses at most the iteration in flight, and `AgentRuntime.finalize()` runs in a
-`finally` on every dispatch exit path. The scheduler itself holds no durable
+`Turn.runToolCalls` flushes after each iteration's tool results so a crash
+mid-turn loses at most the iteration in flight, and `AgentRuntime.finalize()`
+([agent-runtime.ts:315](src/agent/src/agent/runtime/agent-runtime.ts#L315)) runs
+in a `finally` on every `dispatchAsync` exit path
+([agent-runtime.ts:215](src/agent/src/agent/runtime/agent-runtime.ts#L215)). The scheduler itself holds no durable
 state — the queue is the inbox, and the inbox is in-memory.
 
 ---
@@ -568,7 +575,7 @@ one: sharded Postgres (`UPDATE … RETURNING`), Kafka (`key = sessionId` → one
 consumer per partition = the lease for free), or a Durable-Object / virtual-actor
 grain (the object *is* the single-writer — collapsing directory + lease + live
 runner into one primitive). Iteration-granular checkpointing already half-exists
-via `ToolCaller`'s per-iteration flush. The real risk at scale is not the queue
+via `Turn.runToolCalls`'s per-iteration flush. The real risk at scale is not the queue
 but **failover storms** — a dead process dumping thousands of claims at once —
 mitigated by leased TTLs that stagger reclamation.
 
@@ -590,8 +597,8 @@ mitigated by leased TTLs that stagger reclamation.
 6. A unit that must end a turn cancels `ctx.cutoff`; it never mints a fresh root
    signal and never races a timer against the work.
 7. `TurnLoop` holds control flow only; `Turn` records and settles; `ModelCaller`
-   and `ToolCaller` decide nothing. Only the `CompletionPolicy` (or a landed
-   `report_result`, or the cap) ends a turn.
+   and `Turn.runToolCalls` decide nothing. Only the `CompletionPolicy` (or a
+   landed `report_result`, or the cap) ends a turn.
 8. Prologue order is load-bearing: context → compaction → request drain →
    contributors.
 9. Compaction and the evaluator pass both **fail open** — a flaky summarizer or
