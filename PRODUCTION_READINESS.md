@@ -158,13 +158,21 @@ the old dispatch contract — they now mislead the model and the reader.
 *Commits `89c558e`…`e742c2f`. Re-verified: `tsc --noEmit` clean, 29/29
 suites, 138/138 tests passing.*
 
-### 0.5.1 Executor design — final shape (supersedes §0.2)
+### 0.5.1 Sub-agent design — final shape (supersedes §0.2)
 
-The executor is a sub-agent again, but **not** via the old
+> **Superseded (2026-08-02).** The dedicated executor role and its
+> `executor__dispatch` seam were removed: the seam duplicated what the generic
+> role-agent path already did, and the isolation it was credited with actually
+> came from `buildSubRuntime`. A role now either holds the write tools itself or
+> delegates via `<role>__ask`. Everything below still describes the child-runtime
+> mechanics accurately — read `executor__dispatch` as `<role>__ask` and
+> "per mutation" as "per ask".
+
+Delegation is a sub-agent, but **not** via the old
 ExecutorRegistry/synthetic-interception machinery and **not** a hacked
-partial runtime. `executor__dispatch` — a tool on the in-process `executor`
-LocalMcp (`synthetic-mcp/executor-server.ts`) — spawns a **brand-new child
-runtime per mutation** through `buildSubRuntime` with role `"executor"`:
+partial runtime. `<role>__ask` — a tool on the in-process `RoleDispatchLocalMcp`
+(`synthetic-mcp/role-dispatch-server.ts`) — spawns a **brand-new child
+runtime per ask** through `buildSubRuntime` with the granted role:
 
 - **Own everything:** parent-linked session, own conversation + persistence,
   own context snapshot, own registries. Nothing shared with the parent

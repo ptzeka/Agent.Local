@@ -14,7 +14,7 @@ export const APPEND_EXCEL_ROWS_TOOL = "append_excel_rows";
 export const APPEND_AFTER_EXCEL_ROWS_TOOL = "append_after_excel_rows";
 export const DELETE_EXCEL_ROWS_TOOL = "delete_excel_rows";
 
-// SheetJS-backed .xlsx tools run in-process, not via executor__dispatch: a spreadsheet op is one
+// SheetJS-backed .xlsx tools run in-process, not through a sub-agent: a spreadsheet op is one
 // well-bounded effect, so a free-form sub-agent would add cost and non-determinism without buying safety
 // every file_path is clamped to {sandboxRoot}/{workspaceId} in agent code, never trusting the model
 

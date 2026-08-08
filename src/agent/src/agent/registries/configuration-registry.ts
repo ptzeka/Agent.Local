@@ -24,10 +24,13 @@ export interface RoleReturnsSchema extends ToolOutputSchema {
   report?: string;
 }
 
-// the contract for calling a role as a sub-agent tool: what it does + the shape it returns
+// the contract for calling a role as a sub-agent tool: what it does, the shape it returns, how many
+// times one turn may call it
 export interface RoleDispatch {
   description: string;
   returns?: RoleReturnsSchema;
+  // calls allowed per turn; omitted falls back to the orchestration-wide default
+  cap?: number;
 }
 
 // a role is a pure-data record: model, prompt, completion contract, and its behavioural knobs. This is the ONLY
@@ -59,7 +62,8 @@ export interface RoleDefinition {
 
 // turn-wide knobs only; anything per-role (iteration caps, temperatures) belongs to the role record
 export interface OrchestrationConfig {
-  maxExecutorDispatchesPerTurn: number;
+  // default per-turn call cap for any one agent; a role overrides it with its own `dispatch.cap`
+  maxAgentCallsPerTurn: number;
   // per-turn completion judge; a guard rail for weaker models that self-verify poorly. Capable models can run
   // without it — set false to skip the gate so a tool-free turn settles as satisfied on the model's own word.
   evaluatorEnabled: boolean;
@@ -80,7 +84,7 @@ export interface OrchestrationConfig {
 }
 
 const DEFAULT_ORCHESTRATION: OrchestrationConfig = {
-  maxExecutorDispatchesPerTurn: 8,
+  maxAgentCallsPerTurn: 8,
   evaluatorEnabled: true,
   validatorCheckIntervalDispatches: 3,
   summarizeAtMessages: 30,

@@ -68,19 +68,16 @@ describe("McpRegistryMiddleware", () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test("executor dispatch advertises the executor's write tools without leaking them to the orchestrator", async () => {
-    // Orchestrator mounts read-only fs; executor mounts writable fs. The
-    // executor's tools must surface in the dispatch enum but NEVER in the
-    // orchestrator's own registry.
-    const splitModelsRegistry = {
-      getValidModelForRole: (role: string) => (role === "executor" ? "m-exec" : "m-orch"),
-      // the orchestrator whitelists "executor" — the tool grant that mounts the dispatch seam
-      getValidMcpServersForRole: (role: string) =>
-        role === "executor" ? ["fsmcp"] : ["fsreadonly", "executor"],
+  test("a role gets exactly its whitelist: the read-only mount, and nothing it did not name", async () => {
+    // the read-only servers are a SEPARATE mount of the same tools, so a role that names fsreadonly
+    // must not also come up with the writable fsmcp — that split is what makes the contract enforced
+    const readOnlyRegistry = {
+      getValidModelForRole: () => "m-orch",
+      // "nosuchserver" is neither synthetic nor in mcp.json: declared-but-unmounted drops out silently
+      getValidMcpServersForRole: () => ["fsreadonly", "nosuchserver"],
       getTimeoutForRole: () => 60000,
-      getRoleDefinition: (role: string) => ({ dispatchable: role === "executor" }),
+      getRoleDefinition: () => ({ dispatchable: false }),
       getRoles: () => [],
-      // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
       getAgentsForRole: () => [],
     } as unknown as ModelRegistry;
 
@@ -91,56 +88,16 @@ describe("McpRegistryMiddleware", () => {
       workspace,
       sandboxRoot: "/tmp/sandbox",
       mcpRegistry: undefined,
-      modelsRegistry: splitModelsRegistry,
+      modelsRegistry: readOnlyRegistry,
       configurationRegistry: stubConfigurationRegistry,
     });
 
     await new McpRegistryMiddleware({ role: "orchestrator" }).initialize(ctx, jest.fn(async () => {}));
 
-    // A fsreadonly-only role actually gets its read server (regression: the
-    // switch previously had no case for it, so the orchestrator got no fs).
     const mcpRegistry = ctx.registry.get(McpRegistryToken);
     expect(mcpRegistry.getClient("fsreadonly")).toBeDefined();
-
-    // The write server never lands in the orchestrator's registry — it lives only in the executor's.
     expect(mcpRegistry.getClient("fsmcp")).toBeUndefined();
-
-    // The executor dispatch enum DOES expose the executor's write tools.
-    const [dispatch] = mcpRegistry.getClient("executor")!.listTools();
-    const enumNames = (dispatch.inputSchema as { properties: { tool: { enum?: string[] } } })
-      .properties.tool.enum;
-    expect(enumNames).toContain("fsmcp__write_file");
-  });
-
-  test("an executor child gets its own write servers but NO dispatch seam (no grandchildren)", async () => {
-    // role "executor" mounts its writable fs directly; it must never receive an executor seam,
-    // or a dispatch could spawn a grandchild — the one-level-deep invariant.
-    const executorModelsRegistry = {
-      getValidModelForRole: () => "m-exec",
-      getValidMcpServersForRole: () => ["fsmcp"],
-      getTimeoutForRole: () => 60000,
-      getRoleDefinition: () => ({ dispatchable: true }),
-      getRoles: () => [],
-      // no `agents` grant: these tests cover the server/executor mount split, not the role-agent one
-      getAgentsForRole: () => [],
-    } as unknown as ModelRegistry;
-
-    const session = createSession({ sessionId: "s1", workspaceId: "ws-1", conversationId: "c1" });
-    const workspace: Workspace = { workspaceId: "ws-1", root: "/tmp/workspace", projectContext: null };
-    const ctx = makeContext({
-      session,
-      workspace,
-      sandboxRoot: "/tmp/sandbox",
-      mcpRegistry: undefined,
-      modelsRegistry: executorModelsRegistry,
-      configurationRegistry: stubConfigurationRegistry,
-    });
-
-    await new McpRegistryMiddleware({ role: "executor" }).initialize(ctx, jest.fn(async () => {}));
-
-    const mcpRegistry = ctx.registry.get(McpRegistryToken);
-    expect(mcpRegistry.getClient("fsmcp")).toBeDefined();
-    expect(mcpRegistry.getClient("executor")).toBeUndefined();
+    expect(mcpRegistry.getClient("nosuchserver")).toBeUndefined();
   });
 
   test("a coordinator role mounts the evaluator dispatch client; a leaf role does not", async () => {

@@ -1,79 +1,54 @@
-export const PROJECT_CONTEXT = `# Agent direction — Orchestrator & Executor
+export const PROJECT_CONTEXT = `# Agent direction
 
-This file is loaded as standing direction for the ORCHESTRATOR. The
-ORCHESTRATOR's system prompt covers the protocol; this file covers
-project-specific behaviour that overrides defaults.
+This file is loaded as standing direction for the top-level role. Its system
+prompt covers the protocol; this file covers project-specific behaviour that
+overrides defaults.
 
-## Roles (one-line summary)
+## Two ways to get something done
 
-- **ORCHESTRATOR.** Coordinates. Read-only tools only (\`read_file\`,
-  \`list_dir\`, \`glob\`, \`grep\`, \`codemcp.*\`). Cannot write, edit, or run
-  shell commands. The only mutation channel is the synthetic tool
-  \`executor__dispatch\`.
-- **EXECUTOR.** Executes. Sub-agent spawned per dispatch. Holds the
-  mutating tools (\`write_file\`, \`edit_file\`, shell). Must follow the
-  four-step protocol: ACK → execute → independently validate → report.
+- **Do it yourself.** The tools in your list are yours to call — reads and
+  changes alike. For a single concrete action, this is the right choice.
+- **Delegate to an agent.** Tools named \`<role>__ask\` run another role as a
+  fresh child with its own tools and its own loop, then hand you back one
+  answer. Use one when a sub-goal needs several steps of its own reasoning —
+  surveying many files, working through a workbook — rather than spending
+  your own turn on every step.
 
-## The dispatch contract
+Agents run in PARALLEL when asked for together in one reply, so batch
+independent sub-goals into a single reply. Calls that depend on each other
+must be split across replies.
 
-When the ORCHESTRATOR needs to mutate state, it calls exactly one tool:
-
-\`\`\`
-executor__dispatch({
-  tool:   "fsmcp__write_file"   // a name from the executor's allowed set
-  args:   { ...exact tool args... },
-  intent: "one-line description of what this dispatch accomplishes"
-})
-\`\`\`
-
-The orchestrator catches this call before it reaches MCP and hands the
-ask to the EXECUTOR sub-agent. The EXECUTOR must:
-
-1. Acknowledge the ask (\`EXECUTOR: ACK <tool>\`) before doing anything.
-2. Call the requested tool with the exact args.
-3. Independently verify the result — for writes/edits, re-read the file
-   and confirm the new content is present; for shell, check exit code
-   and capture stdout/stderr.
-4. Report, in plain language, what it did and what the validation read-back
-   actually showed, with concrete evidence.
-
-The EXECUTOR's report is a factual account, not a verdict: it does NOT
-self-declare pass/fail. The ORCHESTRATOR reads the account (and the
-tool-result error flag, which is set only when the executor itself errors
-or is cut off) and judges for itself whether the mutation landed.
+An agent is a leaf: it cannot delegate further, and it never speaks to the
+user. Its answer is yours to read, reconcile, and carry into your final
+message.
 
 ## Loop
 
 1. **State intent.** One short line: what you intend to do for this request.
-2. **Read the user's request.** Identify what mutations (if any) are needed.
-3. **Gather just enough context.** Read files, grep, list dirs — only
-   what's needed to make the next decision.
-4. **Dispatch one mutation at a time.** Wait for the report before the next.
-5. **Recalculate after each report.** If the mutation landed, move on. If
-   it did not, decide: retry with corrected args, change approach, or
-   surface the failure to the user. Do not loop on the same failing
-   dispatch — change something.
-6. **Finish with a plain-language account of the outcome** when there is
-   no further action. No tool calls in the final turn; an independent
-   EVALUATOR decides the turn's status from that account.
+   Skip it entirely when the work is a single action.
+2. **Gather just enough context.** Read what you need to make the next
+   decision — no more. Delegate the gathering when it would cost many calls.
+3. **Act, one step at a time.** Take the next concrete action.
+4. **Confirm before moving on.** Re-read what you changed; a call that
+   returned without an error is not proof it landed.
+5. **Recalculate.** If it landed, move on. If not, decide: retry with
+   corrected args, change approach, or surface the failure. Never repeat a
+   failing call unchanged.
+6. **Finish with a plain-language account of the outcome** when there is no
+   further action. No tool calls in the final turn; an independent EVALUATOR
+   decides the turn's status from that account.
 
 ## Hard rules
 
-- Never invent a tool name. The orchestrator sees its own tool list;
-  \`executor__dispatch.tool\` accepts only the executor-side tool names
-  enumerated in that tool's schema.
+- Never invent a tool name. Your tool list is the whole world.
 - Never claim work happened that isn't backed by a real tool result.
-- One dispatch at a time. Wait for feedback before dispatching again.
-- The ORCHESTRATOR never writes, edits, or runs shell commands directly.
-  Those tools are not advertised to it; if you find yourself wanting one,
-  you want a \`executor__dispatch\` call instead.
-- Status lines the ORCHESTRATOR emits in prose are prefixed \`ORCHESTRATOR:\`.
-  Lines the EXECUTOR emits are prefixed \`EXECUTOR:\`.
+- If no available tool can carry out the request, say so plainly and stop.
+  A missing capability is a failure to report, not a gap to paper over.
 
 ## Style
 
 - TypeScript, ES modules, Node 20+.
 - Three-layer architecture: UI → Services → Repository/External. Layers
   call downward only; UI never touches the repository directly.
-- Prefer small, verifiable changes. One mutation per dispatch keeps the
-  loop's blast radius small.`
+- Prefer small, verifiable changes. One change at a time keeps the blast
+  radius small and the read-back meaningful.`;

@@ -7,15 +7,15 @@
     "model backing three roles is one entry, not three.",
     "`roles` is where usage lives: which model, which prompt/completion contract, and the role's",
     "own knobs — `mcp` (server whitelist), `toolTimeoutMs`, `maxIterations`, `temperature`, `agents`.",
-    "Roles: `orchestrator` (coordinates, read-only tools + dispatch_executor) and",
-    "`executor` (the only role allowed to mutate state). Legacy names",
-    "`coder` and `planner` are still accepted and alias to `orchestrator`.",
+    "A role is reached one of two ways and the fields say which: `mcp` grants it TOOLS it calls",
+    "itself, `agents` grants it OTHER roles to delegate to as `<role>__ask`. There is no privileged",
+    "coordinator — `orchestrator` is simply the role the CLI runs at the top by default.",
+    "`dispatchable: true` marks a role another role may name in its `agents` list.",
     "`reranker` names the model memomcp uses to re-rank recall(rank=true) results;",
     "it is not a chat role, so the agent's LLM provider registry skips it.",
     "Change a model assignment at runtime in the REPL with `/model <role>=<model-id>`.",
-    "`fsreadonly`/`excelreadonly` are inspection-only mounts of the same servers:",
-    "give them to orchestrator-role roles so the read-only contract is ENFORCED",
-    "(mutating tools not mounted), and reserve `fsmcp`/`excel` for executor roles."
+    "`fsreadonly`/`excelreadonly` are inspection-only mounts of the same servers: give them to a role",
+    "whose read-only contract should be ENFORCED (mutating tools simply not mounted) rather than trusted."
   ],
 
   "models": {
@@ -69,13 +69,13 @@
   "roles": {
     "orchestrator": {
       "model": "gemini-2.5-flash-lite",
-      "description": "Coordinates the turn: read-only mounts plus the executor dispatch seam.",
+      "description": "Default top-level role: full workspace tools, and read-only agents for context it would rather delegate.",
       "prompt": "orchestrator",
       "completion": "self-terminate",
       "maxIterations": 16,
       "temperature": 0.2,
       "toolTimeoutMs": 600000,
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp"],
+      "mcp": ["fsmcp", "codemcp", "excel", "delaymcp", "memomcp"],
       "dispatchable": false,
       "agents": ["filesagent", "excelagent"]
     },
@@ -87,36 +87,9 @@
       "maxIterations": 16,
       "temperature": 0.2,
       "toolTimeoutMs": 600000,
-      "mcp": ["fsreadonly", "excelreadonly", "executor", "delaymcp", "memomcp", "turnresult"],
+      "mcp": ["fsmcp", "codemcp", "excel", "delaymcp", "memomcp", "turnresult"],
       "dispatchable": false,
       "agents": ["filesagent", "excelagent"]
-    },
-    "executor": {
-      "model": "claude-haiku-4-5",
-      "description": "The only role allowed to mutate state; WRITE mounts, and deliberately no `executor` server so it cannot dispatch to itself.",
-      "prompt": "executor",
-      "completion": "tool-evidence",
-      "maxIterations": 6,
-      "temperature": 0.1,
-      "toolTimeoutMs": 60000,
-      "mcp": ["fsmcp", "codemcp", "excel"],
-      "dispatchable": true,
-      "agents": [],
-      "dispatch": {
-        "description": "Spawn the EXECUTOR sub-agent to perform exactly one mutation and report what it observed."
-      }
-    },
-    "coder": {
-      "model": "gemini-2.5-flash-lite",
-      "description": "Legacy orchestrator alias with write mounts.",
-      "prompt": "orchestrator",
-      "completion": "self-terminate",
-      "maxIterations": 6,
-      "temperature": 0.2,
-      "toolTimeoutMs": 600000,
-      "mcp": ["fsmcp", "codemcp", "excel", "executor"],
-      "dispatchable": false,
-      "agents": []
     },
     "summarizer": {
       "model": "llama-fast",
@@ -154,7 +127,7 @@
     "filesagent": {
       "model": "gemini-2.5-flash-lite",
       "description": "Read-only workspace file lookups on behalf of a coordinator.",
-      "prompt": "executor",
+      "prompt": "agent",
       "completion": "tool-evidence",
       "maxIterations": 6,
       "temperature": 0.1,
@@ -177,7 +150,7 @@
     "excelagent": {
       "model": "gemini-2.5-flash-lite",
       "description": "Read-only workbook lookups on behalf of a coordinator.",
-      "prompt": "executor",
+      "prompt": "agent",
       "completion": "tool-evidence",
       "maxIterations": 6,
       "temperature": 0.1,
@@ -200,7 +173,7 @@
   },
 
   "orchestration": {
-    "maxExecutorDispatchesPerTurn": 8,
+    "maxAgentCallsPerTurn": 8,
     "evaluatorEnabled": true,
     "summarizeAtMessages": 30,
     "summarizerKeepLastN": 8

@@ -91,7 +91,7 @@ export class Turn {
     const scopedClients = ScopedToolClient.forRole(mcpRegistry, modelsRegistry, role);
     const visibleTools = scopedClients.listTools();
     const tracker = new DispatchTracker(
-      config.orchestration.maxExecutorDispatchesPerTurn!,
+      config.orchestration.maxAgentCallsPerTurn!,
       config.orchestration.validatorCheckIntervalDispatches ?? 0
     );
     // minted regardless so the post-tool check is uniform; only a bound server can ever fill it

@@ -20,6 +20,35 @@ Conventions used below:
 
 ---
 
+## Decision — the executor seam is removed (2026-08-02)
+
+`executor__dispatch`, `executor__list_tools`, the `ExecutorLocalMcp` server and
+the `executor` role are gone. A role now either holds its tools directly (`mcp`)
+or delegates a sub-goal to another role (`agents` → `<role>__ask`); there is no
+third, hardcoded mutation channel.
+
+Rationale: the seam duplicated the generic role-agent path, and the isolation it
+was credited with came from `buildSubRuntime` (fresh session/persistence per
+child), not from the executor's second `McpClientRegistry`. It also forced the
+coordinator to pick the tool AND its args, which is the reasoning a sub-agent
+should be doing.
+
+Consequences accepted, not overlooked:
+- **Tool-name enum grounding is gone.** A hallucinated name is now caught by the
+  child's own scoped client ("Unknown tool …") instead of at dispatch time.
+- **Duplicate-mutation refusal is gone.** It keyed on an exact `tool + args`
+  hash, which has no analogue for a free-text ask. The per-agent call cap
+  (`maxAgentCallsPerTurn`, overridable per role via `dispatch.cap`) is the
+  remaining loop backstop.
+- **Nothing bounds direct writes.** The cap applies to agent calls; a role with
+  `fsmcp` mounted writes as often as its `maxIterations` allows.
+
+Follow-up worth doing (not started): `dispatchable` currently means both
+"callable as an agent" and "is a leaf" — the second should key on *being a child*
+(`parentSessionId`), so any role can serve as the top-level `entryRole`.
+
+---
+
 ## M0 — Close the holes (≈ 1.5–2 weeks)
 
 Everything here is independent of the future user-keyed store and survives it.
@@ -1750,6 +1779,10 @@ clarification *question* as SATISFIED (M5-7 layer 2), and the evaluator's verdic
 is derived only from the last intent + this turn's transcript.
 
 ### M5-6 · Orchestrator prompt: explicit 3-phase shape — `~0.5d` · P2
+> **Largely shipped (2026-08-02).** The prompt now carries explicit PHASE 1/2/3
+> headers. The sub-step below about intent living inside `executor__dispatch` is
+> obsolete — that field went with the seam; turn-level intent is PHASE 1.
+
 An orchestrator turn should read as three clean phases, but the prompt
 (`context/system-prompt.ts` ORCHESTRATOR_SYSTEM_PROMPT, L21-134) only expresses
 the middle one:

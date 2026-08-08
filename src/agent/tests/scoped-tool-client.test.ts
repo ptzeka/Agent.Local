@@ -95,56 +95,57 @@ describe("ScopedToolClient routing", () => {
 // Value-level validation (types, enums, empty-string) stays server-side.
 describe("ScopedToolClient required-presence", () => {
   test("a call missing a required key is rejected at the client and never dispatched", async () => {
-    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const exec = fakeMcp("writer", ["write_file"], ["path", "content", "mode"]);
     const client = new ScopedToolClient([exec.mcp]);
 
-    const result = await client.callTool("executor__dispatch", { tool: "x", args: {} });
+    const result = await client.callTool("writer__write_file", { path: "x", content: "" });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("missing required field(s): intent");
+    expect(result.content).toContain("missing required field(s): mode");
     expect(exec.callTool).not.toHaveBeenCalled();
   });
 
   test("all absent required keys are named in one error", async () => {
-    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const exec = fakeMcp("writer", ["write_file"], ["path", "content", "mode"]);
     const client = new ScopedToolClient([exec.mcp]);
 
-    const result = await client.callTool("executor__dispatch", {});
+    const result = await client.callTool("writer__write_file", {});
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("tool, args, intent");
+    expect(result.content).toContain("path, content, mode");
     expect(exec.callTool).not.toHaveBeenCalled();
   });
 
   test("presence is not non-empty: an empty-string required value passes to the server", async () => {
-    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const exec = fakeMcp("writer", ["write_file"], ["path", "content", "mode"]);
     const client = new ScopedToolClient([exec.mcp]);
 
-    const result = await client.callTool("executor__dispatch", { tool: "x", args: {}, intent: "" });
+    const result = await client.callTool("writer__write_file", { path: "x", content: "", mode: "" });
 
     // Empty value is the server's to reject — the client only checks the key exists.
     expect(result.isError).toBe(false);
-    expect(exec.callTool).toHaveBeenCalledWith("dispatch", { tool: "x", args: {}, intent: "" }, undefined);
+    expect(exec.callTool).toHaveBeenCalledWith("write_file", { path: "x", content: "", mode: "" }, undefined);
   });
 
   test("a fully-valid call passes through untouched", async () => {
-    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const exec = fakeMcp("writer", ["write_file"], ["path", "content", "mode"]);
     const client = new ScopedToolClient([exec.mcp]);
 
-    const result = await client.callTool("executor__dispatch", { tool: "x", args: {}, intent: "do it" });
+    const result = await client.callTool("writer__write_file", { path: "x", content: "", mode: "overwrite" });
 
     expect(result.isError).toBe(false);
-    expect(exec.callTool).toHaveBeenCalledWith("dispatch", { tool: "x", args: {}, intent: "do it" }, undefined);
+    expect(exec.callTool).toHaveBeenCalledWith("write_file", { path: "x", content: "", mode: "overwrite" }, undefined);
   });
 
   test("the presence check also covers tolerant bare-name routing", async () => {
-    const exec = fakeMcp("executor", ["dispatch"], ["tool", "args", "intent"]);
+    const exec = fakeMcp("writer", ["write_file"], ["path", "content", "mode"]);
     const client = new ScopedToolClient([exec.mcp]);
 
-    const result = await client.callTool("dispatch", { tool: "x", args: {} });
+    // bare tail, no server prefix — resolution still finds the descriptor whose `required` gates the call
+    const result = await client.callTool("write_file", { path: "x", content: "" });
 
     expect(result.isError).toBe(true);
-    expect(result.content).toContain("missing required field(s): intent");
+    expect(result.content).toContain("missing required field(s): mode");
     expect(exec.callTool).not.toHaveBeenCalled();
   });
 

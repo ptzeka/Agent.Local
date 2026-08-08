@@ -53,27 +53,29 @@ export function formatEvent(event: RunnerEvent): string {
     }
 
     case "dispatch-start": {
-      const tool = String(event.data.tool ?? "");
-      const intent = String(event.data.intent ?? "");
-      return chalk.magentaBright(`\n[DISPATCH] → ${tool}\n`) + chalk.gray(`           intent: ${intent}\n`);
+      const role = String(event.data.role ?? "");
+      const ask = String(event.data.ask ?? "");
+      return (
+        chalk.magentaBright(`\n[AGENT] → ${role}\n`) + chalk.gray(`        ask: ${collapseLine(ask)}\n`)
+      );
     }
 
     case "dispatch-feedback": {
-      // `ok` is executor-completion, not mutation success — the orchestrator judges that from the report
+      // `ok` is run-completion, not answer quality — the coordinator judges that from the report
       const ok = Boolean(event.data.ok);
-      const ack = String(event.data.ack ?? "");
+      const role = String(event.data.role ?? "");
       const evidence = String(event.data.evidence ?? "");
       const iterations = Number(event.data.iterations ?? 0);
       const stamp = ok ? chalk.greenBright("RAN") : chalk.redBright("ERROR");
       return (
-        chalk.magentaBright(`[DISPATCH] ← ${stamp}`) +
-        chalk.gray(` (ack=${ack}, executor turns=${iterations})\n`) +
-        chalk.gray(`           report: ${evidence}\n`)
+        chalk.magentaBright(`[AGENT] ← ${stamp}`) +
+        chalk.gray(` ${role} (${iterations} turn(s))\n`) +
+        chalk.gray(`        report: ${evidence}\n`)
       );
     }
 
-    case "executor-event": {
-      return formatExecutorEvent(event.data);
+    case "agent-event": {
+      return formatAgentEvent(event.data);
     }
 
     case "final-message": {
@@ -152,46 +154,38 @@ export function formatTurnEvent(event: TurnRunnerEvent): string {
 
 
 // gray because executor lines persist in the CHILD's transcript, not this one (saved-keeps-color); errors stay red
-function formatExecutorEvent(data: Record<string, unknown>): string {
+// the sub-run's own events, labelled with the role so two agents in flight stay distinguishable
+function formatAgentEvent(data: Record<string, unknown>): string {
+  const label = `  [${String(data.role ?? "agent").toUpperCase()}]`;
   const kind = String(data.kind ?? "");
   switch (kind) {
     case "orchestrator-start": {
       const model = String(data.orchestratorModel ?? "");
-      return chalk.gray(`  [EXECUTOR] running (${model})\n`);
+      return chalk.gray(`${label} running (${model})\n`);
     }
     case "orchestrator-message": {
-      // drop the protocol `EXECUTOR:` marker for display only (the label says it); raw content keeps it for parsing
-      const content = stripRoleMarker(String(data.content ?? ""), "EXECUTOR").trim();
-      return content.length > 0 ? chalk.gray(`  [EXECUTOR] ${content}\n`) : "";
+      const content = String(data.content ?? "").trim();
+      return content.length > 0 ? chalk.gray(`${label} ${content}\n`) : "";
     }
     case "tool-call": {
       const name = String(data.name ?? "");
       const args = JSON.stringify(data.arguments ?? {}, null, 0);
-      return chalk.gray(`  [EXECUTOR] → tool: ${name} ${args}\n`);
+      return chalk.gray(`${label} → tool: ${name} ${args}\n`);
     }
     case "tool-result": {
       const name = String(data.name ?? "");
       const isError = Boolean(data.isError);
       const colour = isError ? chalk.red : chalk.gray;
-      return colour(`  [EXECUTOR] ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`);
+      return colour(`${label} ← ${isError ? "tool-error" : "tool-ok"}: ${name}\n`);
     }
     case "warning": {
       const message = String(data.message ?? "");
       // gray line per saved-keeps-color, but the "warning" word stays colored as the signal being scanned for
-      return chalk.gray("  [EXECUTOR] ") + chalk.yellowBright("warning") + chalk.gray(`: ${message}\n`);
+      return chalk.gray(`${label} `) + chalk.yellowBright("warning") + chalk.gray(`: ${message}\n`);
     }
     default:
       return "";
   }
-}
-
-// the renderer's own label makes the protocol role marker redundant on screen, so strip it for display only
-function stripRoleMarker(text: string, role: string): string {
-  const marker = new RegExp(`^\\s*${role}:\\s?`, "i");
-  return text
-    .split("\n")
-    .map((line) => line.replace(marker, ""))
-    .join("\n");
 }
 
 // session identity shown in the startup banner
@@ -222,7 +216,7 @@ export function renderBanner(
     chalk.gray(`session:   ${sessionLine(session)}`),
     chalk.gray(`project:   ${workspaceRoot}`),
     chalk.gray(`fs sandbox: ${sandboxRoot} (all file I/O confined here)`),
-    chalk.gray("architecture: orchestrator (read-only) → executor__dispatch → executor (mutations)"),
+    chalk.gray("architecture: one role at the top, with `<role>__ask` sub-agents for delegated sub-goals"),
   ];
   if (contextPath) {
     lines.push(chalk.gray(`project context: ${contextPath}`));

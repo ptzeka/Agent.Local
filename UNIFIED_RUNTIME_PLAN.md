@@ -23,7 +23,12 @@ executor is a sub-agent after all, but realized as a **full child runtime**,
 not as the SyntheticToolSet/ExecutorRegistry machinery this plan drew in
 §2.1/MR-3.
 
-> **Design (final shape):** `executor__dispatch` — a tool on the in-process
+> **Superseded again (2026-08-02).** The dedicated executor was removed
+> entirely — see the decision note at the top of [BACKLOG.md](BACKLOG.md). The
+> child-runtime mechanics below are still exactly how delegation works; only the
+> seam changed, from `executor__dispatch` to the generic `<role>__ask`.
+
+> **Design (2026-06 shape):** `executor__dispatch` — a tool on the in-process
 > `executor` LocalMcp (`synthetic-mcp/executor-server.ts`) — spawns a
 > **brand-new child runtime per mutation** via `buildSubRuntime` with role
 > `"executor"`: its own parent-linked session, its own conversation and

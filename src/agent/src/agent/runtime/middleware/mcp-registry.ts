@@ -5,7 +5,6 @@ import { createFsLocalMcp, createFsReadonlyLocalMcp, FS_SERVER_NAME, FS_READONLY
 import { createExcelLocalMcp, createExcelReadonlyLocalMcp, EXCEL_SERVER_NAME, EXCEL_READONLY_SERVER_NAME } from "../../synthetic-mcp/excel-server.js";
 import { TurnResultLocalMcp, TURN_RESULT_SERVER_NAME } from "../../synthetic-mcp/turn-result-server.js";
 import { createDelayLocalMcp, DELAY_SERVER_NAME } from "../../synthetic-mcp/delay-server.js";
-import { ExecutorLocalMcp, EXECUTOR_SERVER_NAME, EXECUTOR_ROLE } from "../../synthetic-mcp/executor-server.js";
 import { RoleDispatchLocalMcp, DISPATCH_TOOL } from "../../synthetic-mcp/role-dispatch-server.js";
 import { EVALUATOR_ROLE, EVALUATOR_SERVER_NAME, EVALUATE_TOOL } from "../../runners/evaluator-pass.js";
 import { ConfigurationToken, McpRegistryToken, ModelsToken, SessionToken, WorkspaceToken } from "../tokens.js";
@@ -76,29 +75,10 @@ export class McpRegistryMiddleware implements IMiddleware {
     );
 
     this.mountRoleAgents(mcpRegistry, modelsRegistry, ctx);
-    await this.mountExecutorSeam(mcpRegistry, modelsRegistry, ctx, validMcpClients);
     this.mountEvaluatorSeam(mcpRegistry, modelsRegistry, ctx);
 
     ctx.logger?.debug("mcp end", { toolCount: mcpRegistry.listTools().length });
     await next();
-  }
-
-  // executor__dispatch is a tool GRANT: a role gets the seam only when it whitelists the executor server. So a
-  // coordinator (orchestrator) that lists it can mutate via dispatch, while a leaf sub-agent — the executor
-  // itself, or a read-only role like the evaluator — never does. The executor's write tools live in a SEPARATE
-  // registry, enumerable only through the dispatch descriptor's enum, never reachable via the scoped client.
-  private async mountExecutorSeam(
-    registry: McpClientRegistry,
-    modelsRegistry: ModelRegistry,
-    ctx: RuntimeContext,
-    whitelist: string[]
-  ): Promise<void> {
-    if (!whitelist.includes(EXECUTOR_SERVER_NAME)) return;
-    const executorServers = new McpClientRegistry(ctx.sandboxRoot, registry.resilience);
-    const executorTimeout = modelsRegistry.getTimeoutForRole(EXECUTOR_ROLE);
-    const executorWhitelist = modelsRegistry.getValidMcpServersForRole(EXECUTOR_ROLE);
-    await this.mountServers(executorServers, executorWhitelist, ctx, executorTimeout);
-    registry.registerClient(new ExecutorLocalMcp(ctx, executorServers));
   }
 
   // the terminal judge is a dispatch tool the loop's epilogue calls; it is NOT in any role's whitelist, so it
@@ -164,9 +144,6 @@ export class McpRegistryMiddleware implements IMiddleware {
           break;
         case DELAY_SERVER_NAME:
           registry.registerClient(createDelayLocalMcp(ctx.runtimeSignal).setTimeout(serverTimeout));
-          break;
-        case EXECUTOR_SERVER_NAME:
-          // the seam is mounted once in mountExecutorSeam(); a whitelist entry here is declarative, so swallow it
           break;
         default:
           await this.mountExternal(registry, mcp, externalDefs, ctx, serverTimeout, session);

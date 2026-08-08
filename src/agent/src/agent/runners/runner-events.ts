@@ -1,4 +1,4 @@
-// centralised so orchestrator and executor share one event vocabulary
+// centralised so a coordinator and its sub-agents share one event vocabulary
 export const OrchestratorEventTypes = {
   START: "orchestrator-start",
   ITERATION: "orchestrator-iteration",
@@ -11,7 +11,8 @@ export const OrchestratorEventTypes = {
   TOOL_RESULT: "tool-result",
   DISPATCH_START: "dispatch-start",
   DISPATCH_FEEDBACK: "dispatch-feedback",
-  EXECUTOR_EVENT: "executor-event",
+  // one sub-agent event republished on the parent bus; `kind` carries the child's own type
+  AGENT_EVENT: "agent-event",
   FINAL_MESSAGE: "final-message",
   SUMMARIZATION_START: "summarization-start",
   SUMMARIZATION: "summarization",

@@ -88,7 +88,7 @@ function makeConfig(overrides: Partial<ModelsFile["orchestration"]> = {}): Model
     roles: {},
     orchestration: {
       evaluatorEnabled: false,
-      maxExecutorDispatchesPerTurn: 10,
+      maxAgentCallsPerTurn: 10,
       // high enough that compaction never fires unless a test lowers it
       summarizeAtMessages: 100,
       summarizerKeepLastN: 2,

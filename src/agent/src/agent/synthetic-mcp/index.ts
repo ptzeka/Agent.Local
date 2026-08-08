@@ -1,4 +1,4 @@
-export { DispatchTracker, dispatchSignature, type DispatchAsk } from "./dispatch-tracker.js";
+export { DispatchTracker } from "./dispatch-tracker.js";
 export {
   createExcelTools,
   getExcelToolDescriptors,

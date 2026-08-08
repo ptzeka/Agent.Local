@@ -79,7 +79,8 @@ describe("ModelRegistry", () => {
   test("getPromptTemplate returns a non-empty template per known role and rejects unknown ones", () => {
     const registry = makeRegistry(bothModels);
     expect(registry.getPromptTemplate("orchestrator").length).toBeGreaterThan(0);
-    expect(registry.getPromptTemplate("executor").length).toBeGreaterThan(0);
+    // resolved by PROMPT ID, not role name: the fixture's executor role declares `prompt: "agent"`
+    expect(registry.getPromptTemplate("agent").length).toBeGreaterThan(0);
     expect(() => registry.getPromptTemplate("unknown")).toThrow(/No prompt template/);
   });
 

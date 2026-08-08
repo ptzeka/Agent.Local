@@ -1,81 +1,76 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { DispatchTracker, dispatchSignature } from "../../src/agent/synthetic-mcp/dispatch-tracker.js";
-
-const ask = (tool: string, args: Record<string, unknown> = { path: "a.txt" }) =>
-  dispatchSignature({ tool, args, intent: "write the file" });
+import { DispatchTracker } from "../../src/agent/synthetic-mcp/dispatch-tracker.js";
 
 describe("DispatchTracker admission", () => {
-  test("counts each admitted dispatch toward the per-turn cap", () => {
+  test("counts each admitted call toward the per-turn cap", () => {
     const tracker = new DispatchTracker(2, 0);
 
-    expect(tracker.reserve(ask("write", { n: 1 }))).toEqual({ ok: true });
-    expect(tracker.reserve(ask("write", { n: 2 }))).toEqual({ ok: true });
-    expect(tracker.reserve(ask("write", { n: 3 }))).toMatchObject({ ok: false, kind: "capped" });
+    expect(tracker.reserve("filesagent")).toEqual({ ok: true });
+    expect(tracker.reserve("filesagent")).toEqual({ ok: true });
+    expect(tracker.reserve("filesagent")).toMatchObject({ ok: false });
     expect(tracker.count).toBe(2);
   });
 
-  test("a mutation that already succeeded this turn is refused as a duplicate", () => {
-    const tracker = new DispatchTracker(5, 0);
-    const signature = ask("write");
-
-    expect(tracker.reserve(signature)).toEqual({ ok: true });
-    tracker.settle(signature, true);
-
-    expect(tracker.reserve(signature)).toMatchObject({ ok: false, kind: "duplicate" });
-  });
-
-  // the race the sequential tool loop used to hide: with a fanned-out round both asks are admitted before
-  // either completes, so admission — not completion — has to be what decides the duplicate
-  test("two concurrent identical asks: the second is refused before the first settles", () => {
-    const tracker = new DispatchTracker(5, 0);
-    const signature = ask("write");
-
-    expect(tracker.reserve(signature)).toEqual({ ok: true });
-    expect(tracker.reserve(signature)).toMatchObject({ ok: false, kind: "duplicate" });
-  });
-
-  test("a failed dispatch frees its signature so a corrected retry is allowed", () => {
-    const tracker = new DispatchTracker(5, 0);
-    const signature = ask("write");
-
-    tracker.reserve(signature);
-    tracker.settle(signature, false);
-
-    expect(tracker.reserve(signature)).toEqual({ ok: true });
-  });
-
-  test("the cap is checked before the duplicate, so a capped turn reports the cap", () => {
+  // the cap is per agent so one agent stuck in a loop cannot spend another's budget
+  test("each agent gets its own budget", () => {
     const tracker = new DispatchTracker(1, 0);
-    const signature = ask("write");
 
-    tracker.reserve(signature);
-    tracker.settle(signature, true);
+    expect(tracker.reserve("filesagent")).toEqual({ ok: true });
+    expect(tracker.reserve("filesagent")).toMatchObject({ ok: false });
+    expect(tracker.reserve("excelagent")).toEqual({ ok: true });
+  });
 
-    expect(tracker.reserve(signature)).toMatchObject({ ok: false, kind: "capped" });
+  test("a role's own cap overrides the turn-wide default", () => {
+    const tracker = new DispatchTracker(1, 0);
+
+    expect(tracker.reserve("filesagent", 2)).toEqual({ ok: true });
+    expect(tracker.reserve("filesagent", 2)).toEqual({ ok: true });
+    expect(tracker.reserve("filesagent", 2)).toMatchObject({ ok: false });
+  });
+
+  // a failing agent that kept its budget could loop forever, so the reservation is spent either way
+  test("a call that goes on to fail still spent its budget", () => {
+    const tracker = new DispatchTracker(1, 0);
+
+    tracker.reserve("filesagent");
+    tracker.settle(false);
+
+    expect(tracker.reserve("filesagent")).toMatchObject({ ok: false });
+  });
+
+  test("the refusal names the agent and its limit", () => {
+    const tracker = new DispatchTracker(1, 0);
+
+    tracker.reserve("excelagent");
+
+    expect(tracker.reserve("excelagent")).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("excelagent"),
+    });
   });
 });
 
 describe("DispatchTracker periodic check", () => {
-  test("fires once per interval of SUCCEEDED dispatches", () => {
+  test("fires once per interval of SUCCEEDED calls", () => {
     const tracker = new DispatchTracker(10, 2);
 
-    tracker.reserve(ask("write", { n: 1 }));
-    tracker.settle(ask("write", { n: 1 }), true);
+    tracker.reserve("filesagent");
+    tracker.settle(true);
     expect(tracker.dueForPeriodicCheck()).toBe(false);
 
-    tracker.reserve(ask("write", { n: 2 }));
-    tracker.settle(ask("write", { n: 2 }), true);
+    tracker.reserve("filesagent");
+    tracker.settle(true);
     expect(tracker.dueForPeriodicCheck()).toBe(true);
     // consumed, so it does not fire again until the next interval
     expect(tracker.dueForPeriodicCheck()).toBe(false);
   });
 
-  test("a failed dispatch does not advance the interval", () => {
+  test("a failed call does not advance the interval", () => {
     const tracker = new DispatchTracker(10, 1);
 
-    tracker.reserve(ask("write"));
-    tracker.settle(ask("write"), false);
+    tracker.reserve("filesagent");
+    tracker.settle(false);
 
     expect(tracker.dueForPeriodicCheck()).toBe(false);
   });

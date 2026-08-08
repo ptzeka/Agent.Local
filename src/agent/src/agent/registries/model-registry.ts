@@ -1,4 +1,4 @@
-import { ORCHESTRATOR_SYSTEM_PROMPT, EXECUTOR_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
+import { ORCHESTRATOR_SYSTEM_PROMPT, AGENT_SYSTEM_PROMPT, EVALUATOR_SYSTEM_PROMPT, SUMMARIZER_SYSTEM_PROMPT, REQUEST_ANCHOR_TEMPLATE } from "../context/system-prompt.js";
 import { PROJECT_CONTEXT } from '../context/agentcontext.js';
 import { ModelsFile, ModelDefinition, RoleDefinition, DEFAULT_TOOL_TIMEOUT_MS } from "./configuration-registry.js";
 
@@ -6,7 +6,7 @@ import { ModelsFile, ModelDefinition, RoleDefinition, DEFAULT_TOOL_TIMEOUT_MS } 
 const PROMPTS: Record<string, string> = {
   project: PROJECT_CONTEXT,
   orchestrator: ORCHESTRATOR_SYSTEM_PROMPT,
-  executor: EXECUTOR_SYSTEM_PROMPT,
+  agent: AGENT_SYSTEM_PROMPT,
   evaluator: EVALUATOR_SYSTEM_PROMPT,
   summarizer: SUMMARIZER_SYSTEM_PROMPT,
 };

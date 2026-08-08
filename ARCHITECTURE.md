@@ -74,10 +74,10 @@ criteria — required fields present, values reconcile, document reference match
 source — not the path taken. What the workflow proves is the output, not the
 procedure.
 
-Privilege is separated **structurally, not by instruction**. The orchestrator's
-configured servers contain no write tools; to change state it calls
-`executor__dispatch`, which spawns a fresh child runtime whose role config grants
-the write surface. The workspace bucket is hard-scoped to the session's workspace
+Privilege is separated **structurally, not by instruction**. A role can call only
+the servers its `mcp` whitelist names, so an inspection role mounts `fsreadonly`
+and simply has no write tool to reach for — the constraint is the absence of the
+capability, not a rule it was told to follow. The workspace bucket is hard-scoped to the session's workspace
 id — a step cannot reach another workflow's files. Identity rides every child
 unchanged, so one access check covers every nesting level.
 
@@ -420,27 +420,31 @@ The [`Mcp`](src/agent/src/agent/mcp/mcp.ts) contract (`listTools` / `callTool`)
 makes every tool source interchangeable to the runtime:
 
 - **LocalMcp** — in-process toolsets dispatched as plain function calls (fsmcp,
-  excel, delaymcp, executor, turnresult). A toolset + a server name + a whitelist
+  excel, delaymcp, turnresult). A toolset + a server name + a whitelist
   entry is a complete new capability — no new runtime code.
 - **McpClient** — external stdio servers (e.g. codemcp), mounted from `mcp.json`
   behind the same registry as the local ones.
-- **ExecutorLocalMcp** ([synthetic-mcp/executor-server.ts](src/agent/src/agent/synthetic-mcp/executor-server.ts))
-  — the mutation gateway. `executor__dispatch` spawns a **brand-new child runtime
-  per mutation** (own session, conversation, persistence, registries; role
-  `executor`), serialized by a dispatch mutex and bounded by a DispatchTracker
-  (per-turn cap + duplicate-mutation detection). The child's token usage returns
-  on `ToolExecutionResult.usage` and folds into the parent's tally, so delegated
-  cost is accounted through the ordinary tool result, not a side channel.
+- **RoleDispatchLocalMcp** ([synthetic-mcp/role-dispatch-server.ts](src/agent/src/agent/synthetic-mcp/role-dispatch-server.ts))
+  — delegation as a tool. Each role named in a caller's `agents` list mounts as
+  `<role>__ask`, and one call spawns a **brand-new child runtime** (own session,
+  conversation, persistence, registries) for that role, bounded by a
+  DispatchTracker per-turn cap. The role's declared `returns` becomes the tool's
+  `outputSchema`, so the MCP client gates the answer's shape and no tool body
+  re-checks it. The child's token usage returns on `ToolExecutionResult.usage`
+  and folds into the parent's tally, so delegated cost is accounted through the
+  ordinary tool result, not a side channel.
 
 `ScopedToolClient` is the single dispatch front per role: it fronts the servers
 that role resolved to, routes `<server>__<tool>` calls, clamps every fsmcp path to
 the workspace root, and emits tool-call / tool-result events centrally.
 
-The read/write boundary is **server-level and structural**: an inspection role
-mounts the read-only server (`fsreadonly`, `excelreadonly`) while the executor
-mounts the mutating one (`fsmcp`, `excel`). A role cannot reach a write tool it
-was never mounted — there is no name-based classifier to fool and no per-tool deny
-list to keep in sync.
+The read/write boundary is **server-level and structural**: a role that should not
+write mounts the read-only server (`fsreadonly`, `excelreadonly`) instead of the
+mutating one (`fsmcp`, `excel`). A role cannot reach a write tool it was never
+mounted — there is no name-based classifier to fool and no per-tool deny list to
+keep in sync. Delegation is a separate axis: `mcp` grants a role tools it calls
+itself, `agents` grants it other roles to hand a sub-goal to. Neither implies the
+other, so a role may write directly, delegate, both, or neither.
 
 ---
 
